@@ -1,0 +1,16 @@
+name: forge-ai
+version: 0.1.0
+
+language:
+  - python
+
+mode: development
+
+testing:
+  enabled: true
+
+git:
+  enabled: true
+
+security:
+  require_approval_for_writes: true
