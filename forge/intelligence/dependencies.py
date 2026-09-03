@@ -106,17 +106,31 @@ class DependencyIndexer:
         try:
             relative = path.relative_to(self.root).as_posix()
             source = path.read_text(encoding="utf-8")
-
-            parsed = self.parser.parse(
-                relative,
-                source,
-            )
-
+            parsed = self.parser.parse(relative, source)
         except (OSError, UnicodeDecodeError, SyntaxError):
             return
 
-        for target in parsed.imports:
-            kind, resolved_path = self._resolve_import(target)
+        for import_detail in parsed.import_details:
+            module = import_detail.module
+
+            if import_detail.level:
+                target = self._resolve_relative_import(
+                    relative,
+                    module,
+                    import_detail.level,
+                )
+            elif import_detail.names:
+                target = self._resolve_from_import_target(
+                    module,
+                    import_detail.names,
+                )
+            else:
+                target = module
+
+            kind, resolved_path = self._resolve_import(
+                target,
+                relative,
+            )
 
             graph.add(
                 source=relative,
@@ -125,32 +139,128 @@ class DependencyIndexer:
                 resolved_path=resolved_path,
             )
 
+    def _resolve_from_import_target(
+        self,
+        module: str,
+        names: list[str],
+    ) -> str:
+        """Choose the most specific target for a from-import."""
+
+        if not module:
+            return names[0] if names else module
+
+        # Prefer an imported name that is an actual repository module.
+        for name in names:
+            candidate = f"{module}.{name}"
+
+            if self._resolve_module(candidate):
+                return candidate
+
+        return module
+
+    def _resolve_relative_import(
+        self,
+        source_file: str,
+        module: str,
+        level: int,
+    ) -> str:
+        """Convert a relative import into a repository module path."""
+
+        source = Path(source_file)
+        package_parts = list(source.parent.parts)
+
+        # level=1 means current package.
+        remove = max(level - 1, 0)
+
+        if remove:
+            package_parts = package_parts[:-remove]
+
+        if module:
+            package_parts.extend(module.split("."))
+
+        return ".".join(part for part in package_parts if part)
+
     def _resolve_import(
         self,
         target: str,
+        source_file: str | None = None,
     ) -> tuple[str, str | None]:
-        """Resolve an import to a repository file when possible."""
+        """Resolve a Python import to a repository file when possible."""
 
-        module_parts = target.split(".")
+        # First try the import exactly as written.
+        resolved = self._resolve_module(target)
+        if resolved:
+            return "internal", resolved
 
-        module_path = self.root.joinpath(*module_parts)
+        # Handle imports such as:
+        # from forge.core import state
+        #
+        # The parser records the module as forge.core.state.
+        # Try the complete module first, then progressively shorter
+        # module paths so package imports resolve correctly.
+        parts = target.split(".")
 
-        # Example:
-        # forge.core
-        # -> forge/core.py
-        if module_path.with_suffix(".py").is_file():
-            relative = module_path.with_suffix(".py").relative_to(
-                self.root
-            )
-            return "internal", relative.as_posix()
+        for index in range(len(parts) - 1, 0, -1):
+            module = ".".join(parts[:index])
+            resolved = self._resolve_module(module)
 
-        # Example:
-        # forge.core
-        # -> forge/core/__init__.py
+            if resolved:
+                remainder = parts[index:]
+                candidate = self._resolve_from_import(
+                    resolved,
+                    remainder,
+                )
+
+                if candidate:
+                    return "internal", candidate
+
+                return "internal", resolved
+
+        return "external", None
+
+    def _resolve_module(self, module: str) -> str | None:
+        """Resolve a dotted Python module to .py or package __init__.py."""
+
+        module_path = self.root.joinpath(*module.split("."))
+
+        file_path = module_path.with_suffix(".py")
+
+        if file_path.is_file():
+            return file_path.relative_to(self.root).as_posix()
+
         init_path = module_path / "__init__.py"
 
         if init_path.is_file():
-            relative = init_path.relative_to(self.root)
-            return "internal", relative.as_posix()
+            return init_path.relative_to(self.root).as_posix()
 
-        return "external", None
+        return None
+
+    def _resolve_from_import(
+        self,
+        resolved_module: str,
+        remainder: list[str],
+    ) -> str | None:
+        """Resolve imported names inside a resolved package/module."""
+
+        if not remainder:
+            return resolved_module
+
+        base = self.root / Path(resolved_module)
+
+        # If the resolved module is __init__.py, look beside it.
+        if base.name == "__init__.py":
+            base = base.parent
+        else:
+            base = base.parent / base.stem
+
+        candidate = base.joinpath(*remainder)
+
+        file_path = candidate.with_suffix(".py")
+        if file_path.is_file():
+            return file_path.relative_to(self.root).as_posix()
+
+        init_path = candidate / "__init__.py"
+        if init_path.is_file():
+            return init_path.relative_to(self.root).as_posix()
+
+        return None
