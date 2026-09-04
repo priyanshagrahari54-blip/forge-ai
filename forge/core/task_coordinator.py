@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
+from forge.core.agent_executor import AgentExecutionResult, AgentExecutor
 from forge.core.task_engine import Task, TaskStatus
 from forge.core.task_queue import PersistentTaskQueue
 from forge.core.task_recovery import TaskRecoveryEngine
@@ -14,10 +14,11 @@ class TaskExecutionResult:
     success: bool
     output: str = ""
     error: str = ""
+    agent: str = ""
 
 
 class TaskExecutionCoordinator:
-    """Coordinate task selection, execution, persistence, and recovery."""
+    """Coordinate task selection, agent execution, persistence, and recovery."""
 
     def __init__(
         self,
@@ -28,19 +29,16 @@ class TaskExecutionCoordinator:
         self.recovery = recovery
 
     def recover(self) -> list[Task]:
-        """Recover interrupted/retryable tasks before execution."""
         return self.recovery.recover()
 
     def next_task(self) -> Task | None:
-        """Return the next dependency-ready task."""
         return self.queue.next()
 
     def execute(
         self,
         task_id: str,
-        worker: Callable[[Task], str],
+        agent: AgentExecutor,
     ) -> TaskExecutionResult:
-        """Execute one task through a supplied worker function."""
         task = self.queue.engine._find(task_id)
 
         if task.status != TaskStatus.PENDING:
@@ -60,49 +58,44 @@ class TaskExecutionCoordinator:
         started = self.queue.engine.start(task_id)
         self.queue.store.save(started)
 
-        try:
-            output = worker(started)
-        except Exception as exc:
-            self.queue.fail(task_id, str(exc))
-            return TaskExecutionResult(
-                task_id=task_id,
-                success=False,
-                error=str(exc),
-            )
+        result = agent.execute(started)
 
-        self.queue.complete(task_id)
+        if result.success:
+            self.queue.complete(task_id)
+        else:
+            self.queue.fail(task_id, result.error)
 
         return TaskExecutionResult(
             task_id=task_id,
-            success=True,
-            output=output,
+            success=result.success,
+            output=result.output,
+            error=result.error,
+            agent=result.agent,
         )
 
     def run_next(
         self,
-        worker: Callable[[Task], str],
+        agent: AgentExecutor,
     ) -> TaskExecutionResult | None:
-        """Execute the next ready task."""
         task = self.next_task()
 
         if task is None:
             return None
 
-        return self.execute(task.id, worker)
+        return self.execute(task.id, agent)
 
     def run_until_idle(
         self,
-        worker: Callable[[Task], str],
+        agent: AgentExecutor,
         max_tasks: int = 100,
     ) -> list[TaskExecutionResult]:
-        """Execute ready tasks until no task remains or the limit is reached."""
         if max_tasks < 1:
             raise ValueError("max_tasks must be at least 1")
 
         results: list[TaskExecutionResult] = []
 
         for _ in range(max_tasks):
-            result = self.run_next(worker)
+            result = self.run_next(agent)
 
             if result is None:
                 break
