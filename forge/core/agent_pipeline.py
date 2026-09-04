@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from forge.agents.registry import AgentRegistry
+from forge.agents.planner import AgentPlan
 from forge.agents.stage_executor import ExecutorStageAgent
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
@@ -33,6 +34,16 @@ class AgentPipeline:
         TaskStatus.CODING: "coding",
         TaskStatus.TESTING: "testing",
         TaskStatus.REVIEWING: "reviewing",
+    }
+
+    CAPABILITY_STAGES = {
+        "planning": TaskStatus.PLANNING,
+        "coding": TaskStatus.CODING,
+        "testing": TaskStatus.TESTING,
+        "debugging": TaskStatus.DEBUGGING,
+        "review": TaskStatus.REVIEWING,
+        "security": TaskStatus.REVIEWING,
+        "documentation": TaskStatus.RUNNING,
     }
 
     def __init__(
@@ -144,6 +155,72 @@ class AgentPipeline:
                 f"No agent registered for stage: {stage.value}"
             ),
         )
+
+    def execute_plan(
+        self,
+        task: Task,
+        plan: AgentPlan,
+    ) -> list[PipelineStageResult]:
+        """Execute a precomputed multi-agent plan.
+
+        The plan is executed in its deterministic order. Each planned
+        agent is adapted through the existing ExecutorStageAgent layer,
+        so executor responses, context fingerprints, errors, and agent
+        identity retain the existing pipeline semantics.
+
+        The normal execute() method remains unchanged for the standard
+        four-stage pipeline.
+        """
+        results: list[PipelineStageResult] = []
+
+        context = self._build_context(task)
+
+        for planned in plan.agents:
+            stage = self.CAPABILITY_STAGES.get(
+                planned.capability,
+                TaskStatus.RUNNING,
+            )
+
+            task.status = stage
+
+            agent = ExecutorStageAgent(
+                planned.registration.executor,
+                stage,
+            )
+
+            try:
+                result: StageAgentResult = agent.execute(
+                    task,
+                    context,
+                )
+            except Exception as exc:
+                pipeline_result = PipelineStageResult(
+                    stage=stage,
+                    success=False,
+                    error=str(exc),
+                    agent=getattr(agent, "name", ""),
+                    context_fingerprint=(
+                        context.fingerprint if context else ""
+                    ),
+                )
+            else:
+                pipeline_result = PipelineStageResult(
+                    stage=stage,
+                    success=result.success,
+                    output=result.output,
+                    error=result.error,
+                    agent=result.agent,
+                    context_fingerprint=result.context_fingerprint,
+                )
+
+            results.append(pipeline_result)
+
+            if not pipeline_result.success:
+                task.status = TaskStatus.FAILED
+                return results
+
+        task.status = TaskStatus.COMPLETED
+        return results
 
     def execute(self, task: Task) -> list[PipelineStageResult]:
         results: list[PipelineStageResult] = []
