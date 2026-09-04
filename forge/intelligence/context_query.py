@@ -102,7 +102,7 @@ class ContextQueryEngine:
 
     def _is_repository_file(self, path: str) -> bool:
         return path in self.intelligence.symbols.by_file(path) or any(
-            file.path == path for file in self.intelligence.architecture.source_files
+            file == path for file in self.intelligence.architecture.source_files
         )
 
     @staticmethod
