@@ -13,6 +13,7 @@ class AgentRegistration:
     name: str
     role: str
     executor: AgentExecutor
+    capabilities: tuple[str, ...] = ()
 
 
 class AgentRegistry:
@@ -64,6 +65,28 @@ class AgentRegistry:
                 if registration.role == role
             ),
             key=lambda registration: registration.name,
+        )
+
+
+    def get_by_capability(self, capability: str) -> list[AgentRegistration]:
+        """Return agents that advertise the requested capability."""
+        return sorted(
+            (
+                registration
+                for registration in self._agents.values()
+                if capability in registration.capabilities
+            ),
+            key=lambda registration: registration.name,
+        )
+
+    def capabilities(self) -> list[str]:
+        """Return all registered capabilities in deterministic order."""
+        return sorted(
+            {
+                capability
+                for registration in self._agents.values()
+                for capability in registration.capabilities
+            }
         )
 
     def has(self, name: str) -> bool:

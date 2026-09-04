@@ -111,3 +111,157 @@ def test_invalid_registration_is_rejected():
 
     with pytest.raises(ValueError, match="role"):
         registry.register(make_registration(role=""))
+
+
+def test_registration_supports_capabilities():
+    registration = AgentRegistration(
+        name="coder",
+        role="coding",
+        executor=CallableAgentExecutor("coder", lambda request: "ok"),
+        capabilities=("python", "refactoring", "debugging"),
+    )
+
+    assert registration.capabilities == (
+        "python",
+        "refactoring",
+        "debugging",
+    )
+
+
+def test_registry_finds_agents_by_capability():
+    registry = AgentRegistry()
+
+    registry.register(
+        AgentRegistration(
+            name="coder",
+            role="coding",
+            executor=CallableAgentExecutor("coder", lambda request: "ok"),
+            capabilities=("python", "refactoring"),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="debugger",
+            role="debugging",
+            executor=CallableAgentExecutor("debugger", lambda request: "ok"),
+            capabilities=("python", "debugging"),
+        )
+    )
+
+    assert [a.name for a in registry.get_by_capability("python")] == [
+        "coder",
+        "debugger",
+    ]
+    assert [a.name for a in registry.get_by_capability("debugging")] == [
+        "debugger",
+    ]
+
+
+def test_registry_capabilities_are_deterministic():
+    registry = AgentRegistry()
+
+    registry.register(
+        AgentRegistration(
+            name="coder",
+            role="coding",
+            executor=CallableAgentExecutor("coder", lambda request: "ok"),
+            capabilities=("refactoring", "python"),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="tester",
+            role="testing",
+            executor=CallableAgentExecutor("tester", lambda request: "ok"),
+            capabilities=("testing", "python"),
+        )
+    )
+
+    assert registry.capabilities() == [
+        "python",
+        "refactoring",
+        "testing",
+    ]
+
+
+def test_unknown_capability_returns_empty():
+    registry = AgentRegistry()
+
+    assert registry.get_by_capability("security") == []
+
+
+def test_registration_supports_capabilities():
+    registration = AgentRegistration(
+        name="coder",
+        role="coding",
+        executor=CallableAgentExecutor("coder", lambda request: "ok"),
+        capabilities=("python", "refactoring", "debugging"),
+    )
+
+    assert registration.capabilities == (
+        "python",
+        "refactoring",
+        "debugging",
+    )
+
+
+def test_registry_finds_agents_by_capability():
+    registry = AgentRegistry()
+
+    registry.register(
+        AgentRegistration(
+            name="coder",
+            role="coding",
+            executor=CallableAgentExecutor("coder", lambda request: "ok"),
+            capabilities=("python", "refactoring"),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="debugger",
+            role="debugging",
+            executor=CallableAgentExecutor("debugger", lambda request: "ok"),
+            capabilities=("python", "debugging"),
+        )
+    )
+
+    assert [a.name for a in registry.get_by_capability("python")] == [
+        "coder",
+        "debugger",
+    ]
+    assert [a.name for a in registry.get_by_capability("debugging")] == [
+        "debugger",
+    ]
+
+
+def test_registry_capabilities_are_deterministic():
+    registry = AgentRegistry()
+
+    registry.register(
+        AgentRegistration(
+            name="coder",
+            role="coding",
+            executor=CallableAgentExecutor("coder", lambda request: "ok"),
+            capabilities=("refactoring", "python"),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="tester",
+            role="testing",
+            executor=CallableAgentExecutor("tester", lambda request: "ok"),
+            capabilities=("testing", "python"),
+        )
+    )
+
+    assert registry.capabilities() == [
+        "python",
+        "refactoring",
+        "testing",
+    ]
+
+
+def test_unknown_capability_returns_empty():
+    registry = AgentRegistry()
+
+    assert registry.get_by_capability("security") == []

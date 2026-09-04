@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from forge.agents.registry import AgentRegistry
+from forge.agents.stage_executor import ExecutorStageAgent
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.intelligence.agent_context import AgentContext
@@ -75,7 +76,11 @@ class AgentPipeline:
         if not registrations:
             return None
 
-        return registrations[0].executor
+        registration = registrations[0]
+        return ExecutorStageAgent(
+            registration.executor,
+            stage,
+        )
 
     def _build_context(self, task: Task) -> AgentContext | None:
         if self.context_provider is None:

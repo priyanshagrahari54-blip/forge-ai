@@ -130,7 +130,7 @@ def test_pipeline_requires_an_execution_strategy() -> None:
     try:
         AgentPipeline()
     except ValueError as exc:
-        assert "stage_handler or stage_agents" in str(exc)
+        assert "stage_handler" in str(exc) and "stage_agents" in str(exc) and "agent_registry" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
 
