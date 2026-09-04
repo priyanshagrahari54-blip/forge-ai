@@ -25,6 +25,8 @@ class ContextItem:
     symbol: str | None = None
     reason: str = ""
     score: float = 0.0
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass
