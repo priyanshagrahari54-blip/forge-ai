@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
+from forge.agents.registry import AgentRegistry
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.intelligence.agent_context import AgentContext
@@ -26,25 +27,55 @@ class AgentPipeline:
         TaskStatus.REVIEWING,
     )
 
+    STAGE_ROLES = {
+        TaskStatus.PLANNING: "planning",
+        TaskStatus.CODING: "coding",
+        TaskStatus.TESTING: "testing",
+        TaskStatus.REVIEWING: "reviewing",
+    }
+
     def __init__(
         self,
         stage_handler: Callable[[Task, TaskStatus], str] | None = None,
         stage_agents: Mapping[TaskStatus, StageAgent] | None = None,
         context_provider: Callable[[Task], AgentContext] | None = None,
+        agent_registry: AgentRegistry | None = None,
     ) -> None:
-        if stage_handler is None and stage_agents is None:
+        if stage_handler is None and stage_agents is None and agent_registry is None:
             raise ValueError(
-                "Either stage_handler or stage_agents must be provided"
+                "Either stage_handler, stage_agents, or agent_registry "
+                "must be provided"
             )
 
-        if stage_handler is not None and stage_agents is not None:
+        if stage_handler is not None and (
+            stage_agents is not None or agent_registry is not None
+        ):
             raise ValueError(
-                "Provide stage_handler or stage_agents, not both"
+                "Provide stage_handler or stage_agents/agent_registry, "
+                "not both"
+            )
+
+        if stage_agents is not None and agent_registry is not None:
+            raise ValueError(
+                "Provide stage_agents or agent_registry, not both"
             )
 
         self.stage_handler = stage_handler
         self.stage_agents = dict(stage_agents or {})
+        self.agent_registry = agent_registry
         self.context_provider = context_provider
+
+    def _resolve_agent(self, stage: TaskStatus) -> StageAgent | None:
+        if self.agent_registry is None:
+            return self.stage_agents.get(stage)
+
+        role = self.STAGE_ROLES[stage]
+        registrations = self.agent_registry.get_by_role(role)
+
+        if not registrations:
+            return None
+
+        return registrations[0].executor
 
     def _build_context(self, task: Task) -> AgentContext | None:
         if self.context_provider is None:
@@ -57,19 +88,9 @@ class AgentPipeline:
         stage: TaskStatus,
         context: AgentContext | None = None,
     ) -> PipelineStageResult:
-        if self.stage_agents:
-            agent = self.stage_agents.get(stage)
+        agent = self._resolve_agent(stage)
 
-            if agent is None:
-                return PipelineStageResult(
-                    stage=stage,
-                    success=False,
-                    error=f"No agent registered for stage: {stage.value}",
-                    context_fingerprint=(
-                        context.fingerprint if context else ""
-                    ),
-                )
-
+        if agent is not None:
             try:
                 result: StageAgentResult = agent.execute(
                     task,
@@ -95,26 +116,28 @@ class AgentPipeline:
                 context_fingerprint=result.context_fingerprint,
             )
 
-        if self.stage_handler is None:
-            return PipelineStageResult(
-                stage=stage,
-                success=False,
-                error=f"No handler registered for stage: {stage.value}",
-            )
+        if self.stage_handler is not None:
+            try:
+                output = self.stage_handler(task, stage)
+            except Exception as exc:
+                return PipelineStageResult(
+                    stage=stage,
+                    success=False,
+                    error=str(exc),
+                )
 
-        try:
-            output = self.stage_handler(task, stage)
-        except Exception as exc:
             return PipelineStageResult(
                 stage=stage,
-                success=False,
-                error=str(exc),
+                success=True,
+                output=str(output),
             )
 
         return PipelineStageResult(
             stage=stage,
-            success=True,
-            output=str(output),
+            success=False,
+            error=(
+                f"No agent registered for stage: {stage.value}"
+            ),
         )
 
     def execute(self, task: Task) -> list[PipelineStageResult]:
