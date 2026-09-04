@@ -4,9 +4,16 @@ from enum import Enum
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
+    PLANNING = "planning"
+    RESEARCHING = "researching"
+    CODING = "coding"
+    TESTING = "testing"
+    DEBUGGING = "debugging"
+    REVIEWING = "reviewing"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    RECOVERY = "recovery"
 
 
 @dataclass
@@ -36,6 +43,11 @@ class TaskEngine:
     def complete(self, task_id: str) -> Task:
         task = self._find(task_id)
         task.status = TaskStatus.COMPLETED
+        return task
+
+    def set_status(self, task_id: str, status: TaskStatus) -> Task:
+        task = self._find(task_id)
+        task.status = status
         return task
 
     def fail(self, task_id: str, error: str) -> Task:
