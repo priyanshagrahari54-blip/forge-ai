@@ -148,10 +148,30 @@ Known limitations:
 ---
 
 ## A13 — Measurable Performance
+Status: COMPLETE
+
+Implemented:
+- `forge/performance/metrics.py`: deterministic, bounded `MetricsRecorder` with injectable clock; `MetricRecord` captures task ID, stage, agent, status, duration_ms, attempts, retries, affected files, checkpoint, model, and timestamp.
+- `AgentPipeline` records per-stage metrics in both `execute()` and `execute_plan()` with an injectable timer.
+- `TaskExecutionCoordinator` records task-level metrics and wires its recorder into pipelines that do not already have one.
+
+Tests:
+- `tests/test_metrics.py` (10 tests): recorder unit coverage plus pipeline stage metrics, failure metrics, standard pipeline, and coordinator integration.
+
+Files:
+- `forge/performance/__init__.py`, `forge/performance/metrics.py`, `forge/core/agent_pipeline.py`, `forge/core/task_coordinator.py`, `tests/test_metrics.py`
+
+Commit:
+- `2d24c19`
+
+Known limitations:
+- Recorder is in-memory; durable telemetry storage is a future hardening option.
+
+## A14 — Research Agent
 Status: IN PROGRESS
 
 Implemented:
-- (next stage)
+- (next)
 
 ## A14 — Research Agent
 Status: NOT STARTED
