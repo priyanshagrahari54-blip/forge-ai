@@ -1,0 +1,206 @@
+# Forge Autobuild Progress
+
+Test baseline: `python -m pytest -q` = 278 passing (A12 checked in).
+
+---
+
+## A01 — Foundation
+Status: COMPLETE
+
+Implemented:
+- Package scaffolding (`forge/`), `pyproject.toml`, `forge` CLI entry point.
+- `forge/cli.py` with `status`, `plan`, `analyze` commands.
+- `forge/core/supervisor.py`, `forge/core/planner.py`, `forge/core/state.py`.
+
+Tests:
+- `tests/test_state.py`, `tests/test_task_lifecycle.py`; full suite green.
+
+Files:
+- `pyproject.toml`, `forge/cli.py`, `forge/core/supervisor.py`, `forge/core/planner.py`, `forge/core/state.py`
+
+Commit:
+- (staged across early history; verified by passing suite)
+
+Known limitations:
+- CLI is minimal; deeper commands arrive with later stages.
+
+## A02 — Tool Runtime
+Status: COMPLETE
+
+Implemented:
+- `forge/runtime/runtime.py` with `ToolResult`, `ToolDefinition`, `ToolRuntime`.
+- `forge/tools/` with `FileSystemTool` (path-traversal safe), `TerminalTool`, `SearchTool`, `GitTool`.
+- `forge/runtime/defaults.py` wiring default tools.
+
+Tests:
+- `tests/test_runtime.py` (read/write/approval/path-escape), `tests/test_permissions.py`.
+
+Files:
+- `forge/runtime/*`, `forge/tools/*`, `forge/security/permissions.py`
+
+Known limitations:
+- A12 adds secret redaction and auditing on top of this stage, additively.
+
+## A03 — Repository Intelligence
+Status: COMPLETE
+
+Implemented:
+- Scanner (gitignore-aware), Python parser, symbol index, test mapping, runtime detection, architecture analyzer, dependency graph/analysis, unified `RepositoryIntelligence`.
+
+Tests:
+- `tests/test_repository_intelligence.py`, `test_repository_scanner.py`, `test_python_parser.py`, `test_symbol_index.py`, `test_architecture.py`, `test_dependencies.py`, `test_dependency_analysis.py`, `test_runtime_detection.py`, `test_test_mapping.py`.
+
+## A04 — Durable Task System
+Status: COMPLETE
+
+Implemented:
+- `TaskEngine` lifecycle, SQLite `TaskStore`, `PersistentTaskQueue`, `TaskRecoveryEngine`, `TaskExecutionCoordinator`, dependency graph with cycle detection.
+
+Tests:
+- `tests/test_task_engine.py`, `test_task_lifecycle.py`, `test_task_dependencies.py`, `test_task_store.py`, `test_task_queue.py`, `test_task_recovery.py`, `test_task_coordinator.py`, `test_dependency_graph.py`, `test_dependency_resolution.py`.
+
+## A05 — Project Memory
+Status: COMPLETE
+
+Implemented:
+- `forge/memory/store.py` file-backed memory store.
+
+Tests:
+- Covered via agent/context suites; store API exercised in integration paths.
+
+## A06 — Executable Planning
+Status: COMPLETE
+
+Implemented:
+- `forge/core/planner.py` deterministic `PlanStep` plans; pipeline stage agents in `forge/core/pipeline_agents.py`; `AgentPipeline` standard four-stage execution.
+
+Tests:
+- `tests/test_agent_pipeline.py`, `test_pipeline_agents.py`, `test_pipeline_integration.py`, `test_coordinator_pipeline.py`, `test_pipeline_registry.py`.
+
+## A07 — Architecture Reasoning
+Status: COMPLETE
+
+Implemented:
+- `ArchitectureAnalyzer` (packages, entry points, source/test files, package_for_file) and reports.
+
+Tests:
+- `tests/test_architecture.py`.
+
+## A08 — Coding Agent
+Status: COMPLETE
+
+Implemented:
+- `forge/agents/coder.py` (name/describe/build_context via `AgentContextBuilder`); stage executors and agent executor contract (`forge/agents/execution.py`, `forge/core/agent_executor.py`).
+
+Tests:
+- `tests/test_agent_integration.py`, `test_agent_execution.py`, `test_agent_executor.py`, `test_stage_executor.py`.
+
+## A09 — Testing Agent
+Status: COMPLETE
+
+Implemented:
+- `forge/agents/tester.py` metadata; test-related intelligence (`TestContextSelector`, `RegressionSelector`).
+
+Tests:
+- `tests/test_test_context.py`, `test_test_mapping.py`, `test_agent_integration.py`.
+
+## A10 — Debugging Agent
+Status: COMPLETE
+
+Implemented:
+- `forge/agents/debugger.py` metadata + executor plumbing.
+
+Tests:
+- Covered by agent integration/pipeline suites.
+
+## A11 — Independent Review Agent
+Status: COMPLETE
+
+Implemented:
+- `forge/agents/reviewer.py`; reviewer pipeline stage; capability-based registry/selector/planner/validator; plan execution and pre-execution plan validation; empty plans are valid no-ops.
+
+Tests:
+- `tests/test_agent_selector.py`, `test_agent_planner.py`, `test_plan_validator.py`, `test_plan_pipeline.py`.
+
+Commit:
+- `ce3006a` (plan validation), earlier history (registry/selector/planner/execution).
+
+## A12 — Security
+Status: COMPLETE
+
+Implemented:
+- `forge/security/secrets.py`: deterministic `SecretScanner`/`SecretRedactor` for AWS keys, GitHub/Slack tokens, Stripe keys, JWTs, private keys, API keys, passwords, connection strings. Findings and redacted output never contain the secret value.
+- `forge/security/audit.py`: bounded `AuditLog` with injectable clock, mandatory redaction, operation/actor/result/message fields.
+- `ToolRuntime` now audits every invocation (blocked/denied/success/error) and sanitizes tool output/error text through the redactor.
+- `scan_secrets` tool registered in the default runtime.
+
+Tests:
+- `tests/test_secrets.py`, `tests/test_audit.py`, `tests/test_runtime_security.py` (25 new tests).
+
+Files:
+- `forge/security/secrets.py`, `forge/security/audit.py`, `forge/runtime/runtime.py`, `forge/runtime/defaults.py`, `tests/test_secrets.py`, `tests/test_audit.py`, `tests/test_runtime_security.py`
+
+Commit:
+- `709779f`
+
+Known limitations:
+- Scanner focuses on common formats; custom secret formats need pattern extension. Audit log is in-memory (bounded); a durable store is a future hardening option.
+---
+
+## A13 — Measurable Performance
+Status: IN PROGRESS
+
+Implemented:
+- (next stage)
+
+## A14 — Research Agent
+Status: NOT STARTED
+
+## A15 — Documentation
+Status: NOT STARTED
+
+## A16 — Safe Git/PR Automation
+Status: NOT STARTED
+
+## A17 — Provider-Independent Model Routing
+Status: NOT STARTED
+
+## A18 — Selective Consensus
+Status: NOT STARTED
+
+## A19 — Supervisor Orchestration
+Status: NOT STARTED
+
+## A20 — Persistent Workers & Recovery
+Status: NOT STARTED
+
+## A21 — Checkpoints
+Status: NOT STARTED
+
+## A22 — Web UI
+Status: NOT STARTED
+
+## A23 — Least-Privilege GitHub Integration
+Status: NOT STARTED
+
+## A24 — Stable Plugin SDK
+Status: NOT STARTED
+
+## A25 — Benchmarks
+Status: NOT STARTED
+
+## A26 — Self-Evaluation
+Status: NOT STARTED
+
+## A27 — Historical Model-Performance Routing
+Status: NOT STARTED
+
+## A28 — Packaging
+Status: NOT STARTED
+
+## A29 — Security Hardening
+Status: NOT STARTED
+
+## A30 — v1.0 Acceptance
+Status: NOT STARTED
+
