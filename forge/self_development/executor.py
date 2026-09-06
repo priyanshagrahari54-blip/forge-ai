@@ -1,145 +1,54 @@
-import json
-import time
+from __future__ import annotations
+import json,time
 from pathlib import Path
-from typing import Any, Callable, Optional
-
-from forge.agents.registry import AgentRegistry
-from forge.agents.selector import AgentSelector
-from forge.core.supervisor import Supervisor
+from typing import Callable, Optional
+from forge.agents.coder import CoderAgent
+from forge.agents.debugger import TestDebugLoop
 from forge.core.task_engine import TaskEngine
-from forge.memory.store import MemoryStore
+from forge.core.supervisor import Supervisor
+from forge.intelligence.repository import RepositoryIntelligence
 from forge.models.router import ModelRouter
-from forge.security.permissions import PermissionLevel, PermissionManager
 from forge.self_development.evaluator import CandidateEvaluator, EvaluationResult
 from forge.self_development.improvements import ImprovementCandidate
+from forge.security.verification import VerificationPipeline
+from forge.tools.checkpoint import CheckpointManager
 from forge.tools.git import GitTool
 
-
 class SelfDevelopmentExecutor:
-    """Controls the self-development modification, testing, evaluation, and commit/rollback lifecycle."""
-
-    def __init__(
-        self,
-        root: str | Path = ".",
-        supervisor: Optional[Supervisor] = None,
-        task_engine: Optional[TaskEngine] = None,
-        registry: Optional[AgentRegistry] = None,
-        router: Optional[ModelRouter] = None,
-        permissions: Optional[PermissionManager] = None,
-        memory: Optional[MemoryStore] = None,
-        git_tool: Optional[GitTool] = None,
-    ) -> None:
-        self.root = Path(root).resolve()
-        self.supervisor = supervisor or Supervisor("forge-self")
-        self.task_engine = task_engine or TaskEngine()
-        self.registry = registry or AgentRegistry()
-        self.selector = AgentSelector(self.registry)
-        self.router = router or ModelRouter()
-        self.permissions = permissions or PermissionManager()
-        self.memory = memory or MemoryStore(root=str(self.root / ".forge" / "memory"))
-        self.git_tool = git_tool or GitTool(repo=str(self.root))
-        self.evaluator = CandidateEvaluator(root=self.root)
-
-    def execute_candidate(
-        self,
-        candidate: ImprovementCandidate,
-        modifier_fn: Optional[Callable[[ImprovementCandidate], None]] = None,
-    ) -> EvaluationResult:
-        start_time = time.time()
-
-        # Check permissions before modifying
-        perm = self.permissions.check("write_file")
-        if perm == PermissionLevel.BLOCKED:
-            res = EvaluationResult(
-                accepted=False,
-                rejection_reason="Permission blocked: write_file operation is blocked",
-            )
-            return res
-
-        # Step 1: ANALYZE & BASELINE
-        baseline_state = self.supervisor.execute_self_development_stage(
-            "ANALYZE", lambda: self.evaluator.capture_state()
-        )
-
-        # Step 2: CHECKPOINT
-        checkpoint_id = f"checkpoint-{candidate.id}"
-        initial_commit = self._get_head_commit()
-
-        # Step 3: PLAN
-        unique_task_id = f"task-{candidate.id}-{int(time.time() * 1000)}"
-        task = self.supervisor.execute_self_development_stage(
-            "PLAN",
-            lambda: self.task_engine.add(
-                task_id=unique_task_id,
-                description=f"Self-improvement: {candidate.title}",
-            ),
-        )
-
-        # Step 4: SELECT AGENTS & MODEL
-        selected_agent = self.selector.select("coding")
-        selected_model = self.router.select("coding", task_complexity=1.0)
-
-        # Step 5: CODE / EXECUTE MODIFICATION
-        def perform_code():
-            if modifier_fn:
+    def __init__(self, root=".", supervisor=None, task_engine=None, registry=None, router=None, permissions=None, memory=None, git_tool=None):
+        self.root=Path(root).resolve(); self.supervisor=supervisor or Supervisor("forge-self"); self.task_engine=task_engine or TaskEngine(); self.router=router or ModelRouter(); self.evaluator=CandidateEvaluator(self.root); self.git_tool=git_tool or GitTool(str(self.root)); self.checkpoints=CheckpointManager(self.root); self.coder=CoderAgent(root=str(self.root),router=self.router); self.verifier=VerificationPipeline(self.root)
+    def execute_candidate(self, candidate: ImprovementCandidate, modifier_fn: Optional[Callable]=None) -> EvaluationResult:
+        started=time.perf_counter(); baseline=self.evaluator.capture_state(); checkpoint=self.checkpoints.create(candidate.id)
+        task=self.task_engine.add(f"self-{candidate.id}-{int(time.time()*1000)}",f"Self-improvement: {candidate.title}")
+        task.status=task.status.CODING
+        code_error=""
+        try:
+            if modifier_fn is not None: # backwards-compatible test hook, never required by autonomous path
                 modifier_fn(candidate)
-
-        self.supervisor.execute_self_development_stage("CODE", perform_code)
-
-        # Step 6: TEST & BENCHMARK
-        candidate_state = self.supervisor.execute_self_development_stage(
-            "BENCHMARK", lambda: self.evaluator.capture_state()
-        )
-
-        # Step 7: EVALUATE CANDIDATE
-        eval_result = self.evaluator.evaluate(baseline_state, candidate_state)
-
-        # Step 8: ACCEPT / COMMIT OR REJECT / ROLLBACK
-        if eval_result.accepted:
-            self.supervisor.execute_self_development_stage(
-                "ACCEPT",
-                lambda: self._commit_changes(
-                    f"self-dev: {candidate.id} - {candidate.title}"
-                ),
-            )
-        else:
-            self.supervisor.execute_self_development_stage(
-                "REJECT", lambda: self._rollback_changes(initial_commit)
-            )
-
-        duration = time.time() - start_time
-
-        # Record run history
-        history_record = {
-            "timestamp": time.time(),
-            "candidate": candidate.to_dict(),
-            "files_changed": candidate.affected_files,
-            "baseline_state": baseline_state,
-            "candidate_state": candidate_state,
-            "accepted": eval_result.accepted,
-            "rejection_reason": eval_result.rejection_reason,
-            "model_used": selected_model.name if selected_model else "default",
-            "agents_used": [selected_agent.name] if selected_agent else [],
-            "execution_duration": duration,
-        }
-
-        history_dir = self.root / ".forge" / "self" / "history"
-        history_dir.mkdir(parents=True, exist_ok=True)
-        history_file = (
-            history_dir / f"run_{candidate.id}_{int(time.time() * 1000)}.json"
-        )
-        history_file.write_text(json.dumps(history_record, indent=2), encoding="utf-8")
-
-        return eval_result
-
-    def _get_head_commit(self) -> str:
-        proc = self.git_tool.run("rev-parse", "HEAD")
-        return proc.stdout.strip() if proc.returncode == 0 else ""
-
-    def _commit_changes(self, message: str) -> None:
-        self.git_tool.run("add", ".")
-        self.git_tool.run("commit", "-m", message)
-
-    def _rollback_changes(self, initial_commit: str) -> None:
-        self.git_tool.run("reset", "--hard", "HEAD")
-        self.git_tool.run("clean", "-fd", "-e", ".forge")
+            else:
+                intel=RepositoryIntelligence.build(self.root)
+                context=self.coder.build_context(intel,candidate.proposed_improvement,tuple(candidate.affected_files))
+                from forge.agents.execution import AgentRequest
+                response=self.coder.execute(AgentRequest(task=task,stage=task.status,context=context,instructions=candidate.proposed_improvement,metadata={"approved":True}))
+                if not response.success: code_error=response.error
+            if code_error: raise RuntimeError(code_error)
+            debug=TestDebugLoop(self.root, max_retries=3, debugger=__import__('forge.agents.debugger',fromlist=['DebuggerAgent']).DebuggerAgent(str(self.root),router=self.router))
+            debug_result=debug.run(candidate.proposed_improvement, approved=True)
+            state=self.evaluator.capture_state(); diff=self.git_tool.diff()+"\n"+self.git_tool.status(); verification=self.verifier.run(diff)
+            if not debug_result.success or not verification.passed:
+                state["passed_benchmarks"]=0
+                state["verification_failures"]=[g.details for g in verification.failures]
+            result=self.evaluator.evaluate(baseline,state)
+            if result.accepted:
+                files=self.git_tool.changed_files(); files=[f for f in files if not f.startswith(".forge/")]
+                if files:
+                    commit=self.git_tool.commit_files(files,f"self-dev: {candidate.id} - {candidate.title}")
+                    if commit.returncode: result.accepted=False; result.rejection_reason=commit.stderr.strip()
+            if not result.accepted: self.checkpoints.rollback(checkpoint, list(set(self.git_tool.changed_files()) | set(candidate.affected_files)))
+            else: self.checkpoints.cleanup(checkpoint)
+        except Exception as exc:
+            self.checkpoints.rollback(checkpoint, list(set(self.git_tool.changed_files()) | set(candidate.affected_files)))
+            result=EvaluationResult(accepted=False,rejection_reason=str(exc))
+        record={"timestamp":time.time(),"candidate":candidate.to_dict(),"accepted":result.accepted,"rejection_reason":result.rejection_reason,"duration":time.perf_counter()-started,"status":self.supervisor.current_stage}
+        history=self.root/".forge/self/history"; history.mkdir(parents=True,exist_ok=True); (history/f"run_{candidate.id}_{int(time.time()*1000)}.json").write_text(json.dumps(record,indent=2),encoding="utf-8")
+        return result

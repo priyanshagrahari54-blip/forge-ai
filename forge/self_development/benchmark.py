@@ -1,58 +1,25 @@
-import os
-import subprocess
-import time
+from __future__ import annotations
+import os, subprocess, sys, time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-
-
 @dataclass
 class BenchmarkResult:
-    total_benchmarks: int = 0
-    passed_benchmarks: int = 0
-    duration: float = 0.0
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
+    total_benchmarks:int=0; passed_benchmarks:int=0; duration:float=0.0; details:dict[str,Any]=field(default_factory=dict)
+    def to_dict(self): return asdict(self)
 class BenchmarkRunner:
-    """Executes reproducible test and performance benchmarks on the repository."""
-
-    def __init__(self, root: str | Path = ".") -> None:
-        self.root = Path(root).resolve()
-
-    def run_benchmarks(self) -> BenchmarkResult:
-        start_time = time.time()
-        details: dict[str, Any] = {}
-
-        env = dict(os.environ)
-        env["PYTHONPATH"] = f"{str(self.root)}:{env.get('PYTHONPATH', '')}"
-
-        # Run pytest benchmark
-        pytest_proc = subprocess.run(
-            ["pytest", "-q"],
-            cwd=str(self.root),
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
-        duration = time.time() - start_time
-        test_success = pytest_proc.returncode == 0
-
-        details["pytest_returncode"] = pytest_proc.returncode
-        details["pytest_stdout"] = pytest_proc.stdout[-500:] if pytest_proc.stdout else ""
-        details["pytest_stderr"] = pytest_proc.stderr[-500:] if pytest_proc.stderr else ""
-
-        total = 1
-        passed = 1 if test_success else 0
-
-        return BenchmarkResult(
-            total_benchmarks=total,
-            passed_benchmarks=passed,
-            duration=duration,
-            details=details,
-        )
+    """Measures verification latency and outcomes, rather than treating pytest as performance."""
+    def __init__(self, root: str|Path="."): self.root=Path(root).resolve()
+    def _run(self, command):
+        started=time.perf_counter()
+        try: p=subprocess.run(command,cwd=self.root,text=True,capture_output=True,timeout=300,check=False)
+        except (OSError,subprocess.TimeoutExpired) as exc: return False,time.perf_counter()-started,str(exc),-1
+        return p.returncode==0,time.perf_counter()-started,(p.stdout+p.stderr)[-1000:],p.returncode
+    def run_benchmarks(self):
+        started=time.perf_counter(); details={}
+        tests,latency,out,code=self._run([sys.executable,"-m","pytest","-q"])
+        details.update(test_success=tests,test_latency=latency,test_returncode=code,test_output=out)
+        build,build_latency,build_out,build_code=self._run([sys.executable,"-m","compileall","-q","."])
+        details.update(build_success=build,build_latency=build_latency,build_returncode=build_code)
+        checks=[tests,build]
+        return BenchmarkResult(len(checks),sum(checks),time.perf_counter()-started,details)
