@@ -36,10 +36,20 @@ class DebugLoopResult:
 class DebuggerAgent(AgentExecutor):
     name = "debugger"
 
-    def __init__(self, root: str = ".", runtime: ToolRuntime | None = None, router: ModelRouter | None = None):
+    def __init__(self, root: str = ".", runtime: ToolRuntime | None = None, router: ModelRouter | None = None,
+                 fabric: "ModelFabric | None" = None):
         self.root = str(Path(root).resolve())
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
-        self.router = router or ModelRouter()
+        if fabric is not None:
+            self.fabric = fabric
+            self.router = None
+        elif router is not None:
+            self.fabric = None
+            self.router = router
+        else:
+            from forge.models.fabric import ModelFabric
+            self.fabric = ModelFabric.from_defaults()
+            self.router = None
         self.last_model = ""
         self.last_latency = 0.0
 
@@ -53,6 +63,8 @@ class DebuggerAgent(AgentExecutor):
         return AgentResponse(True, output=self.diagnose(request.instructions or request.metadata.get("error", "")), agent=self.name, stage=request.stage)
 
     def repair(self, task: str, failure: str, context: str = "", approved: bool = True) -> dict[str, str]:
+        if self.fabric is not None:
+            return self._repair_via_fabric(task, failure, context, approved)
         model = self.router.select("debugging") or self.router.select("coding")
         if not model or not model.provider:
             raise RuntimeError("No debugging model available; configure Ollama or another provider")
@@ -79,6 +91,44 @@ class DebuggerAgent(AgentExecutor):
             self.router.record(model.name, False, self.last_latency, capability="debugging", task_complexity=1.0)
             raise
         self.router.record(model.name, True, response.latency, capability="debugging", task_complexity=1.0)
+        return changes
+
+    def _repair_via_fabric(self, task: str, failure: str, context: str = "", approved: bool = True) -> dict[str, str]:
+        """Apply a model-generated repair through the centralized fabric.
+
+        The fabric records provider-level feedback and telemetry; the returned
+        structured change is validated and written through ToolRuntime exactly
+        like the legacy path. Model output never bypasses validation or write
+        permissions.
+        """
+        from forge.models.request import ModelRequest
+
+        prompt = (
+            "Diagnose and fix this test failure. Return ONLY JSON "
+            "{changes:{relative/path:file contents}, explanation:str}. "
+            "Make the smallest safe fix; do not modify tests to hide failures.\n"
+            f"TASK:{task}\nFAILURE:{failure}\nCONTEXT:{context}"
+        )
+        response = self.fabric.generate(ModelRequest(
+            prompt=prompt,
+            capability="debugging",
+            required_capabilities=("debugging",),
+            context=context,
+            task=task,
+            prefer_local=True,
+            prefer_free=True,
+        ))
+        self.last_model = response.model
+        self.last_latency = response.latency_ms
+        if not response.success:
+            raise RuntimeError(response.error or "No debugging model available; configure Ollama or another provider")
+        changes = CoderAgent(root=self.root, fabric=self.fabric)._changes(response.text)
+        if not changes:
+            raise ValueError("Debugger model proposed no changes")
+        for path, content in changes.items():
+            result = self.runtime.execute("write_file", approved=approved, path=path, content=content)
+            if not result.success:
+                raise RuntimeError(result.error or "permissioned repair write failed")
         return changes
 
 

@@ -6,7 +6,7 @@ Forge is a repository-scoped software-engineering runtime. It combines repositor
 
 1. `RepositoryIntelligence` indexes symbols, dependencies, architecture, runtime commands, and test mappings.
 2. `AgentContextBuilder` selects relevant source, dependency, and test context under a token budget.
-3. `ModelRouter` scores available providers using capability, complexity, context size, reliability, latency, cost/free status, and availability. Local/Ollama providers are first-class; paid APIs are optional.
+3. The centralized `ModelFabric` routes through a capability/context/complexity-aware `FabricRouter` over the model and provider registries, scoring reliability, latency, cost, free/local status, health, and availability, with a deterministic fallback ladder. Local/Ollama providers are first-class; paid APIs are optional.
 4. `CoderAgent` asks the selected provider for a structured change (`changes: {path: content}`), validates it, and writes only through the permissioned runtime. A caller does not need to supply changes.
 5. `TestDebugLoop` runs the repository test command, gives captured stdout/stderr and context to a model, applies its bounded repair proposals through `ToolRuntime`, records telemetry, and reruns tests.
 6. `VerificationPipeline` runs tests, compilation/build, configured Ruff/mypy checks when declared, secret/dangerous-operation scanning, and an independent changed-file review. A failed gate prevents acceptance.
@@ -21,20 +21,43 @@ The self-development loop A26-A30 follows analyze → candidate → model-select
 
 The executable supervisor E2E tests cover a deliberately broken first response followed by model repair, bounded rejection rollback, unrelated work preservation, explicit staging, `.forge` exclusion, and non-bypassable review/security rejection.
 
+## Model Fabric
+
+All model access is centralized in the Model Fabric (`forge.models`), the single infrastructure agents use to route and call models:
+
+```
+Agent → ModelFabric → FabricRouter → ModelRegistry → Provider → Model → ModelResponse → Telemetry → Router feedback
+```
+
+- **Model Registry** (`forge.models.registry`): declarative model entries with capabilities, context window, cost/free/local posture, and live health/reliability/latency.
+- **Provider Registry** (`forge.models.provider`): named provider adapters resolved by the router. `OllamaProvider` is first-class and credential-free; `OpenAIProvider` is an optional remote adapter, enabled only when a key is configured; `LocalModelProvider` is the deterministic offline fallback that refuses to invent source code. Proprietary support is never fabricated.
+- **Capability-aware, context-aware, complexity-aware routing** (`forge.models.router.FabricRouter`): routes on an 18-capability vocabulary — coding, reasoning, planning, debugging, testing, review, security, research, documentation, vision, audio, speech_to_text, text_to_speech, browser, computer_use, tool_use, structured_output, long_context — plus context size, task complexity, health, reliability, latency, and cost.
+- **Cost/free/local policy and deterministic fallback** (`forge.models.policy`): a strict policy is relaxed by a fixed fallback ladder (latency → reliability → remote → paid → health). Capability requirements are never relaxed: a vision request is never silently sent to a text-only model.
+- **Structured `ModelRequest`/`ModelResponse`** (`forge.models.request`): provider-agnostic request/response types; failures return `success=False` with an error rather than raising.
+- **Telemetry and router feedback** (`forge.models.telemetry`, `forge.models.feedback`): route/provider outcomes and feedback are recorded without persisting prompt/response content or credentials; an optional NDJSON sink can be enabled via configuration.
+- **Secure credential handling** (`forge.models.credentials`): credentials come from environment variables or a user-owned JSON file that Forge refuses to read unless it is owner-only (`0600`); secret values are never exposed in reprs, logs, or telemetry.
+- **Configuration** (`forge.models.config`): environment variables or `.forge/models.yaml` / `.forge/models.json`.
+
+`CoderAgent`, `DebuggerAgent`, `Supervisor.run`, and `SelfDevelopmentExecutor` all accept a `fabric=` argument and route through it; the legacy `router=` argument keeps working unchanged.
+
 ## Providers
 
-- `LocalModelProvider`: offline capability with conservative no-op output when no local synthesis engine is configured.
-- `OllamaProvider`: optional local Ollama HTTP endpoint.
-- `OpenAIProvider`: optional API provider, enabled only when `OPENAI_API_KEY` is configured.
+- `LocalModelProvider`: offline fallback with conservative no-op output when no local synthesis engine is configured.
+- `OllamaProvider`: first-class local Ollama HTTP endpoint (no credentials required).
+- `OpenAIProvider`: optional remote provider, enabled only when `OPENAI_API_KEY` is configured.
 - `MockProvider`: test double only.
 
-A provider can be registered with `ModelInfo(provider=...)`. Production callers should provide a real local or remote model for code generation; no pre-written `changes` are required by `CoderAgent`.
+A provider can be registered with `ModelInfo(provider=...)` (legacy router) or `ModelFabric.register_model(...)` / `register_provider(...)` (fabric). Production callers should provide a real local or remote model for code generation; no pre-written `changes` are required by `CoderAgent`.
 
 ## Commands
 
 ```bash
 forge plan "add CSV export"
 forge analyze
+forge models                 # list models in the Model Fabric
+forge models --capability vision
+forge models --capabilities  # capability vocabulary
+forge models --json
 forge self-analyze
 forge self-improve --iterations 1
 ```
@@ -43,10 +66,12 @@ Writes, command execution, commits, pushes, repository deletion, and secret expo
 
 ## Testing
 
-The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, and an isolated autonomous CSV-export E2E test. Run:
+The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, an isolated autonomous CSV-export E2E test, and a Model Fabric suite (capability vocabulary, registries, routing, fallback, health, telemetry, credentials, CLI, and agent/supervisor integration). Run:
 
 ```bash
 python -m pytest -q
 ```
+
+A live Ollama integration test (`tests/test_ollama_live.py`) runs automatically only when an Ollama endpoint is reachable, and otherwise skips; set `FORGE_TEST_OLLAMA_MODEL` to target a specific pulled model.
 
 Known limitation: a useful autonomous run needs an available capable model provider (Ollama or an API provider); the dependency-free local fallback refuses to invent source code. This is a safe failure, not a deterministic fake implementation.

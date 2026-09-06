@@ -23,17 +23,23 @@ _MAX_FILE_BYTES = 2 * 1024 * 1024
 class CoderAgent(AgentExecutor):
     name = "coder"
 
-    def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None):
-        if router is None:
-            from forge.models.provider import LocalModelProvider
-            from forge.models.router import ModelInfo
-            router = ModelRouter([
-                ModelInfo("local", "coding", available=True, free=True,
-                          provider=LocalModelProvider(), capabilities=("coding", "debugging", "review"))
-            ])
+    def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
+                 fabric: "ModelFabric | None" = None):
+        # Routing input priority: explicit fabric > explicit legacy router >
+        # default fabric. The legacy router path is preserved verbatim so
+        # pre-existing integrations keep their exact behavior.
+        if fabric is not None:
+            self.fabric = fabric
+            self.router = None
+        elif router is not None:
+            self.fabric = None
+            self.router = router
+        else:
+            from forge.models.fabric import ModelFabric
+            self.fabric = ModelFabric.from_defaults()
+            self.router = None
         self.root = str(Path(root).resolve())
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
-        self.router = router
 
     def describe(self) -> str:
         return "Responsible for implementing software changes using a routed model."
@@ -100,7 +106,54 @@ class CoderAgent(AgentExecutor):
         if "\\" in path:
             raise ValueError(f"Model path must use repository-relative POSIX separators: {path!r}")
 
+    def _execute_via_fabric(self, request: AgentRequest) -> AgentResponse:
+        """Code through the centralized Model Fabric.
+
+        The fabric routes, calls the provider, records telemetry/feedback, and
+        returns a structured response. Every write still goes through the
+        permissioned ToolRuntime and the same structural/path/secret validation
+        as the legacy path; model output is never trusted or written directly.
+        """
+        from forge.models.request import ModelRequest
+
+        model_request = ModelRequest(
+            prompt=self._prompt(request),
+            capability="coding",
+            required_capabilities=("coding",),
+            context=str(request.context) if request.context else "",
+            task=request.task.description,
+            min_context_window=request.context.estimated_tokens if request.context else 0,
+            prefer_local=True,
+            prefer_free=True,
+        )
+        response = self.fabric.generate(model_request)
+        if not response.success:
+            return AgentResponse(
+                False,
+                error=response.error or "No available coding model provider; configure Ollama or another provider",
+                agent=self.name,
+                stage=request.stage,
+            )
+        try:
+            changes = self._changes(response.text)
+            if not changes:
+                raise ValueError("Model proposed no changes")
+            applied: list[str] = []
+            for path, content in changes.items():
+                result = self.write_file(path, content, approved=bool(request.metadata.get("approved", False)))
+                if not result.success:
+                    return AgentResponse(False, error=f"Failed to write {path}: {result.error}", agent=self.name,
+                                         stage=request.stage, metadata={"files": applied})
+                applied.append(path)
+            return AgentResponse(True, output=response.text, agent=self.name, stage=request.stage,
+                                 metadata={"files": applied, "model": response.model})
+        except Exception as exc:
+            return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
+                                 metadata={"files": []})
+
     def execute(self, request: AgentRequest) -> AgentResponse:
+        if self.fabric is not None:
+            return self._execute_via_fabric(request)
         model = None
         try:
             model = self.router.select("coding", context_size=request.context.estimated_tokens if request.context else 0)

@@ -1,5 +1,27 @@
 # Forge AI final hardening progress
 
+## A31 — Model Fabric (centralized model infrastructure)
+
+- Built the Model Fabric under `forge/models/` as the single path from agent to model: `Agent → ModelFabric → FabricRouter → ModelRegistry → Provider → Model → ModelResponse → Telemetry → Router feedback`.
+- Canonical 18-capability vocabulary (`capabilities.py`): coding, reasoning, planning, debugging, testing, review, security, research, documentation, vision, audio, speech_to_text, text_to_speech, browser, computer_use, tool_use, structured_output, long_context. Capability requirements are never relaxed during fallback.
+- Model Registry (`registry.py`) and Provider Registry (`provider.py`) with name-keyed registration, capability lookup, availability, snapshot, and per-model health/reliability/latency state.
+- Capability-, context-, and complexity-aware routing (`router.py:FabricRouter`) with a deterministic cost/free/local policy (`policy.py`) and a fixed fallback ladder (latency → reliability → remote → paid → health). Fallback models (the local no-op) only serve when no regular model can.
+- Health tracking (`health.py`) with degrade/unhealthy/recover thresholds; reliability (EMA) and latency (EMA) tracking; router feedback (`feedback.py`) applies outcomes back to future routing.
+- Structured `ModelRequest`/`ModelResponse` (`request.py`); provider failures return `success=False` responses with deterministic failover down the candidate chain instead of raising.
+- Ollama first-class (`OllamaProvider`), including conservative vision-model detection, `list_models`, and a live health probe; `OpenAIProvider` remains an optional remote adapter enabled only with a configured key. No proprietary support is fabricated.
+- Telemetry (`telemetry.py`) records route/response/error/feedback events without persisting prompt/response content or credentials; optional NDJSON file sink via configuration.
+- Secure credentials (`credentials.py`): environment variables or a user-owned JSON file that is refused unless owner-only (0600); secret values never appear in reprs, logs, or telemetry.
+- Configuration (`config.py`): environment variables layered over `.forge/models.yaml`/`.forge/models.json`.
+- Agent integration: `CoderAgent`, `DebuggerAgent`, `Supervisor.run`, and `SelfDevelopmentExecutor` accept `fabric=` and route through the fabric; the legacy `router=` path is preserved verbatim.
+- CLI: `forge models` (list), `--capability`, `--capabilities`, `--json`.
+- Legacy `ModelInfo`/`ModelRouter`/providers are fully backward compatible; `ModelFabric.legacy_router()` exposes a legacy view.
+
+## Executable proof (A31)
+
+- `tests/test_model_fabric_*.py`: capability vocabulary, model/provider registries, policy, telemetry, credentials, FabricRouter (capability/context/complexity/cost-free-local/health/fallback), ModelFabric (generate, deterministic failover, feedback, snapshot, no-prompt-in-telemetry), CLI, and agent/self-development wiring.
+- `tests/test_model_fabric_supervisor_e2e.py`: full Supervisor transaction (plan → model code → failing test → fabric-routed repair → retest → review/security → commit) with every model call routed and recorded by the fabric.
+- `tests/test_ollama_live.py`: optional live Ollama integration, auto-skipped when no endpoint is reachable.
+
 ## Implemented and executable
 
 - `Supervisor.run()` executes planning, capability/agent selection, model routing, model-generated code, permissioned writes, real tests, bounded `TestDebugLoop` repair/retest, independent review, security, build, configured lint/type checks, benchmark, acceptance, explicit validated-file commit, or checkpoint rollback.

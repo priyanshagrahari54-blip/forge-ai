@@ -41,6 +41,7 @@ class Supervisor:
         *,
         approved: bool = False,
         router=None,
+        fabric=None,
         max_debug_retries: int = 3,
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
@@ -67,8 +68,10 @@ class Supervisor:
         if not approved:
             return {"accepted": False, "stage": "APPROVAL_REQUIRED", "error": "Explicit write approval is required"}
 
-        # A supplied router is an adapter for a real provider, not a change set.
-        if router is None:
+        # A supplied router (or fabric) is an adapter for a real provider, not
+        # a change set. A caller may pass either the legacy router or the
+        # centralized Model Fabric; the fabric is used when provided.
+        if router is None and fabric is None:
             router = ModelRouter([ModelInfo("local", "coding", available=True, free=True, provider=LocalModelProvider(), capabilities=("coding", "debugging"))])
         started = perf_counter()
         run_id = uuid4().hex
@@ -97,8 +100,8 @@ class Supervisor:
             stage("PLAN")
             intelligence = RepositoryIntelligence.build(self.root)
             task.status = TaskStatus.PLANNING
-            coder = CoderAgent(root=str(self.root), router=router)
-            debugger = DebuggerAgent(str(self.root), router=router)
+            coder = CoderAgent(root=str(self.root), router=router, fabric=fabric)
+            debugger = DebuggerAgent(str(self.root), router=router, fabric=fabric)
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
@@ -152,7 +155,8 @@ class Supervisor:
             stage("SECURITY")
             security = verification.security(touched)
             stage("BENCHMARK")
-            model_latency = sum(event.get("latency") or 0.0 for event in router.history)
+            history_source = fabric.router.history if fabric is not None else router.history
+            model_latency = sum(event.get("latency") or 0.0 for event in history_source)
             benchmark = BenchmarkRunner(self.root).run_benchmarks(
                 task_success=debug_result.success,
                 repair_attempts=len(result["attempts"]),

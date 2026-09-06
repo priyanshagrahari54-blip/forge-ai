@@ -7,6 +7,47 @@ from forge.intelligence.report import generate_report
 from forge.self_development import ForgeSelfAnalyzer, SelfDevelopmentLoop
 
 
+def _run_models(args) -> None:
+    """Render the default Model Fabric's registry to stdout."""
+    from forge.models import ALL_CAPABILITIES, ModelFabric
+
+    fabric = ModelFabric.from_defaults()
+
+    if getattr(args, "capabilities", False):
+        if args.json:
+            print(json.dumps({"capabilities": list(ALL_CAPABILITIES)}, indent=2))
+        else:
+            print("Capabilities")
+            for capability in ALL_CAPABILITIES:
+                print(f"  {capability}")
+        return
+
+    models = fabric.models()
+    capability_filter = getattr(args, "capability", None)
+    if capability_filter:
+        models = [model for model in models if model.supports(capability_filter)]
+
+    if args.json:
+        print(json.dumps({
+            "models": [model.to_dict() for model in models],
+            "capabilities": fabric.capabilities(),
+        }, indent=2))
+        return
+
+    print("Models")
+    for model in models:
+        caps = ",".join(model.capabilities) or "-"
+        cost = "free" if model.free else (f"${model.cost_per_token:.7f}/tok" if model.cost_per_token else "paid")
+        origin = "local" if model.local else "remote"
+        print(
+            f"  {model.name}\n"
+            f"    provider={model.provider} caps={caps}\n"
+            f"    {cost} {origin} health={model.health.status} "
+            f"reliability={model.reliability:.2f} latency={model.latency_ms:.1f}ms "
+            f"context={model.context_window}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -21,6 +62,30 @@ def main() -> None:
     task_parser.add_argument("request")
 
     subparsers.add_parser("analyze")
+
+    # Model Fabric commands
+    models_parser = subparsers.add_parser(
+        "models",
+        help="List models known to the Model Fabric",
+        description="Show registered models with their capabilities, cost "
+        "posture, and health. Built from the default fabric (local fallback + "
+        "Ollama + optional configured providers).",
+    )
+    models_parser.add_argument(
+        "--capability",
+        "-c",
+        help="Only list models that support this capability",
+    )
+    models_parser.add_argument(
+        "--capabilities",
+        action="store_true",
+        help="Print the supported capability vocabulary instead",
+    )
+    models_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
 
     # Self-development commands
     subparsers.add_parser("self-analyze")
@@ -57,6 +122,9 @@ def main() -> None:
         analyzer = ProjectAnalyzer(".")
         analysis = analyzer.analyze()
         print(generate_report(analysis))
+
+    elif args.command == "models":
+        _run_models(args)
 
     elif args.command == "self-analyze":
         analyzer = ForgeSelfAnalyzer(".")
