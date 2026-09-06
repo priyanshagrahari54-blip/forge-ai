@@ -254,3 +254,30 @@ def test_empty_plan_completes_without_agent_execution():
 
     assert results == []
     assert task.status == TaskStatus.COMPLETED
+
+
+def test_invalid_plan_rejected_before_execution():
+    import pytest
+    from forge.agents.planner import PlannedAgent
+
+    executed = []
+    reg = AgentRegistration(
+        name="unknown_coder",
+        role="coding",
+        executor=CallableAgentExecutor("unknown_coder", lambda req: executed.append("run")),
+        capabilities=("coding",),
+    )
+    # The agent isn't in registry
+    invalid_plan = AgentPlan(
+        requirements=CapabilityAgentPlanner(make_registry()).extractor.extract("code"),
+        agents=(PlannedAgent(capability="coding", registration=reg, order=0),),
+    )
+
+    pipeline = AgentPipeline(agent_registry=make_registry())
+    task = Task(id="plan-8", description="Invalid plan task")
+
+    with pytest.raises(ValueError, match="Invalid agent plan"):
+        pipeline.execute_plan(task, invalid_plan)
+
+    assert executed == []
+    assert task.status == TaskStatus.FAILED

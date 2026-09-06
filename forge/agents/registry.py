@@ -108,3 +108,46 @@ class AgentRegistry:
 
     def __len__(self) -> int:
         return len(self._agents)
+
+
+def default_registry() -> AgentRegistry:
+    """Return a registry populated with default Forge agents."""
+    from forge.agents.coder import CoderAgent
+    from forge.agents.debugger import DebuggerAgent
+    from forge.agents.reviewer import ReviewerAgent
+    from forge.agents.tester import TesterAgent
+
+    registry = AgentRegistry()
+    registry.register(
+        AgentRegistration(
+            name="coder",
+            role="coding",
+            executor=CoderAgent(),
+            capabilities=("coding",),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="debugger",
+            role="debugging",
+            executor=DebuggerAgent(),
+            capabilities=("debugging",),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="tester",
+            role="testing",
+            executor=TesterAgent(),
+            capabilities=("testing",),
+        )
+    )
+    registry.register(
+        AgentRegistration(
+            name="reviewer",
+            role="reviewing",
+            executor=ReviewerAgent(),
+            capabilities=("review",),
+        )
+    )
+    return registry

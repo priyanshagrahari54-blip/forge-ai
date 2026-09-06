@@ -22,6 +22,9 @@ def main() -> None:
 
     subparsers.add_parser("analyze")
 
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("requirement", help="Requirement description to run")
+
     args = parser.parse_args()
 
     if args.command == "status":
@@ -68,6 +71,25 @@ def main() -> None:
         print(
             generate_report(analysis)
         )
+
+    elif args.command == "run":
+
+        supervisor = Supervisor("forge-ai", root=".")
+        result = supervisor.run_task(args.requirement)
+
+        print("=== Forge AI Execution Summary ===")
+        print(f"Task ID: {result.task_id}")
+        print(f"Requirement: {result.requirement}")
+        print(f"Final State: {result.final_state}")
+        print(f"Model Selected: {result.selected_model}")
+        if result.plan:
+            print(f"Planned Agents: {', '.join(a.registration.name for a in result.plan.agents)}")
+        print("--- Verification Results ---")
+        for vr in result.verification_results:
+            status_str = "PASS" if vr.success else "FAIL"
+            print(f" [{status_str}] Stage: {vr.stage} | Findings: {vr.findings} | Errors: {vr.errors}")
+        if result.errors:
+            print(f"Errors: {', '.join(result.errors)}")
 
     else:
         parser.print_help()

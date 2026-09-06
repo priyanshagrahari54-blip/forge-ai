@@ -5,10 +5,12 @@ from typing import Callable, Mapping
 
 from forge.agents.registry import AgentRegistry
 from forge.agents.planner import AgentPlan
+from forge.agents.validator import AgentPlanValidator
 from forge.agents.stage_executor import ExecutorStageAgent
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.intelligence.agent_context import AgentContext
+from forge.models.router import ModelRouter
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class AgentPipeline:
         stage_agents: Mapping[TaskStatus, StageAgent] | None = None,
         context_provider: Callable[[Task], AgentContext] | None = None,
         agent_registry: AgentRegistry | None = None,
+        model_router: ModelRouter | None = None,
     ) -> None:
         if stage_handler is None and stage_agents is None and agent_registry is None:
             raise ValueError(
@@ -76,6 +79,7 @@ class AgentPipeline:
         self.stage_agents = dict(stage_agents or {})
         self.agent_registry = agent_registry
         self.context_provider = context_provider
+        self.model_router = model_router
 
     def _resolve_agent(self, stage: TaskStatus) -> StageAgent | None:
         if self.agent_registry is None:
@@ -163,14 +167,27 @@ class AgentPipeline:
     ) -> list[PipelineStageResult]:
         """Execute a precomputed multi-agent plan.
 
-        The plan is executed in its deterministic order. Each planned
-        agent is adapted through the existing ExecutorStageAgent layer,
-        so executor responses, context fingerprints, errors, and agent
-        identity retain the existing pipeline semantics.
-
-        The normal execute() method remains unchanged for the standard
-        four-stage pipeline.
+        The plan is validated prior to execution. If invalid, a ValueError is
+        raised and no agents are executed. Empty plans are preserved as valid
+        no-ops.
         """
+        if plan.is_empty():
+            task.status = TaskStatus.COMPLETED
+            return []
+
+        registry = self.agent_registry
+        if registry is None:
+            registry = AgentRegistry()
+            for planned in plan.agents:
+                if not registry.contains(planned.registration.name):
+                    registry.register(planned.registration)
+
+        validator = AgentPlanValidator(registry)
+        validation = validator.validate(plan)
+        if not validation.valid:
+            task.status = TaskStatus.FAILED
+            raise ValueError(f"Invalid agent plan: {'; '.join(validation.messages)}")
+
         results: list[PipelineStageResult] = []
 
         context = self._build_context(task)
@@ -182,6 +199,9 @@ class AgentPipeline:
             )
 
             task.status = stage
+
+            if self.model_router is not None:
+                self.model_router.route(planned.capability)
 
             agent = ExecutorStageAgent(
                 planned.registration.executor,
