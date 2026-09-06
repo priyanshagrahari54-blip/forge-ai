@@ -15,6 +15,8 @@ CAPABILITY_STAGES = {
     "security": "reviewing",
     "documentation": "running",
     "git": "running",
+    "consensus": "reviewing",
+    "supervisor": "running",
 }
 
 
@@ -160,5 +162,7 @@ class AgentPlanValidator:
             "planning": "planning",
             "research": "researching",
             "git": "git",
+            "consensus": "consensus",
+            "supervisor": "supervisor",
         }
         return role_map.get(capability)

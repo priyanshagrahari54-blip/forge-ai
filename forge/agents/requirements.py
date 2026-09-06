@@ -117,6 +117,33 @@ class TaskRequirementExtractor:
                 "merge request",
             ),
         ),
+        (
+            "consensus",
+            (
+                "consensus",
+                "agree",
+                "agreement",
+                "vote",
+                "voting",
+                "review by multiple",
+                "multi-review",
+                "multi-review",
+                "second opinion",
+            ),
+        ),
+        (
+            "supervisor",
+            (
+                "supervisor",
+                "orchestrate",
+                "orchestration",
+                "workflow",
+                "multi-task",
+                "multi task",
+                "coordinate",
+                "coordinates",
+            ),
+        ),
     )
 
     ROLE_MAP: dict[str, str] = {
@@ -128,6 +155,8 @@ class TaskRequirementExtractor:
         "documentation": "documentation",
         "research": "researching",
         "git": "git",
+        "consensus": "consensus",
+        "supervisor": "supervisor",
     }
 
     def extract(self, task_description: str) -> TaskRequirements:
