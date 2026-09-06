@@ -236,7 +236,25 @@ Known limitations:
 - Protected branch list is configurable but defaults to main/master/release.
 
 ## A17 — Provider-Independent Model Routing
-Status: NOT STARTED
+Status: COMPLETE
+
+Implemented:
+- `forge/models/router.py`: `ModelRouter` with capability-based routing, fallback chain, availability filtering, and `select()` for model discovery. `ModelRequest`/`ModelResponse` provider-agnostic contracts. `ModelProvider` protocol.
+- `forge/models/providers.py`: `MockProvider` (deterministic, for tests/offline), `OllamaProvider` (local Ollama via HTTP), `OpenAIProvider` (OpenAI-compatible APIs with env-var configuration). All providers declare capability sets.
+- `tests/test_model_router.py` (30 tests): request/response contracts, mock provider behavior, router registration, capability filtering, routing success, fallback chain, all-fail handling, exception handling, availability filtering, model selection, Ollama/OpenAI provider configuration.
+
+Tests:
+- `tests/test_model_router.py` (30 tests)
+
+Files:
+- `forge/models/router.py`, `forge/models/providers.py`, `tests/test_model_router.py`
+
+Commit:
+- (A17 commit)
+
+Known limitations:
+- Provider wiring into the agent pipeline is via the existing executor contract; direct router-to-pipeline integration can deepen in later stages.
+- OpenAI/Ollama providers require network access; MockProvider covers offline/test use.
 
 ## A18 — Selective Consensus
 Status: NOT STARTED
