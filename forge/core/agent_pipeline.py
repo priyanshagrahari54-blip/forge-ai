@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
@@ -10,6 +11,7 @@ from forge.agents.validator import AgentPlanValidator
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.intelligence.agent_context import AgentContext
+from forge.performance.metrics import MetricsRecorder
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,8 @@ class AgentPipeline:
         stage_agents: Mapping[TaskStatus, StageAgent] | None = None,
         context_provider: Callable[[Task], AgentContext] | None = None,
         agent_registry: AgentRegistry | None = None,
+        metrics_recorder: MetricsRecorder | None = None,
+        timer: Callable[[], float] | None = None,
     ) -> None:
         if stage_handler is None and stage_agents is None and agent_registry is None:
             raise ValueError(
@@ -81,6 +85,32 @@ class AgentPipeline:
             AgentPlanValidator(agent_registry)
             if agent_registry is not None
             else None
+        )
+        self.metrics_recorder = metrics_recorder
+        self.timer = timer or time.perf_counter
+
+    def _record_metric(
+        self,
+        task: Task,
+        stage: TaskStatus,
+        *,
+        agent: str,
+        status: str,
+        duration_ms: float,
+        context: AgentContext | None,
+    ) -> None:
+        if self.metrics_recorder is None:
+            return
+
+        self.metrics_recorder.record(
+            task_id=task.id,
+            stage=stage.value,
+            agent=agent,
+            status=status,
+            duration_ms=duration_ms,
+            attempts=task.attempts,
+            retries=max(0, task.attempts - 1),
+            affected_files=tuple(context.files) if context else (),
         )
 
     def _resolve_agent(self, stage: TaskStatus) -> StageAgent | None:
@@ -210,6 +240,8 @@ class AgentPipeline:
                 stage,
             )
 
+            started = self.timer()
+
             try:
                 result: StageAgentResult = agent.execute(
                     task,
@@ -235,6 +267,20 @@ class AgentPipeline:
                     context_fingerprint=result.context_fingerprint,
                 )
 
+            duration_ms = (self.timer() - started) * 1000
+            self._record_metric(
+                task,
+                stage,
+                agent=pipeline_result.agent,
+                status=(
+                    "success"
+                    if pipeline_result.success
+                    else "failure"
+                ),
+                duration_ms=duration_ms,
+                context=context,
+            )
+
             results.append(pipeline_result)
 
             if not pipeline_result.success:
@@ -252,10 +298,23 @@ class AgentPipeline:
         for stage in self.STAGES:
             task.status = stage
 
+            started = self.timer()
             result = self._execute_stage(
                 task,
                 stage,
                 context,
+            )
+            duration_ms = (self.timer() - started) * 1000
+
+            self._record_metric(
+                task,
+                stage,
+                agent=result.agent,
+                status=(
+                    "success" if result.success else "failure"
+                ),
+                duration_ms=duration_ms,
+                context=context,
             )
             results.append(result)
 

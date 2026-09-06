@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from typing import Callable
 
 from forge.core.agent_executor import AgentExecutor
 from forge.core.agent_pipeline import AgentPipeline, PipelineStageResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.core.task_queue import PersistentTaskQueue
 from forge.core.task_recovery import TaskRecoveryEngine
+from forge.performance.metrics import MetricsRecorder
 
 
 @dataclass(frozen=True)
@@ -26,9 +29,34 @@ class TaskExecutionCoordinator:
         self,
         queue: PersistentTaskQueue,
         recovery: TaskRecoveryEngine,
+        metrics: MetricsRecorder | None = None,
+        timer: Callable[[], float] | None = None,
     ) -> None:
         self.queue = queue
         self.recovery = recovery
+        self.metrics = metrics
+        self.timer = timer or time.perf_counter
+
+    def _record_task_metric(
+        self,
+        task: Task,
+        *,
+        agent: str,
+        status: str,
+        duration_ms: float,
+    ) -> None:
+        if self.metrics is None:
+            return
+
+        self.metrics.record(
+            task_id=task.id,
+            stage="task",
+            agent=agent,
+            status=status,
+            duration_ms=duration_ms,
+            attempts=task.attempts,
+            retries=max(0, task.attempts - 1),
+        )
 
     def recover(self) -> list[Task]:
         return self.recovery.recover()
@@ -60,12 +88,23 @@ class TaskExecutionCoordinator:
         started = self.queue.engine.start(task_id)
         self.queue.store.save(started)
 
+        timer_started = self.timer()
         result = agent.execute(started)
+        duration_ms = (self.timer() - timer_started) * 1000
 
         if result.success:
             self.queue.complete(task_id)
         else:
             self.queue.fail(task_id, result.error)
+
+        self._record_task_metric(
+            started,
+            agent=getattr(agent, "agent_name", ""),
+            status=(
+                "success" if result.success else "failure"
+            ),
+            duration_ms=duration_ms,
+        )
 
         return TaskExecutionResult(
             task_id=task_id,
@@ -99,7 +138,12 @@ class TaskExecutionCoordinator:
         started = self.queue.engine.start(task_id)
         self.queue.store.save(started)
 
+        if pipeline.metrics_recorder is None and self.metrics is not None:
+            pipeline.metrics_recorder = self.metrics
+
+        timer_started = self.timer()
         results = pipeline.execute(started)
+        duration_ms = (self.timer() - timer_started) * 1000
         successful = all(result.success for result in results)
 
         if successful:
@@ -109,6 +153,15 @@ class TaskExecutionCoordinator:
                 result for result in results if not result.success
             )
             self.queue.fail(task_id, failed.error)
+
+        self._record_task_metric(
+            started,
+            agent="pipeline",
+            status=(
+                "success" if successful else "failure"
+            ),
+            duration_ms=duration_ms,
+        )
 
         output = "\n".join(
             result.output
