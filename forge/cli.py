@@ -12,8 +12,9 @@ def _run_models(args) -> None:
     from forge.models import ALL_CAPABILITIES, ModelFabric
 
     fabric = ModelFabric.from_defaults()
+    subcommand = getattr(args, "models_subcommand", "list")
 
-    if getattr(args, "capabilities", False):
+    if subcommand == "capabilities" or getattr(args, "capabilities", False):
         if args.json:
             print(json.dumps({"capabilities": list(ALL_CAPABILITIES)}, indent=2))
         else:
@@ -22,6 +23,46 @@ def _run_models(args) -> None:
                 print(f"  {capability}")
         return
 
+    if subcommand == "health":
+        if args.json:
+            print(json.dumps({"models": fabric.health(), "providers": fabric.provider_health()}, indent=2))
+        else:
+            print("Model Health")
+            for name, state in fabric.health().items():
+                print(
+                    f"  {name}: {state['health']} (reliability={state['reliability']:.2f}, "
+                    f"latency={state['latency_ms']:.1f}ms, available={state['available']})"
+                )
+        return
+
+    if subcommand == "providers":
+        if args.json:
+            print(json.dumps({"providers": fabric.providers.snapshot()}, indent=2))
+        else:
+            print("Providers")
+            for info in fabric.providers.snapshot():
+                print(
+                    f"  {info['name']}: kind={info['kind']} local={info['local']} "
+                    f"free={info['free']} model={info['model'] or '-'}"
+                )
+        return
+
+    if subcommand == "test":
+        # Bounded, local self-check: route a trivial coding request. This never
+        # fabricates output; the deterministic fallback refuses synthesis if no
+        # real model is reachable.
+        from forge.models import ModelRequest
+        response = fabric.generate(ModelRequest(prompt="reply ok", capability="coding"))
+        if args.json:
+            print(json.dumps(response.to_dict(), indent=2))
+        else:
+            print("Model Fabric self-test")
+            print(f"  success={response.success} model={response.model or '-'} provider={response.provider or '-'}")
+            if response.error:
+                print(f"  error={response.error}")
+        return
+
+    # default: list
     models = fabric.models()
     capability_filter = getattr(args, "capability", None)
     if capability_filter:
@@ -66,11 +107,17 @@ def main() -> None:
     # Model Fabric commands
     models_parser = subparsers.add_parser(
         "models",
-        help="List models known to the Model Fabric",
-        description="Show registered models with their capabilities, cost "
-        "posture, and health. Built from the default fabric (local fallback + "
-        "Ollama + optional configured providers).",
+        help="Inspect the Model Fabric",
+        description="Show registered models, providers, capabilities, and "
+        "health. Built from the default fabric (local fallback + Ollama + "
+        "optional configured providers).",
     )
+    models_subparsers = models_parser.add_subparsers(dest="models_subcommand")
+    models_subparsers.add_parser("list", help="List registered models (default)")
+    models_subparsers.add_parser("health", help="Show model/provider health")
+    models_subparsers.add_parser("providers", help="Show registered providers")
+    models_subparsers.add_parser("capabilities", help="Show the capability vocabulary")
+    models_subparsers.add_parser("test", help="Run a bounded local self-check")
     models_parser.add_argument(
         "--capability",
         "-c",

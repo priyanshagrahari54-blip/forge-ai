@@ -29,16 +29,43 @@ All model access is centralized in the Model Fabric (`forge.models`), the single
 Agent → ModelFabric → FabricRouter → ModelRegistry → Provider → Model → ModelResponse → Telemetry → Router feedback
 ```
 
-- **Model Registry** (`forge.models.registry`): declarative model entries with capabilities, context window, cost/free/local posture, and live health/reliability/latency.
+- **Model Registry** (`forge.models.registry`): declarative model entries with capabilities, context window, cost/free/local posture, and live health/reliability/latency. Derived `supports_*` accessors (tools, vision, code, reasoning, streaming, …) read from the declared capability tuple rather than hard-coding provider assumptions.
 - **Provider Registry** (`forge.models.provider`): named provider adapters resolved by the router. `OllamaProvider` is first-class and credential-free; `OpenAIProvider` is an optional remote adapter, enabled only when a key is configured; `LocalModelProvider` is the deterministic offline fallback that refuses to invent source code. Proprietary support is never fabricated.
-- **Capability-aware, context-aware, complexity-aware routing** (`forge.models.router.FabricRouter`): routes on an 18-capability vocabulary — coding, reasoning, planning, debugging, testing, review, security, research, documentation, vision, audio, speech_to_text, text_to_speech, browser, computer_use, tool_use, structured_output, long_context — plus context size, task complexity, health, reliability, latency, and cost.
-- **Cost/free/local policy and deterministic fallback** (`forge.models.policy`): a strict policy is relaxed by a fixed fallback ladder (latency → reliability → remote → paid → health). Capability requirements are never relaxed: a vision request is never silently sent to a text-only model.
-- **Structured `ModelRequest`/`ModelResponse`** (`forge.models.request`): provider-agnostic request/response types; failures return `success=False` with an error rather than raising.
-- **Telemetry and router feedback** (`forge.models.telemetry`, `forge.models.feedback`): route/provider outcomes and feedback are recorded without persisting prompt/response content or credentials; an optional NDJSON sink can be enabled via configuration.
+- **Capability-aware, context-aware, complexity-aware routing** (`forge.models.router.FabricRouter`): routes on a 19-capability vocabulary — coding, reasoning, planning, debugging, testing, review, security, research, documentation, vision, image_generation, audio, speech_to_text, text_to_speech, browser, computer_use, tool_use, structured_output, long_context — plus context size, task complexity, health, reliability, latency, and cost. Routing is deterministic (score → free → local → name).
+- **Cost/free/local policy and deterministic fallback** (`forge.models.policy`): a strict policy is relaxed by a fixed fallback ladder (latency → reliability → remote → paid → health). Capability requirements are never relaxed: a vision request is never silently sent to a text-only model. Named presets (`quality`, `balanced`, `fast`, `free`, `local`, `privacy`) encode common postures; the `privacy` preset never relaxes the remote/paid constraints.
+- **Structured `ModelRequest`/`ModelResponse`** (`forge.models.request`): provider-agnostic request/response types; failures return `success=False` with an error rather than raising. `ModelFabric.request()` is the canonical entry point; `stream()` is available for providers that support it and degrades to a single-chunk yield otherwise.
+- **Health tracking** (`forge.models.health`): success/failure/timeout counters, consecutive-failure circuit breaking, and bounded recheck after failure (no permanent blacklist).
+- **Telemetry and router feedback** (`forge.models.telemetry`, `forge.models.feedback`): route/provider outcomes and feedback are recorded without persisting prompt/response content or credentials; an optional NDJSON sink can be enabled via configuration. Routing is documented as heuristic (weighted scoring), not machine learning.
 - **Secure credential handling** (`forge.models.credentials`): credentials come from environment variables or a user-owned JSON file that Forge refuses to read unless it is owner-only (`0600`); secret values are never exposed in reprs, logs, or telemetry.
+- **Errors** (`forge.models.errors`): a small `FabricError` hierarchy (`ModelUnavailableError`, `CapabilityNotSupportedError`, `ProviderError`, `ConfigurationError`) for branching on failure cause.
+- **Model discovery** (`ModelFabric.discover_models()`): explicit, opt-in discovery for providers that expose it (Ollama `/api/tags`). Never downloads models automatically.
 - **Configuration** (`forge.models.config`): environment variables or `.forge/models.yaml` / `.forge/models.json`.
 
 `CoderAgent`, `DebuggerAgent`, `Supervisor.run`, and `SelfDevelopmentExecutor` all accept a `fabric=` argument and route through it; the legacy `router=` argument keeps working unchanged.
+
+### Configuration
+
+```yaml
+# .forge/models.yaml (secrets go in environment variables, never here)
+ollama_url: "http://127.0.0.1:11434"
+ollama_model: "llama3.2"
+ollama_enabled: true
+default_capability: "coding"
+default_model: null            # optional: always prefer this model
+default_policy: "balanced"     # quality | balanced | fast | free | local | privacy
+preferred_provider: null       # optional: prefer this provider name
+local_only: false              # require local models (never remote)
+free_only: false               # require free models (never paid)
+max_retries: 3
+timeout_seconds: 120
+telemetry_enabled: true
+telemetry_path: null           # optional NDJSON sink
+policy:
+  prefer_free: true
+  prefer_local: true
+  allow_remote: true
+  allow_paid: true
+```
 
 ## Providers
 
@@ -54,9 +81,12 @@ A provider can be registered with `ModelInfo(provider=...)` (legacy router) or `
 ```bash
 forge plan "add CSV export"
 forge analyze
-forge models                 # list models in the Model Fabric
+forge models                   # list models (same as: forge models list)
+forge models health            # model/provider health
+forge models providers         # registered providers
+forge models capabilities      # capability vocabulary
+forge models test              # bounded local self-check
 forge models --capability vision
-forge models --capabilities  # capability vocabulary
 forge models --json
 forge self-analyze
 forge self-improve --iterations 1
@@ -72,6 +102,6 @@ The suite includes repository intelligence and task lifecycle tests, checkpoint 
 python -m pytest -q
 ```
 
-A live Ollama integration test (`tests/test_ollama_live.py`) runs automatically only when an Ollama endpoint is reachable, and otherwise skips; set `FORGE_TEST_OLLAMA_MODEL` to target a specific pulled model.
+A live Ollama integration test (`tests/test_ollama_live.py`) is opt-in: set `FORGE_LIVE_MODEL_TESTS=1` (and, optionally, `FORGE_TEST_OLLAMA_MODEL` to target a specific pulled model). It auto-skips when no Ollama endpoint is reachable, so normal CI never fails merely because Ollama is not installed.
 
 Known limitation: a useful autonomous run needs an available capable model provider (Ollama or an API provider); the dependency-free local fallback refuses to invent source code. This is a safe failure, not a deterministic fake implementation.

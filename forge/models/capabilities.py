@@ -22,6 +22,7 @@ class Capability(str, Enum):
     RESEARCH = "research"
     DOCUMENTATION = "documentation"
     VISION = "vision"
+    IMAGE_GENERATION = "image_generation"
     AUDIO = "audio"
     SPEECH_TO_TEXT = "speech_to_text"
     TEXT_TO_SPEECH = "text_to_speech"
@@ -49,9 +50,10 @@ TEXT_CAPABILITIES: tuple[str, ...] = (
     Capability.STRUCTURED_OUTPUT.value,
 )
 
-#: Capabilities that require understanding non-text input.
+#: Capabilities that require understanding or producing non-text content.
 MULTIMODAL_CAPABILITIES: tuple[str, ...] = (
     Capability.VISION.value,
+    Capability.IMAGE_GENERATION.value,
     Capability.AUDIO.value,
 )
 

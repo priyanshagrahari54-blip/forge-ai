@@ -28,14 +28,20 @@ class ModelHealth:
     consecutive_successes: int = 0
     total_successes: int = 0
     total_failures: int = 0
+    total_timeouts: int = 0
     last_error: str = ""
     last_check: float = 0.0
+    last_success: float = 0.0
+    last_failure: float = 0.0
     #: Consecutive failures before the model is considered degraded.
     degrade_after: int = 2
     #: Consecutive failures before the model is considered unhealthy.
     unhealthy_after: int = 5
     #: Consecutive successes before an unhealthy model recovers.
     recover_after: int = 2
+    #: Seconds after ``last_failure`` before a bounded recheck is allowed even
+    #: for unhealthy models (avoids a permanent blacklist).
+    recheck_after: float = 30.0
 
     def record_success(self) -> None:
         self.total_successes += 1
@@ -43,6 +49,7 @@ class ModelHealth:
         self.consecutive_failures = 0
         self.last_error = ""
         self.last_check = time.time()
+        self.last_success = self.last_check
         self._recompute()
 
     def record_failure(self, error: str = "") -> None:
@@ -51,6 +58,17 @@ class ModelHealth:
         self.consecutive_successes = 0
         self.last_error = error or self.last_error
         self.last_check = time.time()
+        self.last_failure = self.last_check
+        self._recompute()
+
+    def record_timeout(self) -> None:
+        self.total_timeouts += 1
+        self.total_failures += 1
+        self.consecutive_failures += 1
+        self.consecutive_successes = 0
+        self.last_error = "timeout"
+        self.last_check = time.time()
+        self.last_failure = self.last_check
         self._recompute()
 
     def _recompute(self) -> None:
@@ -62,6 +80,13 @@ class ModelHealth:
             self.status = HealthStatus.HEALTHY.value
         elif self.consecutive_failures == 0 and self.consecutive_successes == 0:
             self.status = HealthStatus.UNKNOWN.value
+
+    @property
+    def recheck_due(self) -> bool:
+        """True when an unhealthy model may be rechecked after a bounded delay."""
+        if self.status != HealthStatus.UNHEALTHY.value:
+            return True
+        return (time.time() - self.last_failure) >= self.recheck_after
 
     @property
     def usable(self) -> bool:
@@ -80,6 +105,9 @@ class ModelHealth:
             "consecutive_successes": self.consecutive_successes,
             "total_successes": self.total_successes,
             "total_failures": self.total_failures,
+            "total_timeouts": self.total_timeouts,
             "last_error": self.last_error,
             "last_check": self.last_check,
+            "last_success": self.last_success,
+            "last_failure": self.last_failure,
         }

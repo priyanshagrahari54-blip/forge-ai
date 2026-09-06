@@ -144,21 +144,54 @@ class OllamaProvider:
         "gemma3",
     )
 
-    def __init__(self, model: str = "llama3.2", url: str | None = None):
+    def __init__(self, model: str = "llama3.2", url: str | None = None, timeout: float = 120.0):
         self.model = model
-        self.url = url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+        self.timeout = timeout
+        self.url = (
+            url
+            or os.getenv("OLLAMA_BASE_URL")
+            or os.getenv("OLLAMA_URL")
+            or "http://127.0.0.1:11434/api/generate"
+        )
 
     def generate(self, prompt: str, *, context: str = "", task: str = "") -> ModelResult:
         started = time.perf_counter()
         payload = json.dumps({"model": self.model, "prompt": prompt, "stream": False}).encode()
         request = urllib.request.Request(self.url, payload, {"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode())
         except Exception as exc:
             raise RuntimeError(f"Ollama model {self.model!r} unavailable at {self.url}: {exc}") from exc
         return ModelResult(str(data.get("response", "")), self.model,
                            latency=time.perf_counter() - started)
+
+    def stream(self, prompt: str, *, context: str = "", task: str = ""):
+        """Yield response deltas from Ollama's streaming endpoint.
+
+        The contract mirrors ``generate`` but yields text fragments. A provider
+        failure raises ``RuntimeError`` like ``generate`` so callers share one
+        error path.
+        """
+        payload = json.dumps({"model": self.model, "prompt": prompt, "stream": True}).encode()
+        request = urllib.request.Request(self.url, payload, {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    chunk = data.get("response", "")
+                    if chunk:
+                        yield chunk
+                    if data.get("done"):
+                        break
+        except Exception as exc:
+            raise RuntimeError(f"Ollama model {self.model!r} stream failed at {self.url}: {exc}") from exc
 
     @classmethod
     def supports_vision(cls, model: str) -> bool:

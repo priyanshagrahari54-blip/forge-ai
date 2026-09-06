@@ -13,7 +13,7 @@ caller.
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterator
 
 from forge.models.capabilities import Capability, TEXT_CAPABILITIES
 from forge.models.config import FabricConfig
@@ -50,13 +50,15 @@ class ModelFabric:
         self.config = config
         self.registry = registry if registry is not None else ModelRegistry()
         self.providers = providers if providers is not None else ProviderRegistry()
-        self.policy = policy if policy is not None else (config.policy if config else RoutingPolicy())
+        self.policy = policy if policy is not None else _policy_from_config(config)
         self.telemetry = telemetry if telemetry is not None else Telemetry(
             enabled=config.telemetry_enabled if config else True,
             sink_path=config.telemetry_path if config else None,
         )
         self.credentials = credentials if credentials is not None else CredentialStore()
         self.router = router if router is not None else FabricRouter(self.registry, self.policy, self.telemetry)
+        self.default_model = config.default_model if config else None
+        self.preferred_provider = config.preferred_provider if config else None
 
     # -- construction ----------------------------------------------------
 
@@ -91,7 +93,7 @@ class ModelFabric:
             ))
 
         if config.ollama_enabled:
-            ollama = OllamaProvider(model=config.ollama_model, url=config.ollama_url)
+            ollama = OllamaProvider(model=config.ollama_model, url=config.ollama_url, timeout=config.timeout_seconds)
             capabilities = _ollama_capabilities(config.ollama_model, config.ollama_context_window)
             providers.register(
                 "ollama",
@@ -139,7 +141,7 @@ class ModelFabric:
         return cls(
             registry=registry,
             providers=providers,
-            policy=config.policy,
+            policy=_policy_from_config(config),
             telemetry=Telemetry(enabled=config.telemetry_enabled, sink_path=config.telemetry_path),
             credentials=credentials,
             config=config,
@@ -160,9 +162,27 @@ class ModelFabric:
     def route(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> RouteDecision:
         if isinstance(request, str):
             request = ModelRequest(prompt=request, capability=self._default_capability())
-        return self.router.route(request, policy=policy)
+        decision = self.router.route(request, policy=policy)
+        return self._apply_preferences(decision, request)
 
-    def generate(self, request: ModelRequest | str) -> ModelResponse:
+    def request(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> ModelResponse:
+        """Main entry point: route and execute a model request.
+
+        This is the canonical ``request()`` API agents use. It is an alias of
+        :meth:`generate` (which already routes, fails over, records telemetry,
+        and returns a structured ``ModelResponse``).
+        """
+        return self.generate(request, policy=policy)
+
+    def select(self, request: ModelRequest | str | None = None, capability: str | None = None,
+               **kwargs: Any) -> Model | None:
+        """Select (but do not call) the model the router would choose."""
+        if request is None:
+            request = ModelRequest(prompt=kwargs.pop("prompt", ""), capability=capability or self._default_capability(), **kwargs)
+        decision = self.route(request)
+        return decision.model
+
+    def generate(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> ModelResponse:
         """Route and call a provider, returning a structured ``ModelResponse``.
 
         Never raises for routing/provider failures: failures are recorded as
@@ -173,19 +193,13 @@ class ModelFabric:
         if isinstance(request, str):
             request = ModelRequest(prompt=request, capability=self._default_capability())
         started = perf_counter()
-        decision = self.route(request)
+        decision = self.route(request, policy=policy)
         if not decision.chosen:
             error = decision.error or "no model available for this request"
             self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=error)
             return ModelResponse.failure(error, request_id=request.trace_id)
 
-        chain: list[str] = []
-        for name in decision.candidates:
-            if name not in chain:
-                chain.append(name)
-        if decision.model and decision.model.name not in chain:
-            chain.insert(0, decision.model.name)
-
+        chain = self._failover_chain(decision)
         last_error = ""
         for model_name in chain:
             try:
@@ -245,6 +259,75 @@ class ModelFabric:
         self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
         return ModelResponse.failure(last_error or "no model available", request_id=request.trace_id)
 
+    def stream(self, request: ModelRequest | str) -> Iterator[str]:
+        """Stream response text from the selected provider.
+
+        If the chosen provider exposes ``stream``, deltas are yielded
+        incrementally (design placeholder for future browser/voice UIs);
+        otherwise the full response is yielded as a single chunk. Provider
+        failures raise; routing failures yield nothing.
+        """
+        if isinstance(request, str):
+            request = ModelRequest(prompt=request, capability=self._default_capability())
+        decision = self.route(request)
+        if not decision.chosen:
+            return
+        model = self.registry.get(decision.model.name)
+        provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
+        if provider is None:
+            return
+        stream = getattr(provider, "stream", None)
+        if callable(stream):
+            yield from stream(request.prompt, context=request.context, task=request.task)
+        else:
+            yield provider.generate(request.prompt, context=request.context, task=request.task).text
+
+    def _failover_chain(self, decision: RouteDecision) -> list[str]:
+        chain: list[str] = []
+        if decision.model is not None:
+            chain.append(decision.model.name)
+        for name in decision.candidates:
+            if name not in chain:
+                chain.append(name)
+        return chain
+
+    def _apply_preferences(self, decision: RouteDecision, request: ModelRequest) -> RouteDecision:
+        """Apply ``default_model`` / ``preferred_provider`` preferences.
+
+        These only reorder the router's candidate chain; they never add a model
+        that failed capability/context/policy filtering. The explicit
+        ``default_model`` wins over the softer ``preferred_provider``.
+        """
+        if not decision.chosen:
+            return decision
+        required = request.effective_capabilities()
+
+        if self.default_model and self.default_model in decision.candidates:
+            model = self.registry.get(self.default_model)
+            if model.available and model.supports_all(required):
+                return self._promote(decision, model)
+
+        if self.preferred_provider:
+            for name in decision.candidates:
+                model = self.registry.get(name)
+                if (
+                    model.provider == self.preferred_provider
+                    and not model.fallback
+                    and model.available
+                    and model.supports_all(required)
+                ):
+                    return self._promote(decision, model)
+        return decision
+
+    @staticmethod
+    def _promote(decision: RouteDecision, model: Model) -> RouteDecision:
+        decision.model = model
+        candidates = [name for name in decision.candidates if name != model.name]
+        decision.candidates = (model.name,) + tuple(candidates)
+        return decision
+
+    # -- feedback --------------------------------------------------------
+
     def record_feedback(self, model: str | None = None, *, provider: str = "", capability: str = "",
                         success: bool = True, latency_ms: float | None = None, input_tokens: int = 0,
                         output_tokens: int = 0, complexity: float | None = None, error: str = "",
@@ -273,6 +356,10 @@ class ModelFabric:
             error=feedback.error,
         )
 
+    def record_result(self, model: str, success: bool, **kwargs: Any) -> None:
+        """Alias for :meth:`record_feedback` (master-spec naming)."""
+        self.record_feedback(model=model, success=success, **kwargs)
+
     # -- introspection ---------------------------------------------------
 
     def _default_capability(self) -> str:
@@ -280,6 +367,12 @@ class ModelFabric:
 
     def models(self) -> list[Model]:
         return self.registry.list()
+
+    def available_models(self) -> list[Model]:
+        return self.registry.available()
+
+    def models_for_capability(self, capability: str) -> list[Model]:
+        return self.registry.by_capability(capability)
 
     def capabilities(self) -> list[str]:
         return self.registry.capabilities()
@@ -296,6 +389,62 @@ class ModelFabric:
             }
             for model in self.registry.list()
         }
+
+    def provider_health(self) -> dict[str, dict[str, Any]]:
+        """Aggregate per-provider health from the models they serve."""
+        result: dict[str, dict[str, Any]] = {}
+        for model in self.registry.list():
+            entry = result.setdefault(model.provider, {
+                "provider": model.provider,
+                "models": 0,
+                "healthy": 0,
+                "degraded": 0,
+                "unhealthy": 0,
+                "unknown": 0,
+                "available": 0,
+            })
+            entry["models"] += 1
+            entry[model.health.status] += 1
+            if model.available:
+                entry["available"] += 1
+        return result
+
+    def discover_models(self) -> dict[str, Any]:
+        """Discover models exposed by providers that support discovery.
+
+        Only Ollama's ``/api/tags`` discovery is implemented today. This is an
+        explicit, opt-in network call — never performed automatically at
+        construction — and never downloads models. Returns per-provider results.
+        """
+        results: dict[str, Any] = {}
+        for name, provider in self.providers.items():
+            discover = getattr(provider, "list_models", None)
+            if not callable(discover):
+                results[name] = {"discovered": [], "error": "provider does not support discovery"}
+                continue
+            try:
+                found = discover()
+            except Exception as exc:
+                results[name] = {"discovered": [], "error": str(exc)}
+                continue
+            registered: list[str] = []
+            for model_name in found:
+                registry_name = f"{name}/{model_name}"
+                if self.registry.has(registry_name):
+                    continue
+                capabilities = _ollama_capabilities(model_name, self.config.ollama_context_window if self.config else 8192)
+                self.registry.register(Model(
+                    name=registry_name,
+                    provider=name,
+                    capabilities=capabilities,
+                    context_window=self.config.ollama_context_window if self.config else 8192,
+                    free=True,
+                    local=True,
+                    metadata={"description": f"Discovered via {name} model discovery."},
+                ))
+                registered.append(registry_name)
+            results[name] = {"discovered": registered}
+        return results
 
     def legacy_router(self) -> ModelRouter:
         """Return a backward-compatible ``ModelRouter`` view of this fabric.
@@ -332,6 +481,29 @@ class ModelFabric:
 
     def to_dict(self) -> dict[str, Any]:
         return self.snapshot()
+
+
+def _policy_from_config(config: FabricConfig | None) -> RoutingPolicy:
+    """Derive the effective routing policy from configuration.
+
+    Named preset (``default_policy``) wins, then ``local_only``/``free_only``
+    constraints are applied on top. No secret material is involved.
+    """
+    if config is None:
+        return RoutingPolicy()
+    if config.default_policy:
+        policy = RoutingPolicy.preset(config.default_policy)
+    else:
+        policy = config.policy
+    if config.local_only:
+        policy.allow_remote = False
+        policy.prefer_local = True
+    if config.free_only:
+        policy.allow_paid = False
+        policy.prefer_free = True
+        if policy.max_cost_per_token is None:
+            policy.max_cost_per_token = 0.0
+    return policy
 
 
 def _ollama_capabilities(model_name: str, context_window: int) -> tuple[str, ...]:

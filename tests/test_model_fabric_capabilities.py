@@ -11,15 +11,16 @@ from forge.models.capabilities import (
 
 
 def test_capability_vocabulary_is_complete():
-    # The A31 objective enumerates exactly these 18 capabilities.
+    # The A31 master spec enumerates exactly these 19 capabilities.
     expected = {
         "coding", "reasoning", "planning", "debugging", "testing",
         "review", "security", "research", "documentation", "vision",
-        "audio", "speech_to_text", "text_to_speech", "browser",
-        "computer_use", "tool_use", "structured_output", "long_context",
+        "image_generation", "audio", "speech_to_text", "text_to_speech",
+        "browser", "computer_use", "tool_use", "structured_output",
+        "long_context",
     }
     assert set(ALL_CAPABILITIES) == expected
-    assert len(ALL_CAPABILITIES) == 18
+    assert len(ALL_CAPABILITIES) == 19
     assert len(ALL_CAPABILITIES) == len(set(ALL_CAPABILITIES))
 
 

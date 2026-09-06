@@ -48,6 +48,51 @@ class Model:
     def supports_all(self, capabilities: Iterable[str]) -> bool:
         return all(capability in self.capabilities for capability in capabilities)
 
+    # Derived, declarative capability checks. These never hard-code provider
+    # assumptions: they read from the model's declared capability tuple.
+
+    @property
+    def supports_tools(self) -> bool:
+        return self.supports("tool_use")
+
+    @property
+    def supports_structured_output(self) -> bool:
+        return self.supports("structured_output")
+
+    @property
+    def supports_vision(self) -> bool:
+        return self.supports("vision")
+
+    @property
+    def supports_image_generation(self) -> bool:
+        return self.supports("image_generation")
+
+    @property
+    def supports_audio(self) -> bool:
+        return self.supports("audio") or self.supports("speech_to_text") or self.supports("text_to_speech")
+
+    @property
+    def supports_code(self) -> bool:
+        return self.supports("coding")
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return self.supports("reasoning")
+
+    @property
+    def supports_browser(self) -> bool:
+        return self.supports("browser")
+
+    @property
+    def supports_computer_use(self) -> bool:
+        return self.supports("computer_use")
+
+    @property
+    def supports_streaming(self) -> bool:
+        # Providers, not models, implement streaming; a model advertises it
+        # explicitly through metadata so future adapters can be declarative.
+        return bool(self.metadata.get("streaming", False))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,

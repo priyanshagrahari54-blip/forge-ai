@@ -43,3 +43,33 @@ def test_cli_models_json(tmp_path, monkeypatch, capsys):
     assert "models" in payload
     assert "capabilities" in payload
     assert any(model["name"] == "local-fallback" for model in payload["models"])
+
+
+def test_cli_models_health(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run_cli(["forge", "models", "health"])
+    captured = capsys.readouterr()
+    assert "Model Health" in captured.out
+    assert "ollama/" in captured.out
+
+
+def test_cli_models_providers(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run_cli(["forge", "models", "providers"])
+    captured = capsys.readouterr()
+    assert "Providers" in captured.out
+    assert "ollama" in captured.out
+
+
+def test_cli_models_capabilities_subcommand(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run_cli(["forge", "models", "capabilities"])
+    captured = capsys.readouterr()
+    assert "image_generation" in captured.out
+
+
+def test_cli_models_test(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run_cli(["forge", "models", "test"])
+    captured = capsys.readouterr()
+    assert "Model Fabric self-test" in captured.out

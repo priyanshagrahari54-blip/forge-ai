@@ -146,7 +146,8 @@ class CoderAgent(AgentExecutor):
                                          stage=request.stage, metadata={"files": applied})
                 applied.append(path)
             return AgentResponse(True, output=response.text, agent=self.name, stage=request.stage,
-                                 metadata={"files": applied, "model": response.model})
+                                 metadata={"files": applied, "model": response.model,
+                                           "provider": response.provider})
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})

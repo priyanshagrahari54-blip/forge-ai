@@ -125,6 +125,12 @@ class Supervisor:
             if not response.success:
                 raise RuntimeError(response.error or "model coding failed")
             result["selected_model"] = response.metadata.get("model", "")
+            result["selected_provider"] = response.metadata.get("provider", "")
+            if fabric is not None:
+                result["model_routing"] = {
+                    "policy": fabric.policy.to_dict(),
+                    "history": list(fabric.router.history[-20:]),
+                }
 
             stage("CODE")
             stage("TEST")

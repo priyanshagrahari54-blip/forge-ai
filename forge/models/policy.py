@@ -39,6 +39,10 @@ class RoutingPolicy:
     require_capabilities: bool = True
     #: Relaxation steps attempted, in order, when strict routing finds nothing.
     fallback_order: tuple[str, ...] = DEFAULT_FALLBACK_ORDER
+    #: Allow fallback to relax cost/privacy constraints after the configured
+    #: ladder. True means "best effort"; False means "fail rather than breach
+    #: the privacy/cost posture".
+    use_best_effort: bool = True
 
     def validate(self) -> None:
         if self.min_reliability < 0.0 or self.min_reliability > 1.0:
@@ -51,6 +55,75 @@ class RoutingPolicy:
             if step not in DEFAULT_FALLBACK_ORDER:
                 raise ValueError(f"Unknown fallback step: {step!r}")
 
+    # -- named presets ---------------------------------------------------
+
+    @classmethod
+    def preset(cls, name: str) -> "RoutingPolicy":
+        """Return a named preset policy.
+
+        Supported presets: ``quality``, ``balanced``, ``fast``, ``free``,
+        ``local``, ``privacy``. Unknown names raise ``ValueError``.
+        """
+        presets = {
+            "quality": cls(
+                prefer_free=False,
+                prefer_local=False,
+                allow_remote=True,
+                allow_paid=True,
+                min_reliability=0.5,
+            ),
+            "balanced": cls(),
+            "fast": cls(
+                prefer_free=False,
+                prefer_local=False,
+                max_latency_ms=2000.0,
+            ),
+            "free": cls(
+                prefer_free=True,
+                allow_paid=False,
+                max_cost_per_token=0.0,
+            ),
+            "local": cls(prefer_local=True, allow_remote=False),
+            "privacy": cls(
+                prefer_local=True,
+                allow_remote=False,
+                allow_paid=False,
+                use_best_effort=False,
+            ),
+        }
+        key = (name or "").strip().lower()
+        if key not in presets:
+            raise ValueError(
+                f"Unknown policy preset {name!r}; choose from {sorted(presets)}"
+            )
+        return presets[key]
+
+    def resolve_for_request(
+        self,
+        *,
+        prefer_free: bool | None = None,
+        prefer_local: bool | None = None,
+        allow_remote: bool | None = None,
+        allow_paid: bool | None = None,
+        max_cost_per_token: float | None = None,
+        max_latency_ms: float | None = None,
+    ) -> "RoutingPolicy":
+        """Return a policy with per-request overrides applied (no mutation)."""
+        return RoutingPolicy(
+            prefer_free=self.prefer_free if prefer_free is None else prefer_free,
+            prefer_local=self.prefer_local if prefer_local is None else prefer_local,
+            allow_remote=self.allow_remote if allow_remote is None else allow_remote,
+            allow_paid=self.allow_paid if allow_paid is None else allow_paid,
+            max_cost_per_token=(
+                self.max_cost_per_token if max_cost_per_token is None else max_cost_per_token
+            ),
+            max_latency_ms=self.max_latency_ms if max_latency_ms is None else max_latency_ms,
+            min_reliability=self.min_reliability,
+            require_capabilities=self.require_capabilities,
+            fallback_order=self.fallback_order,
+            use_best_effort=self.use_best_effort,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "prefer_free": self.prefer_free,
@@ -62,6 +135,7 @@ class RoutingPolicy:
             "min_reliability": self.min_reliability,
             "require_capabilities": self.require_capabilities,
             "fallback_order": list(self.fallback_order),
+            "use_best_effort": self.use_best_effort,
         }
 
     @classmethod
@@ -78,4 +152,5 @@ class RoutingPolicy:
             min_reliability=float(data.get("min_reliability", 0.0)),
             require_capabilities=bool(data.get("require_capabilities", True)),
             fallback_order=tuple(data.get("fallback_order", DEFAULT_FALLBACK_ORDER)),
+            use_best_effort=bool(data.get("use_best_effort", True)),
         )

@@ -196,6 +196,12 @@ class FabricRouter:
         steps: list[tuple[str, ...]] = []
         seen: set[str] = set()
         for step in policy.fallback_order:
+            # Privacy/cost posture is never relaxed automatically when best
+            # effort is disabled (e.g. the "privacy" preset): a local-only or
+            # free-only policy fails rather than silently contacting remote or
+            # paid providers.
+            if not policy.use_best_effort and step in ("remote", "paid"):
+                continue
             seen.add(step)
             steps.append(tuple(sorted(seen)))
         return steps

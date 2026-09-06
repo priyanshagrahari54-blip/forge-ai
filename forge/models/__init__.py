@@ -16,6 +16,13 @@ from forge.models.capabilities import (
 )
 from forge.models.config import FabricConfig
 from forge.models.credentials import CredentialError, CredentialStore
+from forge.models.errors import (
+    CapabilityNotSupportedError,
+    ConfigurationError,
+    FabricError,
+    ModelUnavailableError,
+    ProviderError,
+)
 from forge.models.fabric import ModelFabric
 from forge.models.feedback import RouterFeedback
 from forge.models.health import HealthStatus, ModelHealth
@@ -79,5 +86,10 @@ __all__ = [
     "CredentialStore",
     "CredentialError",
     "FabricConfig",
+    "FabricError",
+    "ModelUnavailableError",
+    "CapabilityNotSupportedError",
+    "ProviderError",
+    "ConfigurationError",
     "ModelFabric",
 ]
