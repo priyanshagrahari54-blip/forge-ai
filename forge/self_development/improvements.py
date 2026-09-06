@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from hashlib import sha256
 from typing import Any
 
 from forge.self_development.findings import Finding, FindingSeverity
@@ -85,7 +86,8 @@ class ImprovementGenerator:
                 item if isinstance(item, Finding) else Finding.from_dict(item)
             )
 
-            cid = f"CANDIDATE-{idx:03d}"
+            identity = "|".join((finding.category, *sorted(finding.affected_files), finding.proposed_improvement or finding.description))
+            cid = "CANDIDATE-" + sha256(identity.encode("utf-8")).hexdigest()[:16]
             title = (
                 finding.proposed_improvement
                 or f"Fix {finding.category} in {', '.join(finding.affected_files)}"

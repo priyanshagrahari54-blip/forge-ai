@@ -64,7 +64,8 @@ class CandidateEvaluator:
         }
 
     def evaluate(
-        self, baseline_state: dict[str, Any], candidate_state: dict[str, Any]
+        self, baseline_state: dict[str, Any], candidate_state: dict[str, Any],
+        *, require_improvement: bool = False,
     ) -> EvaluationResult:
         improvements: list[str] = []
         regressions: list[str] = []
@@ -95,6 +96,8 @@ class CandidateEvaluator:
 
         baseline_score = float(baseline_bench * 10 - baseline_sec * 20)
         candidate_score = float(candidate_bench * 10 - candidate_sec * 20)
+        if require_improvement and candidate_score <= baseline_score:
+            regressions.append("No measurable improvement over the baseline")
 
         eval_res = EvaluationResult(
             baseline_score=baseline_score,
@@ -113,7 +116,21 @@ class CandidateEvaluator:
         return eval_res
 
     def _check_security(self) -> int:
-        return 0
+        # Count concrete high-risk findings; never use a synthetic constant.
+        import re
+        patterns = [re.compile(r"(?:api[_-]?key|secret|password)\\s*[:=]\\s*['\\\"][^'\\\"]{8,}", re.I), re.compile(r"-----BEGIN .*PRIVATE KEY-----")]
+        count = 0
+        for path in self.root.rglob("*"):
+            if not path.is_file() or ".git" in path.parts or ".forge" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            count += sum(1 for pattern in patterns if pattern.search(text))
+        return count
 
     def _check_build(self) -> bool:
-        return True
+        import sys
+        proc = subprocess.run([sys.executable, "-m", "compileall", "-q", "."], cwd=self.root, capture_output=True, check=False)
+        return proc.returncode == 0

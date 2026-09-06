@@ -1,5 +1,7 @@
-import os
+from __future__ import annotations
+
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,41 +20,47 @@ class BenchmarkResult:
 
 
 class BenchmarkRunner:
-    """Executes reproducible test and performance benchmarks on the repository."""
+    """Measure executable outcomes and latency, not just a pytest boolean."""
 
-    def __init__(self, root: str | Path = ".") -> None:
+    def __init__(self, root: str | Path = "."):
         self.root = Path(root).resolve()
 
-    def run_benchmarks(self) -> BenchmarkResult:
-        start_time = time.time()
-        details: dict[str, Any] = {}
-
-        env = dict(os.environ)
-        env["PYTHONPATH"] = f"{str(self.root)}:{env.get('PYTHONPATH', '')}"
-
-        # Run pytest benchmark
-        pytest_proc = subprocess.run(
-            ["pytest", "-q"],
-            cwd=str(self.root),
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
+    def _run(self, command: list[str]):
+        started = time.perf_counter()
+        try:
+            process = subprocess.run(command, cwd=self.root, text=True, capture_output=True,
+                                     timeout=300, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, time.perf_counter() - started, str(exc), -1
+        return (
+            process.returncode == 0,
+            time.perf_counter() - started,
+            (process.stdout + process.stderr)[-1000:],
+            process.returncode,
         )
 
-        duration = time.time() - start_time
-        test_success = pytest_proc.returncode == 0
-
-        details["pytest_returncode"] = pytest_proc.returncode
-        details["pytest_stdout"] = pytest_proc.stdout[-500:] if pytest_proc.stdout else ""
-        details["pytest_stderr"] = pytest_proc.stderr[-500:] if pytest_proc.stderr else ""
-
-        total = 1
-        passed = 1 if test_success else 0
-
-        return BenchmarkResult(
-            total_benchmarks=total,
-            passed_benchmarks=passed,
-            duration=duration,
-            details=details,
-        )
+    def run_benchmarks(self, *, task_success: bool | None = None,
+                       repair_attempts: int = 0, files_changed: list[str] | None = None,
+                       model_latency: float = 0.0, rollback_count: int = 0) -> BenchmarkResult:
+        started = time.perf_counter()
+        tests, test_latency, output, test_code = self._run([sys.executable, "-m", "pytest", "-q"])
+        build, build_latency, build_output, build_code = self._run([sys.executable, "-m", "compileall", "-q", "."])
+        checks = [tests, build]
+        details = {
+            "task_success": task_success,
+            "test_success": tests,
+            "test_latency_seconds": test_latency,
+            "test_returncode": test_code,
+            "test_output": output,
+            "build_success": build,
+            "build_latency_seconds": build_latency,
+            "build_returncode": build_code,
+            "repair_success": bool(task_success and repair_attempts) if task_success is not None else None,
+            "repair_attempts": repair_attempts,
+            "retry_count": repair_attempts,
+            "files_changed": list(files_changed or []),
+            "model_latency_seconds": model_latency,
+            "rollback_count": rollback_count,
+            "benchmark_duration_seconds": time.perf_counter() - started,
+        }
+        return BenchmarkResult(len(checks), sum(checks), time.perf_counter() - started, details)
