@@ -50,7 +50,9 @@ class Supervisor:
         """
         from forge.agents.coder import CoderAgent
         from forge.agents.debugger import DebuggerAgent, TestDebugLoop
-        from forge.agents.execution import AgentRequest
+        from forge.agents.execution import AgentRequest, CallableAgentExecutor
+        from forge.agents.registry import AgentRegistration, AgentRegistry
+        from forge.agents.planner import CapabilityAgentPlanner
         from forge.core.task_engine import TaskEngine, TaskStatus
         from forge.intelligence.repository import RepositoryIntelligence
         from forge.models.router import ModelInfo, ModelRouter
@@ -79,10 +81,25 @@ class Supervisor:
             result["stages"].append(name)
 
         try:
-            stage("MODEL")
+            stage("PLAN")
             intelligence = RepositoryIntelligence.build(self.root)
-            task.status = TaskStatus.CODING
+            task.status = TaskStatus.PLANNING
             coder = CoderAgent(root=str(self.root), router=router)
+            debugger = DebuggerAgent(str(self.root), router=router)
+            registry = AgentRegistry([
+                AgentRegistration("coder", "coding", coder, ("coding",)),
+                AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
+                AgentRegistration("reviewer", "reviewing", CallableAgentExecutor("reviewer", lambda request: "independent review"), ("review",)),
+                AgentRegistration("tester", "testing", CallableAgentExecutor("tester", lambda request: "test execution is performed by TestDebugLoop"), ("testing",)),
+                AgentRegistration("security", "security", CallableAgentExecutor("security", lambda request: "security verification is performed by VerificationPipeline"), ("security",)),
+            ])
+            agent_plan = CapabilityAgentPlanner(registry).plan(requirement)
+            result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
+            if not agent_plan.agents or "coder" not in agent_plan.names:
+                raise RuntimeError("capability planner could not select a coding agent")
+            stage("AGENTS")
+            stage("MODEL")
+            task.status = TaskStatus.CODING
             context = coder.build_context(intelligence, requirement)
             response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": True}))
             if not response.success:
@@ -91,7 +108,6 @@ class Supervisor:
 
             stage("CODE")
             stage("TEST")
-            debugger = DebuggerAgent(str(self.root), router=router)
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
             debug_result = loop.run(requirement, context=str(context), approved=True)
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
@@ -99,7 +115,8 @@ class Supervisor:
                 raise RuntimeError(debug_result.error or "tests did not pass after bounded repairs")
             # A repair is still model output, so include newly touched files in
             # the eventual explicit staging set.
-            touched = sorted(set(touched) | set(git.changed_files()))
+            repaired_files = [path for attempt in result["attempts"] for path in attempt["modifications"]]
+            touched = sorted(set(touched) | set(repaired_files))
 
             if result["attempts"]:
                 stage("DEBUG")
@@ -124,8 +141,7 @@ class Supervisor:
 
             stage("CHECKPOINT")
             # stage_files is deliberately explicit and rejects Forge state.
-            touched = sorted(set(touched) | set(git.changed_files()))
-            touched = [path for path in touched if not path.startswith(".forge/")]
+            touched = [path for path in sorted(set(touched)) if not path.startswith(".forge/")]
             if not touched:
                 raise RuntimeError("model produced no accepted files")
             stage("COMMIT")
@@ -140,6 +156,6 @@ class Supervisor:
             stage("ROLLBACK")
             # Restore only files belonging to this run. Unrelated user files are
             # not deleted or rewritten.
-            checkpoint_manager.rollback(checkpoint, sorted(set(touched) | set(git.changed_files())))
+            checkpoint_manager.rollback(checkpoint, sorted(set(touched)))
             result["error"] = str(exc)
             return result

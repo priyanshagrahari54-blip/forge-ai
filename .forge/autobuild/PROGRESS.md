@@ -1,19 +1,22 @@
 # Forge AI repair progress
 
-## Implemented and tested
+## Implemented and executable
 
-- Repository intelligence and bounded context selection remain the source of agent context.
-- `ModelRouter` now records and scores capability, complexity, context, availability, reliability/failure rate, latency, cost, and free/local preference. Providers are optional and injectable.
-- `CoderAgent` consumes a routed provider response, validates structured model output, and applies files through the permissioned runtime. Normal operation does not accept caller-authored changes.
-- `DebuggerAgent` and `TestDebugLoop` pass real failure output to a model, apply proposed repairs, and rerun tests with a hard retry bound.
-- `CheckpointManager` snapshots file contents and restores exact pre-change contents without `git reset --hard`; unrelated files are preserved.
-- Verification runs tests, compilation/build, lint/type-equivalent compilation, secret scanning, and independent diff review. Acceptance uses actual results.
-- Git commits stage an explicit validated file list and reject `.forge` runtime state.
-- A26-A30 self-development uses the model-driven coder path when no compatibility modifier is supplied, checkpoints before editing, benchmarks test/build latency and outcomes, verifies, commits or rolls back, and records reproducible history.
-- `tests/test_autonomous_e2e.py` creates an isolated Git repository, uses the model contract to add CSV export and tests, runs gates, and checks explicit staging. It also verifies exact rollback.
+- `Supervisor.run()` now executes the complete guarded transaction: requirement planning, capability/agent selection, model routing, model-generated code, permissioned writes, real tests, bounded `TestDebugLoop` repair/retest, independent review, security, build/compile, lint/type-equivalent verification, benchmark, acceptance, checkpoint, explicit commit, or file-scoped rollback.
+- The supervisor has no caller-supplied `changes` or modifier-function argument. Providers return structured model responses and the coder/debugger validate and apply those responses through the permissioned runtime.
+- Failure output from the terminal tool includes captured stdout/stderr and is passed unchanged into `DebuggerAgent`; retry count is clamped and bounded.
+- Routing history records model success/failure and latency for model calls. Local, Ollama, OpenAI-compatible, and test providers remain available through the model contract.
+- Git staging is explicit and rejects `.forge` runtime state. The supervisor stages only coder/debugger-reported files, so unrelated working-tree files survive and are not committed.
+- Checkpoints restore changed candidate files exactly without `git reset --hard`; unknown unrelated untracked files are never deleted.
+- Review and security are mandatory acceptance gates. Build/test/lint results come from actual subprocess execution, and benchmarks measure test/build outcomes and latency.
+
+## Executable proof
+
+- `tests/test_supervisor_autonomous_e2e.py` creates an isolated Git repository. The first model response is intentionally incorrect, a real test collection failure is captured, a second model response repairs it, tests pass, the validated files are committed, `.forge` is not committed, and unrelated working-tree work survives.
+- `tests/test_supervisor_safety_e2e.py` proves bounded retry/rollback and routing failure history.
+- `tests/test_verification_rejection_e2e.py` proves security and review failures reject and roll back candidates without creating commits.
 
 ## Deliberate limitations
 
-- The local provider is a safe offline fallback and refuses to synthesize arbitrary source. Autonomous production coding requires an available Ollama or optional API provider.
-- Approval and permission gates are preserved. This repository does not silently enable write or push permissions for an external project.
-- No feature is marked complete solely because metadata exists; all claims above are covered by executable tests.
+- The dependency-free local provider safely refuses arbitrary source synthesis when no capable model is configured. Autonomous production coding requires an available Ollama or optional API provider.
+- Approval and permission gates remain enabled; no unattended push or external-repository access is introduced.

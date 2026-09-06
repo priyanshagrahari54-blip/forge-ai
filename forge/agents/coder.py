@@ -45,13 +45,17 @@ class CoderAgent(AgentExecutor):
         try:
             model = self.router.select("coding", context_size=request.context.estimated_tokens if request.context else 0)
             if not model or not model.provider: return AgentResponse(False, error="No available coding model provider", agent=self.name, stage=request.stage)
-            result = model.provider.generate(self._prompt(request), context=str(request.context), task=request.task.description)
+            try:
+                result = model.provider.generate(self._prompt(request), context=str(request.context), task=request.task.description)
+            except Exception:
+                self.router.record(model.name, False, None)
+                raise
             changes = self._changes(result.text)
             if not changes: return AgentResponse(False, error="Model proposed no changes", agent=self.name, stage=request.stage)
             applied=[]
             for path, content in changes.items():
                 res=self.write_file(path, content, approved=approved)
-                if not res.success: return AgentResponse(False, error=f"Failed to write {path}: {res.error}", agent=self.name, stage=request.stage)
+                if not res.success: return AgentResponse(False, error=f"Failed to write {path}: {res.error}", agent=self.name, stage=request.stage, metadata={"files": applied})
                 applied.append(path)
             self.router.record(model.name, True, result.latency)
             return AgentResponse(True, output=result.text, agent=self.name, stage=request.stage, metadata={"files": applied, "model": model.name})

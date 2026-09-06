@@ -29,7 +29,11 @@ class DebuggerAgent(AgentExecutor):
         if not model or not model.provider: raise RuntimeError("No debugging model available")
         prompt=("Diagnose and fix this test failure. Return ONLY JSON {changes:{relative/path:file contents}, explanation:str}. "
                 "Make the smallest safe fix; do not modify tests to hide failures.\nTASK:"+task+"\nFAILURE:"+failure+"\nCONTEXT:"+context)
-        result=model.provider.generate(prompt, context=context, task=task)
+        try:
+            result=model.provider.generate(prompt, context=context, task=task)
+        except Exception:
+            self.router.record(model.name, False, None)
+            raise
         data=json.loads(result.text.strip().replace("```json","").replace("```","") )
         changes=data.get("changes",{})
         if not isinstance(changes,dict): raise ValueError("Debugger model returned invalid changes")
