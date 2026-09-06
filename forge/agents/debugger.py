@@ -46,8 +46,8 @@ class TestDebugLoop:
         attempts=[]
         for number in range(1,self.max_retries+2):
             result=self.debugger.runtime.execute("terminal", approved=approved, command=self.command)
-            output=result.output or result.error or ""
             combined=(result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", "")
+            output=combined or result.error or ""
             if result.success or (result.metadata.get("returncode") == 5 and ("no tests ran" in combined.lower() or "collected 0 items" in combined.lower())): return DebugLoopResult(True,attempts,"tests passed or no test suite")
             if number>self.max_retries: return DebugLoopResult(False,attempts,"tests failed",output)
             diagnosis=self.debugger.diagnose(output)
