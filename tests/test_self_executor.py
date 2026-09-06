@@ -1,5 +1,6 @@
 from pathlib import Path
 from forge.self_development import (
+    CandidateClass,
     ImprovementCandidate,
     ImprovementPriority,
     SelfDevelopmentExecutor,
@@ -17,9 +18,11 @@ def test_self_development_executor_flow(tmp_path: Path):
 
     candidate = ImprovementCandidate(
         id="CANDIDATE-001",
+        candidate_hash="hash001",
         title="Add variable to mod.py",
         finding_id="FINDING-001",
         category="todo_fixme",
+        candidate_class=CandidateClass.MAINTENANCE.value,
         priority=ImprovementPriority.LOW.value,
         description="Add y variable",
         proposed_improvement="Add y = 2 in mod.py",

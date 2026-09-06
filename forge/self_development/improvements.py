@@ -1,8 +1,26 @@
+import hashlib
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, List
 
 from forge.self_development.findings import Finding, FindingSeverity
+
+
+class CandidateClass(str, Enum):
+    PERFORMANCE_IMPROVEMENT = "PERFORMANCE_IMPROVEMENT"
+    TEST_IMPROVEMENT = "TEST_IMPROVEMENT"
+    SECURITY_IMPROVEMENT = "SECURITY_IMPROVEMENT"
+    QUALITY_IMPROVEMENT = "QUALITY_IMPROVEMENT"
+    BUG_FIX = "BUG_FIX"
+    MAINTENANCE = "MAINTENANCE"
+
+
+class CandidateStatus(str, Enum):
+    ATTEMPTED = "ATTEMPTED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    ROLLED_BACK = "ROLLED_BACK"
+    SUPERSEDED = "SUPERSEDED"
 
 
 class ImprovementPriority(str, Enum):
@@ -15,18 +33,21 @@ class ImprovementPriority(str, Enum):
 @dataclass
 class ImprovementCandidate:
     id: str
+    candidate_hash: str
     title: str
     finding_id: str
     category: str
+    candidate_class: str
     priority: str
     description: str
     proposed_improvement: str
-    affected_files: list[str] = field(default_factory=list)
-    affected_symbols: list[str] = field(default_factory=list)
+    affected_files: List[str] = field(default_factory=list)
+    affected_symbols: List[str] = field(default_factory=list)
     estimated_complexity: str = "medium"
     estimated_risk: str = "low"
     score: float = 0.0
     evidence: str = ""
+    status: str = CandidateStatus.ATTEMPTED.value
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,9 +56,11 @@ class ImprovementCandidate:
     def from_dict(cls, data: dict[str, Any]) -> "ImprovementCandidate":
         return cls(
             id=data["id"],
+            candidate_hash=data.get("candidate_hash", ""),
             title=data["title"],
             finding_id=data["finding_id"],
             category=data["category"],
+            candidate_class=data.get("candidate_class", CandidateClass.MAINTENANCE.value),
             priority=data["priority"],
             description=data.get("description", ""),
             proposed_improvement=data.get("proposed_improvement", ""),
@@ -47,11 +70,12 @@ class ImprovementCandidate:
             estimated_risk=data.get("estimated_risk", "low"),
             score=float(data.get("score", 0.0)),
             evidence=data.get("evidence", ""),
+            status=data.get("status", CandidateStatus.ATTEMPTED.value),
         )
 
 
 class ImprovementGenerator:
-    """Converts structured findings into prioritized, actionable improvement candidates."""
+    """Converts structured findings into prioritized, actionable improvement candidates with stable SHA-256 IDs."""
 
     SEVERITY_WEIGHTS = {
         FindingSeverity.CRITICAL.value: 100.0,
@@ -72,33 +96,45 @@ class ImprovementGenerator:
         "high": -25.0,
     }
 
-    def __init__(self, history: list[dict[str, Any]] | None = None) -> None:
+    def __init__(self, history: List[dict[str, Any]] | None = None) -> None:
         self.history = history or []
 
     def generate(
-        self, findings: list[Finding | dict[str, Any]]
-    ) -> list[ImprovementCandidate]:
-        candidates: list[ImprovementCandidate] = []
+        self, findings: List[Finding | dict[str, Any]]
+    ) -> List[ImprovementCandidate]:
+        candidates: List[ImprovementCandidate] = []
 
         for idx, item in enumerate(findings, 1):
             finding = (
                 item if isinstance(item, Finding) else Finding.from_dict(item)
             )
 
-            cid = f"CANDIDATE-{idx:03d}"
+            # Compute stable SHA-256 hash for candidate identity
+            identity_str = (
+                f"{finding.category}:{finding.description}:"
+                f"{','.join(sorted(finding.affected_files))}:"
+                f"{','.join(sorted(finding.affected_symbols))}:"
+                f"{finding.proposed_improvement}"
+            )
+            cand_hash = hashlib.sha256(identity_str.encode("utf-8")).hexdigest()[:12]
+            cid = f"CANDIDATE-{cand_hash}"
+
+            cand_class = self._determine_candidate_class(finding)
             title = (
                 finding.proposed_improvement
                 or f"Fix {finding.category} in {', '.join(finding.affected_files)}"
             )
 
             priority = self._map_priority(finding.severity)
-            score = self._compute_score(finding)
+            score = self._compute_score(finding, cand_hash)
 
             candidate = ImprovementCandidate(
                 id=cid,
+                candidate_hash=cand_hash,
                 title=title,
                 finding_id=finding.id,
                 category=finding.category,
+                candidate_class=cand_class,
                 priority=priority,
                 description=finding.description,
                 proposed_improvement=finding.proposed_improvement,
@@ -111,9 +147,22 @@ class ImprovementGenerator:
             )
             candidates.append(candidate)
 
-        # Sort candidates by score descending, then ID
         candidates.sort(key=lambda c: (-c.score, c.id))
         return candidates
+
+    def _determine_candidate_class(self, finding: Finding) -> str:
+        cat = finding.category.lower()
+        if cat == "security":
+            return CandidateClass.SECURITY_IMPROVEMENT.value
+        elif cat == "test_health":
+            return CandidateClass.TEST_IMPROVEMENT.value
+        elif cat == "performance":
+            return CandidateClass.PERFORMANCE_IMPROVEMENT.value
+        elif cat in ("todo_fixme", "incomplete_integration"):
+            return CandidateClass.QUALITY_IMPROVEMENT.value
+        elif cat == "failure_pattern":
+            return CandidateClass.BUG_FIX.value
+        return CandidateClass.MAINTENANCE.value
 
     def _map_priority(self, severity: str) -> str:
         if severity == FindingSeverity.CRITICAL.value:
@@ -124,25 +173,22 @@ class ImprovementGenerator:
             return ImprovementPriority.MEDIUM.value
         return ImprovementPriority.LOW.value
 
-    def _compute_score(self, finding: Finding) -> float:
+    def _compute_score(self, finding: Finding, cand_hash: str) -> float:
         base_score = self.SEVERITY_WEIGHTS.get(finding.severity, 25.0)
 
         complexity_adj = self.COMPLEXITY_PENALTY.get(
             finding.estimated_complexity.lower(), -10.0
         )
         risk_adj = self.RISK_PENALTY.get(finding.estimated_risk.lower(), -10.0)
-
-        # Dependency & affected files impact bonus
         files_bonus = min(len(finding.affected_files) * 5.0, 20.0)
 
-        # Historical failure penalty if category has failed in history
+        # Check history for repeated candidate failures
         history_penalty = 0.0
         for entry in self.history:
-            if (
-                entry.get("candidate", {}).get("category") == finding.category
-                and not entry.get("accepted", True)
-            ):
-                history_penalty -= 15.0
+            entry_cand = entry.get("candidate", {})
+            if entry_cand.get("candidate_hash") == cand_hash:
+                if not entry.get("accepted", True):
+                    history_penalty -= 30.0  # Penalize repeatedly failed candidates heavily
 
         total_score = base_score + complexity_adj + risk_adj + files_bonus + history_penalty
         return max(total_score, 1.0)

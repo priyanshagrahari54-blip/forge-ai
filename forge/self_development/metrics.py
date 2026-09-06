@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -21,7 +21,11 @@ class TestMetrics:
     total_tests: int = 0
     passed_tests: int = 0
     failed_tests: int = 0
+    skipped_tests: int = 0
+    error_tests: int = 0
     duration: float = 0.0
+    raw_stdout: str = ""
+    raw_stderr: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -40,6 +44,7 @@ class SecurityMetrics:
 
 @dataclass
 class PerformanceMetrics:
+    performance_benchmark_available: bool = False
     avg_execution_time: float = 0.0
     memory_usage_mb: float = 0.0
 

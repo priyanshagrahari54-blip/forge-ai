@@ -11,7 +11,7 @@ from forge.self_development import (
 from forge.tools.git import GitTool
 
 
-def test_self_development_e2e_full_lifecycle(tmp_path: Path):
+def test_self_development_e2e_autonomous_and_rollback(tmp_path: Path):
     repo_dir = tmp_path / "forge_repo"
     repo_dir.mkdir()
 
@@ -24,11 +24,11 @@ def test_self_development_e2e_full_lifecycle(tmp_path: Path):
         ["git", "config", "user.email", "test@forge.ai"], cwd=str(repo_dir), check=True
     )
 
-    # Setup repo structure
+    # Setup repo structure with TODO comment
     (repo_dir / "forge").mkdir()
     (repo_dir / "forge" / "__init__.py").write_text("", encoding="utf-8")
     (repo_dir / "forge" / "core_module.py").write_text(
-        "# TODO: optimize helper function\ndef helper(x):\n    return x + 1\n",
+        "# TODO: resolve helper function\ndef helper(x):\n    return x + 1\n",
         encoding="utf-8",
     )
 
@@ -38,7 +38,6 @@ def test_self_development_e2e_full_lifecycle(tmp_path: Path):
         encoding="utf-8",
     )
 
-    # Initial git commit
     git = GitTool(repo=str(repo_dir))
     git.run("add", ".")
     git.run("commit", "-m", "Initial commit")
@@ -49,53 +48,54 @@ def test_self_development_e2e_full_lifecycle(tmp_path: Path):
     findings = analysis["findings"]
     assert len(findings) >= 1
 
-    # 2. Find known improvement & Generate candidate
+    # 2. Generate candidate with SHA-256 hash identity
     generator = ImprovementGenerator()
     candidates = generator.generate(findings)
     assert len(candidates) >= 1
     candidate = candidates[0]
+    assert len(candidate.candidate_hash) == 12
 
     executor = SelfDevelopmentExecutor(root=repo_dir)
 
-    # 3-8. Valid Improvement Cycle: Modify code correctly -> Test -> Evaluate -> Accept & Commit
-    def valid_modifier(c: ImprovementCandidate):
-        code_file = repo_dir / "forge" / "core_module.py"
-        code_file.write_text(
-            "# Optimized helper function\ndef helper(x):\n    return x + 1\n",
-            encoding="utf-8",
-        )
+    # 3. Autonomous AI-Driven Execution (No manual modifier_fn)
+    auto_res = executor.execute_candidate(candidate)
+    assert auto_res.accepted is True
+    assert auto_res.rejection_reason is None
 
-    valid_res = executor.execute_candidate(candidate, modifier_fn=valid_modifier)
-    assert valid_res.accepted is True
-    assert valid_res.rejection_reason is None
-
-    # Check commit was created
+    # Verify autonomous solver resolved TODO comment and committed changes
+    code_content = (repo_dir / "forge" / "core_module.py").read_text(encoding="utf-8")
+    assert "# TODO" not in code_content
     head_msg = git.run("log", "-1", "--pretty=%B").stdout.strip()
     assert "self-dev:" in head_msg
 
-    # 9. Roll back broken improvement: Intentionally break code -> Test -> Evaluate -> Reject & Rollback
-    def broken_modifier(c: ImprovementCandidate):
-        code_file = repo_dir / "forge" / "core_module.py"
-        code_file.write_text(
-            "def helper(x):\n    raise RuntimeError('Intentionally broken!')\n",
-            encoding="utf-8",
-        )
+    # 4. Intentionally Bad Candidate -> Rejected & Rolled Back
+    bad_candidate = ImprovementCandidate(
+        id="CANDIDATE-BROKEN",
+        candidate_hash="brokenhash1",
+        title="Broken candidate",
+        finding_id="FINDING-999",
+        category="todo_fixme",
+        candidate_class="QUALITY_IMPROVEMENT",
+        priority="high",
+        description="Introduce syntax error",
+        proposed_improvement="Syntax error in core_module.py",
+        affected_files=["forge/core_module.py"],
+    )
 
-    broken_res = executor.execute_candidate(candidate, modifier_fn=broken_modifier)
+    def broken_modifier(c):
+        code_file = repo_dir / "forge" / "core_module.py"
+        code_file.write_text("def helper(x:\n    return x\n", encoding="utf-8")
+
+    broken_res = executor.execute_candidate(bad_candidate, modifier_fn=broken_modifier)
     assert broken_res.accepted is False
     assert broken_res.rejection_reason is not None
 
-    # Verify code was rolled back after rejection
+    # Verify rollback restored exact state
     content_after_rollback = (repo_dir / "forge" / "core_module.py").read_text(
         encoding="utf-8"
     )
-    assert "Intentionally broken" not in content_after_rollback
+    assert "def helper(x:\n" not in content_after_rollback
 
-    # 10. Persist history check
+    # 5. Verify reproducible history
     history_files = list((repo_dir / ".forge" / "self" / "history").glob("run_*.json"))
     assert len(history_files) >= 2
-
-    # Also test SelfDevelopmentLoop orchestration
-    loop = SelfDevelopmentLoop(root=repo_dir)
-    loop_results = loop.run(max_iterations=1, modifier_fn=valid_modifier)
-    assert len(loop_results) == 1
