@@ -104,6 +104,19 @@ class TaskRequirementExtractor:
                 "comment",
             ),
         ),
+        (
+            "git",
+            (
+                "git",
+                "branch",
+                "commit",
+                "push",
+                "pull request",
+                "pull-request",
+                "pr ",
+                "merge request",
+            ),
+        ),
     )
 
     ROLE_MAP: dict[str, str] = {
@@ -114,6 +127,7 @@ class TaskRequirementExtractor:
         "security": "security",
         "documentation": "documentation",
         "research": "researching",
+        "git": "git",
     }
 
     def extract(self, task_description: str) -> TaskRequirements:

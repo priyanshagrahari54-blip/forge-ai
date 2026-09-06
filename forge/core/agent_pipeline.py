@@ -48,6 +48,7 @@ class AgentPipeline:
         "review": TaskStatus.REVIEWING,
         "security": TaskStatus.REVIEWING,
         "documentation": TaskStatus.RUNNING,
+        "git": TaskStatus.RUNNING,
     }
 
     def __init__(

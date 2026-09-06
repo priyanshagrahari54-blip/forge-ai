@@ -14,6 +14,7 @@ CAPABILITY_STAGES = {
     "review": "reviewing",
     "security": "reviewing",
     "documentation": "running",
+    "git": "running",
 }
 
 
@@ -158,5 +159,6 @@ class AgentPlanValidator:
             "documentation": "documentation",
             "planning": "planning",
             "research": "researching",
+            "git": "git",
         }
         return role_map.get(capability)

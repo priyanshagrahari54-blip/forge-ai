@@ -168,10 +168,44 @@ Known limitations:
 - Recorder is in-memory; durable telemetry storage is a future hardening option.
 
 ## A14 — Research Agent
-Status: IN PROGRESS
+Status: COMPLETE
 
 Implemented:
-- (next)
+- `forge/agents/researcher.py`: `ResearchAgent` with the same name/describe/build_context interface as coder/reviewer, and `ResearchExecutor`, a model-independent deterministic executor that emits a markdown research report from `AgentContext`, enriched with per-file symbols and tests when `RepositoryIntelligence` is provided.
+- Research capability integrated end to end: requirement extraction (`research` keywords and `researching` role), plan validation stage mapping, and pipeline mapping to `TaskStatus.RESEARCHING`. Plans now order research before coding.
+- `tests/test_researcher.py` (8 tests) plus no changes weakening existing suites.
+
+Tests:
+- `tests/test_researcher.py` (8 tests)
+
+Files:
+- `forge/agents/researcher.py`, `forge/agents/requirements.py`, `forge/agents/validator.py`, `forge/core/agent_pipeline.py`, `tests/test_researcher.py`
+
+Commit:
+- `9168896`
+
+Known limitations:
+- Research executor is heuristic report generation; deeper deep-dive behaviors can build on the same context contract.
+
+## A15 — Documentation
+Status: COMPLETE
+
+Implemented:
+- Rewrote `README.md` with installation, usage, architecture table, core flow, security model, and progress pointers.
+- Added `docs/architecture.md` describing every module and contract in `forge/`.
+- PROGRESS.md now tracks all A01–A15 stages with the required template.
+
+Tests:
+- `python -m pytest -q` (296) and `python -m compileall forge` run clean with docs present.
+
+Files:
+- `README.md`, `docs/architecture.md`, `.forge/autobuild/PROGRESS.md`
+
+Commit:
+- (A15 commit after docs checkpoint)
+
+Known limitations:
+- CLI coverage of newer capabilities (research, plans, metrics) can grow in later stages.
 
 ## A14 — Research Agent
 Status: NOT STARTED
@@ -180,7 +214,26 @@ Status: NOT STARTED
 Status: NOT STARTED
 
 ## A16 — Safe Git/PR Automation
-Status: NOT STARTED
+Status: COMPLETE
+
+Implemented:
+- `forge/tools/git.py`: Extended with `SafeGit` safety-aware wrapper enforcing protected-branch detection (main/master/release), dry-run mode, audit logging, and force-push prevention. Operations: `create_branch`, `stage_all`, `commit`, `push`, `create_pull_request`, `status_report`. Structured `GitResult` and `PullRequest` dataclasses. `SafeGitError` for policy violations.
+- `forge/agents/git.py`: `GitAgent` with standard name/describe/build_context interface, and `GitExecutor`, a model-independent deterministic executor that produces a git automation plan from task descriptions.
+- Git capability integrated end-to-end: requirement extraction (`git`, `branch`, `commit`, `push`, `pull request` keywords and `git` role), plan validation stage mapping, and pipeline mapping to `TaskStatus.RUNNING`.
+
+Tests:
+- `tests/test_git_tool.py` (19 tests): protected branch blocking, dry-run mode, commit/push safety, audit logging, status report, stage-all behavior.
+- `tests/test_git_agent.py` (10 tests): agent interface, executor plan generation, capability extraction, pipeline execution, stage mapping.
+
+Files:
+- `forge/tools/git.py`, `forge/agents/git.py`, `forge/agents/requirements.py`, `forge/agents/validator.py`, `forge/core/agent_pipeline.py`, `tests/test_git_tool.py`, `tests/test_git_agent.py`
+
+Commit:
+- (A16 commit)
+
+Known limitations:
+- PR creation requires the `gh` CLI; degrades gracefully when unavailable.
+- Protected branch list is configurable but defaults to main/master/release.
 
 ## A17 — Provider-Independent Model Routing
 Status: NOT STARTED
