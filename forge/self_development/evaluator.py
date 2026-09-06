@@ -64,7 +64,8 @@ class CandidateEvaluator:
         }
 
     def evaluate(
-        self, baseline_state: dict[str, Any], candidate_state: dict[str, Any]
+        self, baseline_state: dict[str, Any], candidate_state: dict[str, Any],
+        *, require_improvement: bool = False,
     ) -> EvaluationResult:
         improvements: list[str] = []
         regressions: list[str] = []
@@ -95,6 +96,8 @@ class CandidateEvaluator:
 
         baseline_score = float(baseline_bench * 10 - baseline_sec * 20)
         candidate_score = float(candidate_bench * 10 - candidate_sec * 20)
+        if require_improvement and candidate_score <= baseline_score:
+            regressions.append("No measurable improvement over the baseline")
 
         eval_res = EvaluationResult(
             baseline_score=baseline_score,

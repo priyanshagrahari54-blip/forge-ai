@@ -8,8 +8,8 @@ Forge is a repository-scoped software-engineering runtime. It combines repositor
 2. `AgentContextBuilder` selects relevant source, dependency, and test context under a token budget.
 3. `ModelRouter` scores available providers using capability, complexity, context size, reliability, latency, cost/free status, and availability. Local/Ollama providers are first-class; paid APIs are optional.
 4. `CoderAgent` asks the selected provider for a structured change (`changes: {path: content}`), validates it, and writes only through the permissioned runtime. A caller does not need to supply changes.
-5. `TestDebugLoop` runs the repository test command, gives failures and context to a model, applies its bounded repair proposals, and reruns tests.
-6. `VerificationPipeline` runs tests, compilation/build, lint/type-equivalent compilation, a secret scan, and an independent diff review. A failed gate prevents acceptance.
+5. `TestDebugLoop` runs the repository test command, gives captured stdout/stderr and context to a model, applies its bounded repair proposals through `ToolRuntime`, records telemetry, and reruns tests.
+6. `VerificationPipeline` runs tests, compilation/build, configured Ruff/mypy checks when declared, secret/dangerous-operation scanning, and an independent changed-file review. A failed gate prevents acceptance.
 7. `CheckpointManager` snapshots the exact pre-change files and restores only files changed by the candidate; it does not use `git reset --hard` and leaves unrelated files alone.
 8. `GitTool.stage_files` requires an explicit safe file list and rejects Forge runtime state. Autonomous commits never use `git add .`.
 

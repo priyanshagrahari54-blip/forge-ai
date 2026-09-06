@@ -35,7 +35,8 @@ def test_autonomous_csv_feature_and_gates(tmp_path):
 def test_checkpoint_restores_exact_state_without_git_reset(tmp_path):
     original=tmp_path/"file.txt"; original.write_text("before\n")
     unrelated=tmp_path/"unrelated.txt"; unrelated.write_text("keep\n")
+    forge_state=tmp_path/".forge"/"runtime.json"; forge_state.parent.mkdir(); forge_state.write_text("runtime\n")
     manager=CheckpointManager(tmp_path); checkpoint=manager.create("rollback")
-    original.write_text("after\n"); (tmp_path/"new.txt").write_text("new\n")
+    original.write_text("after\n"); unrelated.write_text("user change\n"); (tmp_path/"new.txt").write_text("new\n")
     manager.rollback(checkpoint, ["file.txt", "new.txt"])
-    assert original.read_text()=="before\n" and unrelated.read_text()=="keep\n" and not (tmp_path/"new.txt").exists()
+    assert original.read_text()=="before\n" and unrelated.read_text()=="user change\n" and forge_state.read_text()=="runtime\n" and not (tmp_path/"new.txt").exists()

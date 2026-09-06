@@ -8,7 +8,7 @@ class OneFileModel:
     name = "gate-model"
     def __init__(self, source): self.source = source
     def generate(self, prompt, *, context="", task=""):
-        return ModelResult(json.dumps({"changes": {"app.py": self.source}}), self.name)
+        return ModelResult(json.dumps({"changes": {"app.py": self.source}, "explanation": "gate test candidate"}), self.name)
 
 def make_repo(tmp_path):
     (tmp_path / "app.py").write_text("def health(): return True\n")
@@ -22,7 +22,7 @@ def make_repo(tmp_path):
     subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
 
 @pytest.mark.parametrize("source,failed_gate", [
-    ("def health(): return True\napi_key = 'hardcoded-secret-value'\n", "security"),
+    ("def health(): return True\nAWS_ACCESS_KEY_ID = 'AKIA1234567890ABCDEF'\n", "security"),
     ("def health(): return True\nvalue = eval('1')\n", "review"),
 ])
 def test_acceptance_cannot_bypass_security_or_review(tmp_path, source, failed_gate):

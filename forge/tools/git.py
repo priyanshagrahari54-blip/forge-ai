@@ -20,10 +20,23 @@ class GitTool:
             path = (root / name).resolve()
             try: path.relative_to(root)
             except ValueError: raise ValueError(f"Path outside repository: {name}")
-            if name == ".forge" or name.startswith(".forge/"): raise ValueError("Forge runtime state cannot be staged")
+            parts = Path(name).parts
+            lower = name.lower()
+            if ".git" in parts or name == ".forge" or name.startswith(".forge/"):
+                raise ValueError("Git or Forge runtime state cannot be staged")
+            if Path(name).name.startswith(".env") or any(token in lower for token in ("credential", "secret", "private_key")):
+                raise ValueError("Environment files and credential-like files cannot be staged")
             safe.append(name)
         result = self.run("add", "--", *safe)
         if result.returncode: raise RuntimeError(result.stderr.strip())
+    def unstage_files(self, files: list[str]) -> None:
+        if files:
+            self.run("restore", "--staged", "--", *sorted(set(files)))
+
     def commit_files(self, files: list[str], message: str) -> subprocess.CompletedProcess[str]:
         self.stage_files(files)
+        staged = self.run("diff", "--cached", "--name-only").stdout.splitlines()
+        if sorted(staged) != sorted(set(files)):
+            self.unstage_files(files)
+            raise RuntimeError(f"Staged file set mismatch: expected {sorted(set(files))}, got {sorted(staged)}")
         return self.run("commit", "-m", message)

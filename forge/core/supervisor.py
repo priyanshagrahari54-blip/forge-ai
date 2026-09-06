@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Dict, Optional
+from uuid import uuid4
 from forge.core.planner import Planner
 from forge.core.state import ForgeState
 
@@ -68,13 +70,24 @@ class Supervisor:
         # A supplied router is an adapter for a real provider, not a change set.
         if router is None:
             router = ModelRouter([ModelInfo("local", "coding", available=True, free=True, provider=LocalModelProvider(), capabilities=("coding", "debugging"))])
+        started = perf_counter()
+        run_id = uuid4().hex
         git = GitTool(self.root)
         checkpoint_manager = CheckpointManager(self.root)
-        checkpoint = checkpoint_manager.create("supervisor-run")
+        checkpoint = checkpoint_manager.create(f"supervisor-run-{run_id}")
         engine = TaskEngine()
-        task = engine.add("supervisor-task", requirement)
+        task = engine.add(f"supervisor-task-{run_id}", requirement)
         touched: list[str] = []
-        result: dict[str, Any] = {"accepted": False, "stages": [], "attempts": [], "gates": []}
+        result: dict[str, Any] = {
+            "run_id": run_id,
+            "requirement": requirement,
+            "task": {"id": task.id, "description": task.description},
+            "accepted": False,
+            "stages": [],
+            "attempts": [],
+            "gates": [],
+            "rollback": False,
+        }
 
         def stage(name: str) -> None:
             self.set_stage(name)
@@ -93,24 +106,30 @@ class Supervisor:
                 AgentRegistration("tester", "testing", CallableAgentExecutor("tester", lambda request: "test execution is performed by TestDebugLoop"), ("testing",)),
                 AgentRegistration("security", "security", CallableAgentExecutor("security", lambda request: "security verification is performed by VerificationPipeline"), ("security",)),
             ])
-            agent_plan = CapabilityAgentPlanner(registry).plan(requirement)
+            planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
+            agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
+            result["selected_agents"] = list(agent_plan.names)
             if not agent_plan.agents or "coder" not in agent_plan.names:
                 raise RuntimeError("capability planner could not select a coding agent")
             stage("AGENTS")
             stage("MODEL")
             task.status = TaskStatus.CODING
             context = coder.build_context(intelligence, requirement)
+            result["context_fingerprint"] = context.fingerprint
             response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": True}))
+            touched = list(response.metadata.get("files", []))
             if not response.success:
                 raise RuntimeError(response.error or "model coding failed")
-            touched = list(response.metadata.get("files", []))
+            result["selected_model"] = response.metadata.get("model", "")
 
             stage("CODE")
             stage("TEST")
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
             debug_result = loop.run(requirement, context=str(context), approved=True)
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
+            result["retry_count"] = len(debug_result.attempts)
+            result["test_result"] = {"passed": debug_result.success, "final_state": debug_result.final_state, "error": debug_result.error}
             if not debug_result.success:
                 raise RuntimeError(debug_result.error or "tests did not pass after bounded repairs")
             # A repair is still model output, so include newly touched files in
@@ -127,11 +146,19 @@ class Supervisor:
             stage("REVIEW")
             verification = VerificationPipeline(self.root)
             diff = git.diff() + "\n" + git.status()
-            review = verification.review(diff)
+            repaired_files = [path for attempt in result["attempts"] for path in attempt["modifications"]]
+            touched = sorted(set(touched) | set(repaired_files))
+            review = verification.review(diff, touched)
             stage("SECURITY")
-            security = verification.security()
+            security = verification.security(touched)
             stage("BENCHMARK")
-            benchmark = BenchmarkRunner(self.root).run_benchmarks()
+            model_latency = sum(event.get("latency") or 0.0 for event in router.history)
+            benchmark = BenchmarkRunner(self.root).run_benchmarks(
+                task_success=debug_result.success,
+                repair_attempts=len(result["attempts"]),
+                files_changed=touched,
+                model_latency=model_latency,
+            )
             stage("ACCEPTANCE")
             gates = [verification.tests(), verification.build(), verification.lint(), security, review]
             result["gates"] = [asdict(gate) for gate in gates]
@@ -149,13 +176,18 @@ class Supervisor:
             if commit.returncode != 0:
                 raise RuntimeError(commit.stderr.strip() or "git commit failed")
             checkpoint_manager.cleanup(checkpoint)
-            result.update(accepted=True, files=touched, model=response.metadata.get("model"))
+            result.update(accepted=True, files=touched, model=response.metadata.get("model"),
+                          duration_seconds=perf_counter() - started)
             stage("COMPLETED")
             return result
         except Exception as exc:
             stage("ROLLBACK")
             # Restore only files belonging to this run. Unrelated user files are
-            # not deleted or rewritten.
+            # not deleted or rewritten. Also remove candidate index entries after
+            # a commit/staging failure without touching the worktree.
+            git.unstage_files(touched)
             checkpoint_manager.rollback(checkpoint, sorted(set(touched)))
-            result["error"] = str(exc)
+            checkpoint_manager.cleanup(checkpoint)
+            result.update(error=str(exc), rollback=True, files=touched,
+                          failure_reason=str(exc), duration_seconds=perf_counter() - started)
             return result

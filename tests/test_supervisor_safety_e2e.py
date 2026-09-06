@@ -1,12 +1,18 @@
 import json, subprocess
 from forge.core.supervisor import Supervisor
+from forge.tools.git import GitTool
 from forge.models.provider import ModelResult
 from forge.models.router import ModelInfo, ModelRouter
 
 class AlwaysBrokenModel:
     name = "bounded-model"
     def generate(self, prompt, *, context="", task=""):
-        return ModelResult(json.dumps({"changes": {"app.py": "def health(): return False\n"}}), self.name)
+        return ModelResult(json.dumps({"changes": {"app.py": "def health(): return False\n"}, "explanation": "deliberately broken candidate"}), self.name)
+
+class GoodModel:
+    name = "good-model"
+    def generate(self, prompt, *, context="", task=""):
+        return ModelResult(json.dumps({"changes": {"app.py": "def health(): return True\n"}, "explanation": "preserve the passing implementation"}), self.name)
 
 def repo(tmp_path):
     (tmp_path / "app.py").write_text("def health(): return True\n")
@@ -31,6 +37,18 @@ def test_rejected_candidate_is_bounded_and_rolled_back(tmp_path):
     assert (tmp_path / "unrelated.txt").read_text() == "keep me\n"
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, text=True, capture_output=True).stdout.count("initial") == 1
     assert all(".forge" not in line for line in subprocess.run(["git", "status", "--short"], cwd=tmp_path, text=True, capture_output=True).stdout.splitlines())
+
+def test_commit_failure_rolls_back_and_never_reports_acceptance(tmp_path, monkeypatch):
+    repo(tmp_path)
+    router = ModelRouter([ModelInfo("good", "coding", available=True, provider=GoodModel(), capabilities=("coding",))])
+    def fail_commit(self, files, message):
+        return subprocess.CompletedProcess(["git", "commit"], 1, "", "simulated commit failure")
+    monkeypatch.setattr(GitTool, "commit_files", fail_commit)
+    outcome = Supervisor("commit-failure", tmp_path).run("Preserve health", approved=True, router=router)
+    assert not outcome["accepted"] and outcome["rollback"]
+    assert (tmp_path / "app.py").read_text() == "def health(): return True\n"
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, text=True, capture_output=True).stdout.count("initial") == 1
+
 
 def test_model_route_records_provider_failure_latency_and_success():
     class FailingProvider:
