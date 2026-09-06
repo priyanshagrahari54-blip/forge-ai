@@ -254,3 +254,125 @@ def test_empty_plan_completes_without_agent_execution():
 
     assert results == []
     assert task.status == TaskStatus.COMPLETED
+
+
+def test_pipeline_rejects_invalid_plan_before_execution():
+    registry = AgentRegistry()
+
+    executed = []
+
+    invalid_agent = AgentRegistration(
+        name="coder",
+        role="testing",
+        executor=CallableAgentExecutor(
+            "coder",
+            lambda request: executed.append("executed"),
+        ),
+        capabilities=("testing",),
+    )
+
+    registry.register(invalid_agent)
+
+    from forge.agents.planner import AgentPlan, PlannedAgent
+    from forge.agents.requirements import TaskRequirements
+
+    plan = AgentPlan(
+        requirements=TaskRequirements(capabilities=("coding",), roles=("coding",)),
+        agents=(
+            PlannedAgent(
+                capability="coding",
+                registration=invalid_agent,
+                order=0,
+            ),
+        ),
+    )
+
+    pipeline = AgentPipeline(agent_registry=registry)
+
+    task = Task(
+        id="plan-validation-1",
+        description="implement the code",
+    )
+
+    results = pipeline.execute_plan(task, plan)
+
+    assert len(results) == 1
+    assert not results[0].success
+    assert "Invalid agent plan" in results[0].error
+    assert task.status == TaskStatus.FAILED
+    assert executed == []
+
+
+def test_pipeline_does_not_build_context_for_invalid_plan():
+    registry = AgentRegistry()
+
+    invalid_agent = AgentRegistration(
+        name="coder",
+        role="testing",
+        executor=CallableAgentExecutor(
+            "coder",
+            lambda request: "should not execute",
+        ),
+        capabilities=("testing",),
+    )
+
+    registry.register(invalid_agent)
+
+    from forge.agents.planner import AgentPlan, PlannedAgent
+    from forge.agents.requirements import TaskRequirements
+
+    plan = AgentPlan(
+        requirements=TaskRequirements(capabilities=("coding",), roles=("coding",)),
+        agents=(
+            PlannedAgent(
+                capability="coding",
+                registration=invalid_agent,
+                order=0,
+            ),
+        ),
+    )
+
+    context_calls = []
+
+    def context_provider(task):
+        context_calls.append(task.id)
+        raise AssertionError("Context must not be built for an invalid plan.")
+
+    pipeline = AgentPipeline(
+        agent_registry=registry,
+        context_provider=context_provider,
+    )
+
+    task = Task(
+        id="plan-validation-2",
+        description="implement the code",
+    )
+
+    results = pipeline.execute_plan(task, plan)
+
+    assert len(results) == 1
+    assert not results[0].success
+    assert task.status == TaskStatus.FAILED
+    assert context_calls == []
+
+
+def test_valid_plan_still_executes_after_validation():
+    registry = make_registry()
+
+    planner = CapabilityAgentPlanner(registry)
+    plan = planner.plan(
+        "Fix the bug, implement the code, run tests, and review the code."
+    )
+
+    pipeline = AgentPipeline(agent_registry=registry)
+
+    task = Task(
+        id="plan-validation-3",
+        description="Fix the bug, implement the code, run tests, and review the code.",
+    )
+
+    results = pipeline.execute_plan(task, plan)
+
+    assert len(results) == 4
+    assert all(result.success for result in results)
+    assert task.status == TaskStatus.COMPLETED

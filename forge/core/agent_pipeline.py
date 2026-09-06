@@ -6,6 +6,7 @@ from typing import Callable, Mapping
 from forge.agents.registry import AgentRegistry
 from forge.agents.planner import AgentPlan
 from forge.agents.stage_executor import ExecutorStageAgent
+from forge.agents.validator import AgentPlanValidator
 from forge.core.pipeline_agents import StageAgent, StageAgentResult
 from forge.core.task_engine import Task, TaskStatus
 from forge.intelligence.agent_context import AgentContext
@@ -76,6 +77,11 @@ class AgentPipeline:
         self.stage_agents = dict(stage_agents or {})
         self.agent_registry = agent_registry
         self.context_provider = context_provider
+        self.plan_validator = (
+            AgentPlanValidator(agent_registry)
+            if agent_registry is not None
+            else None
+        )
 
     def _resolve_agent(self, stage: TaskStatus) -> StageAgent | None:
         if self.agent_registry is None:
@@ -172,6 +178,22 @@ class AgentPipeline:
         four-stage pipeline.
         """
         results: list[PipelineStageResult] = []
+
+        if self.plan_validator is not None:
+            validation = self.plan_validator.validate(plan)
+
+            if not validation.valid:
+                task.status = TaskStatus.FAILED
+
+                return [
+                    PipelineStageResult(
+                        stage=TaskStatus.RUNNING,
+                        success=False,
+                        error="Invalid agent plan: " + "; ".join(
+                            validation.messages
+                        ),
+                    )
+                ]
 
         context = self._build_context(task)
 

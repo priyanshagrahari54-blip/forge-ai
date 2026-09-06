@@ -66,7 +66,7 @@ def test_valid_plan_passes() -> None:
     assert result.issues == ()
 
 
-def test_empty_plan_is_rejected() -> None:
+def test_empty_plan_is_valid_noop() -> None:
     from forge.agents.requirements import TaskRequirements
 
     registry = AgentRegistry()
@@ -74,8 +74,8 @@ def test_empty_plan_is_rejected() -> None:
 
     result = AgentPlanValidator(registry).validate(plan)
 
-    assert not result.valid
-    assert result.issues[0].code == PlanValidationCode.EMPTY_PLAN
+    assert result.valid
+    assert result.issues == ()
 
 
 def test_unknown_agent_is_rejected() -> None:
@@ -178,12 +178,13 @@ def test_validate_or_raise_does_not_raise_for_valid_plan() -> None:
 def test_validate_or_raise_raises_for_invalid_plan() -> None:
     registry = AgentRegistry()
 
-    from forge.agents.requirements import TaskRequirements
-
-    plan = AgentPlan(
-        requirements=TaskRequirements(capabilities=("coding",)),
-        agents=(),
+    unknown_agent = registration(
+        "unknown-coder",
+        "coding",
+        ("coding",),
     )
+
+    plan = plan_for(("coding", unknown_agent))
 
     with pytest.raises(ValueError, match="Invalid agent plan"):
         AgentPlanValidator(registry).validate_or_raise(plan)

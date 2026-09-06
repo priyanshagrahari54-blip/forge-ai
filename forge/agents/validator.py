@@ -58,15 +58,6 @@ class AgentPlanValidator:
     def validate(self, plan: AgentPlan) -> PlanValidationResult:
         issues: list[PlanValidationIssue] = []
 
-        if plan.is_empty():
-            issues.append(
-                PlanValidationIssue(
-                    code=PlanValidationCode.EMPTY_PLAN,
-                    message="Agent plan contains no executable agents.",
-                )
-            )
-            return PlanValidationResult(valid=False, issues=tuple(issues))
-
         seen_agents: set[str] = set()
 
         for planned in plan.agents:
