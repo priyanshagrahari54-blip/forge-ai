@@ -7,6 +7,7 @@ from forge.agents.planner import AgentPlan
 from forge.agents.registry import AgentRegistry
 CAPABILITY_STAGES = {
     "planning": "planning",
+    "research": "researching",
     "coding": "coding",
     "testing": "testing",
     "debugging": "debugging",
@@ -156,5 +157,6 @@ class AgentPlanValidator:
             "security": "security",
             "documentation": "documentation",
             "planning": "planning",
+            "research": "researching",
         }
         return role_map.get(capability)

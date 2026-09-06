@@ -30,6 +30,21 @@ class TaskRequirementExtractor:
             ),
         ),
         (
+            "research",
+            (
+                "research",
+                "researcher",
+                "researched",
+                "investigate",
+                "investigation",
+                "explore",
+                "exploration",
+                "locate",
+                "study",
+                "understand",
+            ),
+        ),
+        (
             "coding",
             (
                 "code",
@@ -98,6 +113,7 @@ class TaskRequirementExtractor:
         "review": "reviewing",
         "security": "security",
         "documentation": "documentation",
+        "research": "researching",
     }
 
     def extract(self, task_description: str) -> TaskRequirements:

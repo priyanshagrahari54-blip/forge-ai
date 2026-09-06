@@ -41,6 +41,7 @@ class AgentPipeline:
 
     CAPABILITY_STAGES = {
         "planning": TaskStatus.PLANNING,
+        "research": TaskStatus.RESEARCHING,
         "coding": TaskStatus.CODING,
         "testing": TaskStatus.TESTING,
         "debugging": TaskStatus.DEBUGGING,
