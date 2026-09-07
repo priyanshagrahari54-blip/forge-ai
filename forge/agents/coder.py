@@ -26,13 +26,27 @@ RISK_LEVELS = frozenset({"NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
 
 
 class CoderAgent(AgentExecutor):
+    """Implement software changes through the Model Fabric.
+
+    PRIMARY (production): ``CoderAgent → Model Fabric → provider``. The
+    fabric is the authoritative routing layer (capability, policy, health,
+    telemetry, failover).
+
+    LEGACY COMPATIBILITY: ``CoderAgent → legacy ModelRouter → provider``.
+    The ``router=`` argument is preserved verbatim for pre-existing callers
+    and tests; it is compatibility infrastructure, not a second production
+    routing algorithm. New callers must use ``fabric=`` (the default when
+    neither is supplied).
+    """
+
     name = "coder"
 
     def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
                  fabric: "ModelFabric | None" = None):
         # Routing input priority: explicit fabric > explicit legacy router >
-        # default fabric. The legacy router path is preserved verbatim so
-        # pre-existing integrations keep their exact behavior.
+        # default fabric. The fabric is canonical; the legacy router argument
+        # is a compatibility adapter preserved verbatim so pre-existing
+        # integrations keep their exact behavior.
         if fabric is not None:
             self.fabric = fabric
             self.router = None
@@ -285,7 +299,8 @@ class CoderAgent(AgentExecutor):
                                      stage=request.stage, metadata={"files": applied})
             return AgentResponse(True, output=response.text, agent=self.name, stage=request.stage,
                                  metadata={"files": applied, "model": response.model,
-                                           "provider": response.provider, **extra})
+                                           "provider": response.provider, "routing": "fabric",
+                                           **extra})
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})
@@ -313,7 +328,8 @@ class CoderAgent(AgentExecutor):
                                      stage=request.stage, metadata={"files": applied})
             self.router.record(model.name, True, result.latency, capability="coding", task_complexity=1.0)
             return AgentResponse(True, output=result.text, agent=self.name, stage=request.stage,
-                                 metadata={"files": applied, "model": model.name, **extra})
+                                 metadata={"files": applied, "model": model.name,
+                                           "routing": "legacy-router", **extra})
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})
