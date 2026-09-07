@@ -109,3 +109,194 @@ Known limitations: autonomous deletions are rejected (operator must delete expli
 - It is **not yet on the GitHub remote**: `git push` is rejected with `refusing to allow a GitHub App to create or update workflow '.github/workflows/ci.yml' without 'workflows' permission`, and the Contents API returns 403 `Resource not accessible by integration`. The `arena-ai-coding-agent[bot]` App installation lacks the **Workflows (read and write)** permission.
 - Consequence: GitHub Actions cannot run against the PR head until the App is granted `workflows: write` (or GitHub is reconnected in Arena with a token that has it). No CI run is claimed; the local suite (449 passed, 2 skipped) is the verification evidence in the meantime.
 - Exact next action: repo owner grants the App **Workflows → Read and write** on this repository (Settings → GitHub Apps → installed app → permissions), then `git push origin arena/01a0777f-forge-ai` delivers `38f7429` and CI runs.
+
+## A32 rebuild — production-hardened autonomous loop
+
+The previous A32 commits were no longer reachable, so A32 was rebuilt cleanly
+on `arena/01a07aa1-forge-ai` from the A31 tree (baseline: 449 passed,
+2 skipped). Each milestone below is a separate commit; no reset, rebase, or
+squash was used. Final: **550 passed, 2 skipped** (skips = opt-in live
+Ollama), `compileall` clean, `git diff --check` clean.
+
+- **Controlled ChangeSet engine** (`3a25a0a`): deterministic fingerprints,
+  `dry_run()` with zero writes, old-content/hash guards, structured
+  `ChangeError` values, and a `delete` action gated behind `allow_delete`
+  plus explicit approval (model-proposed deletes stay rejected).
+  Tests: `tests/test_a32_changeset.py` (16).
+- **Permission policy gate** (`1c4e78b`): explicit
+  `ALLOW`/`DENY`/`REQUIRE_APPROVAL` over operation, path, tool, risk, and
+  requested capability; `SAFE`/`ASSISTED`/`AUTONOMOUS`/`LOCKED` modes with
+  risk-aware autonomous auto-approval. The engine authorizes every change
+  before modification; denials are recorded, never bypassed.
+  Tests: `tests/test_a32_policy_gate.py` (20).
+- **Model-driven coding pipeline** (`3e48af1`): coder schema gains
+  `tests_to_run`/`risk_level` plus per-change `risk`/`old_hash`/`old_content`
+  guards threaded into the ChangeSet engine and policy gate; the legacy
+  `router=` path is preserved and `request.metadata["changes"]` shortcuts
+  are behaviorally proven absent.
+  Tests: `tests/test_a32_coding_pipeline.py` (11).
+- **Test/debug/repair loop** (`6f72f46`): repairs validate through the
+  ChangeSet engine and authorize via the policy gate; structured
+  `FailureReport`s, recorded retry reasons, and targeted runs from the
+  coder's `tests_to_run` (the acceptance gate still runs the full suite).
+  Tests: `tests/test_a32_debug_loop.py` (9).
+- **Independent review and security gates** (`8c346c4`): configurable
+  `ReviewPolicy` `MEDIUM` budget with `HIGH`/`CRITICAL` always blocking;
+  security flags key/credential files on sight, unsafe and protected paths,
+  and shell/`popen` command usage — no hardcoded scores.
+  Tests: `tests/test_a32_gates.py` (12).
+- **Acceptance and rollback verification** (`c5b43d8`): decisions name
+  `failed_gates` and carry measured `metrics` with explicit lint-execution
+  evidence; checkpoints record exact restore metadata; staging rejects key
+  material; `commit_accepted()` refuses commits unless acceptance succeeded.
+  Tests: `tests/test_a32_acceptance_safety.py` (15).
+- **Autonomous engineering E2E** (`632f3c2`): fabric-path failure matrix —
+  malformed output, unauthorized/traversal paths, secrets, credential files,
+  repair failure, review/security rejection, commit failure — each proving
+  rejection, exact rollback, no commit, and structured reporting.
+  Tests: `tests/test_a32_failure_matrix.py` (9).
+- **Supervisor observability and timing** (`b8b4af2`): ordered redacted
+  event log, measured per-phase timings, real model latency/token metadata
+  (`None` when unreported, never fabricated).
+  Tests: `tests/test_a32_observability.py` (9).
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md` + README):
+  architecture, configuration examples, safety/permission docs, and an
+  implemented/tested/optional/not-yet matrix.
+
+Known limitations: model-proposed deletes are rejected by design (explicit
+operator path only); the model reviewer needs a review-capable model;
+lint/type checks run only when the target declares them (omission recorded);
+live Ollama E2E remains opt-in and was not run here (no endpoint).
+
+## A32 final hardening — approval at the policy boundary (PR #5)
+
+Focused hardening pass on `arena/01a07aa1-forge-ai` (no rebuild, no
+reset/rebase). Final: **575 passed, 2 skipped** (skips = opt-in live
+Ollama), `compileall` clean, `git diff --check` clean.
+
+- **Approval architecture** (`ad6f7d3`): the supervisor blanket approval
+  gate is gone. Inspection, planning, selection, proposal generation, test
+  execution, and verification proceed without write approval; every write
+  and the commit must pass the PolicyGate under an explicit mode
+  (`safe`/`assisted`/`autonomous`/`locked`). New constrained `run_tests`
+  tool (exact interpreter, pytest only, safe flags/paths) so tests need no
+  write approval; `terminal` stays approval-gated.
+- **Canonical fabric** (`68655fe`): `CoderAgent → Model Fabric → provider`
+  documented as the production route with `router=` as a legacy
+  compatibility adapter; success metadata records `routing`.
+- **Decision semantics** (`d590d2d`): `tests/test_a32_approval.py` (13) —
+  Tests A–F plus commit gating, constrained test execution, routing
+  markers; build/lint acceptance failures added.
+- **Rollback/Git staging** (`16a236e`): `tests/test_a32_rollback_git.py`
+  (4) — behavioral proof of no broad destructive Git commands, exclusion
+  of unrelated tracked modifications from commits, staged-set mismatch
+  refusal, deleted-candidate restore; ChangeSet security regressions.
+- **Strengthened E2E** (`c93d0cf`): `tests/test_a32_csv_e2e.py` — CSV
+  export plus tests plus docs through the mock fabric provider with
+  per-file ALLOW proof, real behavior verification, and safe-commit scope.
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md` + README):
+  proposal vs execution, mode matrix, canonical fabric vs legacy adapter.
+
+## A33 — Permission & Policy Platform (PR #5)
+
+Built on `arena/01a07aa1-forge-ai` on top of the hardened A32 loop (no
+rebuild, no reset/rebase, A32 suite untouched and green). Baseline before
+changes: **575 passed, 2 skipped** (verified by running the suite, not
+assumed). Final: **782 passed, 2 skipped** (skips = opt-in live Ollama),
+`compileall` clean, `git diff --check` clean.
+
+- **Policy engine** (`95f03bd`): `forge/security/policy.py` —
+  `PermissionRequest/Rule/Policy` with documented most-specific-wins
+  precedence, filesystem/domain/terminal/network/model/git/desktop/voice
+  scopes, simulation, decision cache with invalidation, strict config
+  validation, and locked/safe/assisted/autonomous/custom profiles.
+  Tests: `tests/test_a33_policy.py` (81).
+- **Approvals & task scope** (`e6533ca` + M5 refinements): structured
+  requests, scoped single-use non-transferable time-bounded tokens with
+  per-chain idempotent redemption and non-consuming previews, escalation
+  requiring a distinct approver, temporary task grants. Tests:
+  `tests/test_a33_approvals.py` (27).
+- **Audit & classification** (`5ca93d1`): secret-safe audit events/log
+  (shared redactor extended with Bearer-token masking), data
+  classification with detection-wins semantics, model data policy. Tests:
+  `tests/test_a33_audit.py` + `tests/test_a33_data_policy.py` (23).
+- **Resource foundations** (`9ed783b`): policy-gated mock browser,
+  network, desktop plus a permission-routed voice interface. No real
+  automation, sockets, input control, or speech recognition. Tests:
+  `tests/test_a33_resources.py` (15).
+- **A32 integration** (`89655d7`): tighten-only wiring through the gate
+  and runtime (explicit rules restrict, never loosen), token redemption
+  at both layers, task grants in the applier, audit at every layer,
+  context classification, per-model data-policy filtering in the fabric,
+  supervisor surfacing (`task_grant`, `audit_events`). Tests:
+  `tests/test_a33_integration.py` (20).
+- **Cockpit interfaces** (`d59ab15`): `forge/cockpit.py` — task
+  submission/status, approval queue/decisions/token minting, event
+  streams, logs, model/agent summaries. No frontend. Tests:
+  `tests/test_a33_cockpit.py` (5).
+- **Invariants & attacks** (`32efb42`): all ten §23 invariants tested
+  plus defensive abuse coverage (§24). Tests:
+  `tests/test_a33_invariants.py` + `tests/test_a33_attack.py` (33).
+- **E2E** (`a14bebb`): full CSV run through the platform (task grant,
+  gates, safe commit, audit report, approval-gated twin, late-stage
+  rollback) plus mock browser/desktop E2E. Tests: `tests/test_a33_e2e.py`.
+- **Documentation** (this entry + `docs/A33-PERMISSION-PLATFORM.md` +
+  README): architecture, precedence algorithm, scopes, agent identity,
+  task permissions, approval model, expiration, resource foundations,
+  invariants, examples, threat model, audit logging, config format.
+
+Known limitations: mocks stand in for real browser/network/desktop/voice
+I/O by design; the cockpit has backend interfaces only (no UI); terminal
+`ALLOW` rules require exact pinned argv; live Ollama E2E remains opt-in
+and was not run here (no endpoint).
+
+## PR #5 final hardening — atomic ChangeSet transaction boundary
+
+Single focused commit `fix(A32): make ChangeSet application
+transaction-safe` on `arena/01a07aa1-forge-ai` atop `2ef2065` (no
+rebuild, no reset/rebase, no A32/A33 redesign). Baseline before changes:
+**782 passed, 2 skipped** (verified by running the suite). Final:
+**806 passed, 2 skipped** (skips = opt-in live Ollama),
+`tests/test_a32_transaction.py` 24/24, targeted A32/A33
+transaction/permission/rollback/Git/E2E selection 320/320,
+`compileall` clean, `git diff --check` clean, forbidden-command grep
+(`git reset --hard`, `git add .`, `git add -A`, `git add --all`) clean
+on the changed files.
+
+- **Transaction boundary** (`forge/tools/change_applier.py` only):
+  `ChangeApplier.apply()` now runs normalize → validate EVERY change →
+  authorize EVERY change through the existing A33 PolicyGate in preview
+  (non-consuming) mode → checkpoint → mint task grant → apply with
+  stop-on-first-failure. Invalid, conflicting (`CONFLICTING_CHANGES`),
+  malformed (`MALFORMED_CHANGESET`), denied, or approval-missing change
+  sets produce zero writes and no checkpoint; mid-application failures
+  (including unexpected runtime exceptions) stop immediately and roll the
+  checkpoint back over exactly the candidate files. Token consumption is
+  unchanged (preview consumes nothing; one redemption per enforcement
+  chain at execution). `ApplyResult` gains `proposed_paths`,
+  `rolled_back`, and `duration_ms` for transaction observability; error
+  paths carry no secret content.
+- **Regression tests** (`tests/test_a32_transaction.py`, 24): Test A
+  later-validation-failure (with and without checkpoint manager), Test B
+  later-policy-denial via an explicit engine DENY, Test C mixed
+  ALLOW/REQUIRE_APPROVAL without approval, Test D full multi-file
+  success, Test E mid-application failure (failed result + raised
+  exception) with candidate restore and unrelated-work preservation,
+  Test F modify/delete and content conflicts plus identical-duplicate
+  dedupe, Test G stale hash guard, Test H security/mode/approval
+  regression battery, single-use-token-exhaustion-mid-transaction
+  fail-closed proof, checkpoint-ordering spy proof, malformed-entry
+  rejection, and secret-free observability.
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md`): the
+  invariant "Forge performs complete ChangeSet validation and
+  authorization before creating a checkpoint or modifying any candidate
+  file" plus the transaction sequence and a status-matrix row.
+
+Known limitations: rollback of mid-application failures still requires
+a configured `CheckpointManager` (unchanged pre-existing requirement).
+Verified semantics (tested, not a limitation): a single-use approval
+token covering several changes in one set authorizes the first
+execution and fails the rest closed — the transaction stops and rolls
+back to zero candidate writes.
+
+No A34 work was started.

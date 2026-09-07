@@ -1,8 +1,15 @@
-"""Central acceptance decision (A32.10).
+"""Central acceptance decision (A32.7 / A32.10).
 
 Aggregates the mandatory verification gates into a single ``AcceptanceDecision``
 so one passing component can never override a failed mandatory gate. Every gate
 must pass for ACCEPT; otherwise the result is REJECT/RECOVER.
+
+The decision names every failed gate (``failed_gates``) and carries measured
+``metrics`` (finding counts, file counts, execution evidence). Gates that did
+not execute are never silently converted into success: an unconfigured
+lint/type checker passes only under the explicit, documented
+pass-when-unconfigured policy, and the omission is recorded in
+``metrics["lint_executed"]``.
 """
 from __future__ import annotations
 
@@ -36,6 +43,8 @@ class AcceptanceDecision:
     rollback_result: str = "NOT_AVAILABLE"
     changed_files: list[str] = field(default_factory=list)
     risk_level: str = "NONE"
+    failed_gates: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +59,8 @@ class AcceptanceDecision:
             "rollback_result": self.rollback_result,
             "changed_files": list(self.changed_files),
             "risk_level": self.risk_level,
+            "failed_gates": list(self.failed_gates),
+            "metrics": dict(self.metrics),
         }
 
 
@@ -81,49 +92,59 @@ class AcceptanceEngine:
     ) -> AcceptanceDecision:
         changed = list(changed_files or [])
         reasons: list[str] = []
+        failed_gates: list[str] = []
         all_pass = True
+
+        def fail(gate: str, reason: str) -> None:
+            nonlocal all_pass
+            all_pass = False
+            failed_gates.append(gate)
+            reasons.append(reason)
 
         test_passed = tests.passed
         if not test_passed:
-            all_pass = False
-            reasons.append(f"tests failed: {tests.details}")
+            fail("tests", f"tests failed: {tests.details}")
         build_passed = build.passed
         if not build_passed:
-            all_pass = False
-            reasons.append(f"build failed: {build.details}")
+            fail("build", f"build failed: {build.details}")
         lint_passed = lint.passed
         if not lint_passed:
-            all_pass = False
-            reasons.append(f"lint/type failed: {lint.details}")
+            fail("lint", f"lint/type failed: {lint.details}")
 
         review_verdict = ReviewVerdict.APPROVE.value
         if review is not None and not review.approved:
-            all_pass = False
             review_verdict = review.verdict.value
-            reasons.append(f"review {review_verdict}: {review.reason}")
+            fail("review", f"review {review_verdict}: {review.reason}")
 
         security_passed = security.passed
         if not security_passed:
-            all_pass = False
-            reasons.append(f"security failed: {security.details}")
+            fail("security", f"security failed: {security.details}")
 
         benchmark_passed = benchmark is None or benchmark.passed
         if not benchmark_passed:
-            all_pass = False
-            reasons.append(f"benchmark failed: {benchmark.details}")
+            fail("benchmark", f"benchmark failed: {benchmark.details}")
 
         if not permissions_ok:
-            all_pass = False
-            reasons.append("permission gate failed")
+            fail("permissions", "permission gate failed")
         if not rollback_available:
-            all_pass = False
-            reasons.append("no checkpoint rollback available")
+            fail("rollback", "no checkpoint rollback available")
 
         if not changed:
-            all_pass = False
-            reasons.append("no changed files to accept")
+            fail("changes", "no changed files to accept")
 
         security_findings = len((security.evidence or {}).get("findings", []))
+        review_findings = len(review.findings) if review is not None else 0
+        metrics: dict[str, Any] = {
+            "changed_file_count": len(changed),
+            "security_findings": security_findings,
+            "review_findings": review_findings,
+            "review_verdict": review_verdict,
+            # Explicit execution evidence: a lint gate with no configured
+            # checker passes only under the documented pass-when-unconfigured
+            # policy, and the omission is visible here.
+            "lint_executed": bool((lint.evidence or {}).get("commands")),
+            "tests_no_tests": bool((tests.evidence or {}).get("no_tests", False)),
+        }
         return AcceptanceDecision(
             accepted=all_pass,
             reasons=reasons,
@@ -136,4 +157,6 @@ class AcceptanceEngine:
             rollback_result="AVAILABLE" if rollback_available else "UNAVAILABLE",
             changed_files=changed,
             risk_level=_risk_level(review_verdict, security_findings),
+            failed_gates=failed_gates,
+            metrics=metrics,
         )

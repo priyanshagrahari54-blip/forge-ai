@@ -34,6 +34,8 @@ from forge.models.registry import Model, ModelRegistry
 from forge.models.request import ModelRequest, ModelResponse
 from forge.models.router import FabricRouter, ModelInfo, ModelRouter, RouteDecision
 from forge.models.telemetry import Telemetry
+from forge.security.classification import DataClassification, classify_text
+from forge.security.policy_gate import PolicyDecision
 
 
 def _forwardable_kwargs(callable_obj: Any, **kwargs: Any) -> dict[str, Any]:
@@ -71,7 +73,11 @@ class ModelFabric:
         telemetry: Telemetry | None = None,
         credentials: CredentialStore | None = None,
         config: FabricConfig | None = None,
+        model_policy=None,
     ) -> None:
+        #: Optional model data policy (A33): classified content is filtered
+        #: per candidate model before any provider call. ``None`` (default)
+        #: preserves exact legacy behavior.
         self.config = config
         self.registry = registry if registry is not None else ModelRegistry()
         self.providers = providers if providers is not None else ProviderRegistry()
@@ -84,6 +90,7 @@ class ModelFabric:
         self.router = router if router is not None else FabricRouter(self.registry, self.policy, self.telemetry)
         self.default_model = config.default_model if config else None
         self.preferred_provider = config.preferred_provider if config else None
+        self.model_policy = model_policy
 
     # -- construction ----------------------------------------------------
 
@@ -224,6 +231,7 @@ class ModelFabric:
             error = decision.error or "no model available for this request"
             self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=error)
             return ModelResponse.failure(error, request_id=request.trace_id)
+        data_policy, classification, data_authorized = self._data_policy_for(request)
 
         chain = self._failover_chain(decision)
         last_error = ""
@@ -232,6 +240,20 @@ class ModelFabric:
                 model = self.registry.get(model_name)
             except KeyError:
                 continue
+            if data_policy is not None and classification is not None:
+                verdict = data_policy.evaluate(
+                    classification, local=model.local,
+                    authorized=data_authorized)
+                if verdict != PolicyDecision.ALLOW:
+                    last_error = (
+                        f"model {model.name!r} is not authorized for "
+                        f"{classification.value} data ({verdict.value})")
+                    self.record_feedback(
+                        model=model.name, provider=model.provider,
+                        capability=request.capability, success=False,
+                        error=last_error,
+                    )
+                    continue
             provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
             if provider is None:
                 # A model whose provider is not registered can never succeed.
@@ -274,6 +296,8 @@ class ModelFabric:
                 latency_ms=(perf_counter() - started) * 1000.0,
                 finish_reason="stop",
             )
+            if classification is not None:
+                response.metadata["classification"] = classification.value
             self.record_feedback(
                 model=model.name, provider=model.provider, capability=request.capability,
                 success=True, latency_ms=response.latency_ms,
@@ -317,6 +341,7 @@ class ModelFabric:
             error = decision.error or "no model available for this request"
             self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=error)
             raise ModelUnavailableError(error)
+        data_policy, classification, data_authorized = self._data_policy_for(request)
 
         chain = self._failover_chain(decision)
         last_error = ""
@@ -325,6 +350,20 @@ class ModelFabric:
                 model = self.registry.get(model_name)
             except KeyError:
                 continue
+            if data_policy is not None and classification is not None:
+                verdict = data_policy.evaluate(
+                    classification, local=model.local,
+                    authorized=data_authorized)
+                if verdict != PolicyDecision.ALLOW:
+                    last_error = (
+                        f"model {model.name!r} is not authorized for "
+                        f"{classification.value} data ({verdict.value})")
+                    self.record_feedback(
+                        model=model.name, provider=model.provider,
+                        capability=request.capability, success=False,
+                        error=last_error,
+                    )
+                    continue
             provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
             if provider is None:
                 model.available = False
@@ -416,6 +455,21 @@ class ModelFabric:
         except Exception as exc:
             return [], False, str(exc)
         return chunks, True, ""
+
+    def _data_policy_for(self, request: ModelRequest):
+        """Resolve the effective model data policy for one request.
+
+        A request-level policy (``metadata["model_data_policy"]``) wins over
+        the fabric-level one; with neither configured, content flows exactly
+        as before (``(None, None, False)``).
+        """
+        metadata = request.metadata or {}
+        data_policy = metadata.get("model_data_policy") or self.model_policy
+        if data_policy is None:
+            return None, None, False
+        classification: DataClassification = classify_text(
+            f"{request.prompt}\n{request.context}\n{request.task}")
+        return data_policy, classification, metadata.get("data_authorized") is True
 
     def _failover_chain(self, decision: RouteDecision) -> list[str]:
         chain: list[str] = []

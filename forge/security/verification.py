@@ -69,7 +69,21 @@ class VerificationPipeline:
         re.compile(r"subprocess\.(?:run|Popen|call)\([^\n]*shell\s*=\s*True", re.I),
         re.compile(r"(?:^|[\s\"'])sh\s+-c(?:[\s\"'])"),
         re.compile(r"(?:^|[\s\"'])\.\.(?:[/\\])"),
+        re.compile(r"(?:^|[\s\"'])bash\s+-c(?:[\s\"'])"),
+        re.compile(r"\bos\.popen\s*\("),
     )
+
+    #: Key material extensions flagged on sight (content need not match).
+    KEY_FILE_SUFFIXES = frozenset({".pem", ".key", ".p12", ".pfx"})
+    #: Exact private-key filenames flagged on sight.
+    PRIVATE_KEY_NAMES = frozenset({"id_rsa", "id_dsa", "id_ed25519", "id_ecdsa"})
+    #: Data suffixes that make a secretish stem a credential file. Source
+    #: files such as ``credentials.py`` are *not* flagged by name alone.
+    CREDENTIAL_DATA_SUFFIXES = frozenset(
+        {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf"})
+    #: Stems that mark a data file as credential-like.
+    CREDENTIAL_STEM_SUBSTRINGS = ("credentials", "private_key")
+    CREDENTIAL_STEM_NAMES = frozenset({"secret", "secrets"})
 
     def __init__(self, root: str | Path = "."):
         self.root = Path(root).resolve()
@@ -136,18 +150,54 @@ class VerificationPipeline:
                 files.append(path)
         return files
 
+    @classmethod
+    def _sighting_rule(cls, path: Path) -> str | None:
+        """Name-based rule for key/credential files, or ``None`` when clean."""
+        name = path.name
+        lowered = name.lower()
+        if lowered in cls.PRIVATE_KEY_NAMES or path.suffix.lower() in cls.KEY_FILE_SUFFIXES:
+            return "private key material"
+        stem = Path(lowered).stem
+        if (path.suffix.lower() in cls.CREDENTIAL_DATA_SUFFIXES
+                and (stem in cls.CREDENTIAL_STEM_NAMES
+                     or any(token in stem for token in cls.CREDENTIAL_STEM_SUBSTRINGS))):
+            return "credential file"
+        return None
+
+    @staticmethod
+    def _declared_path_finding(name: object) -> dict[str, str] | None:
+        """Flag unauthorized declared paths (traversal, absolute, protected)."""
+        if not isinstance(name, str) or not name:
+            return {"file": str(name), "rule": "unsafe path"}
+        candidate = Path(name)
+        parts = candidate.parts
+        if candidate.is_absolute() or ".." in parts or "\\" in name:
+            return {"file": name, "rule": "unsafe path"}
+        if ".git" in parts or ".forge" in parts:
+            return {"file": name, "rule": "protected repository file"}
+        return None
+
     def security(self, changed_files: Iterable[str] | None = None) -> GateResult:
         findings: list[dict[str, str]] = []
+        if changed_files is not None:
+            for declared in changed_files:
+                path_finding = self._declared_path_finding(declared)
+                if path_finding is not None:
+                    findings.append(path_finding)
         for path in self._candidate_files(changed_files):
             rel_parts = path.relative_to(self.root).parts
             if is_excluded(rel_parts):
                 continue
             if path.stat().st_size > 2_000_000:
                 continue
-            # Environment/credential files are findings on sight; they must not
-            # enter a commit even if their contents evade a regex.
+            # Environment/credential/key files are findings on sight; they
+            # must not enter a commit even if their contents evade a regex.
             if path.name == ".env" or path.name.endswith(".env"):
                 findings.append({"file": str(path.relative_to(self.root)), "rule": "environment file"})
+                continue
+            sighting = self._sighting_rule(path)
+            if sighting is not None:
+                findings.append({"file": str(path.relative_to(self.root)), "rule": sighting})
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

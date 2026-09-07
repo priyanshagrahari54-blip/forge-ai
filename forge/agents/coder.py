@@ -10,6 +10,7 @@ from forge.intelligence.repository import RepositoryIntelligence
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
+from forge.security.classification import classify_text
 from forge.security.permissions import PermissionManager
 from forge.tools.change_applier import ChangeApplier, CodeChange
 
@@ -20,15 +21,34 @@ _SECRET_PATTERNS = (
 )
 _MAX_FILE_BYTES = 2 * 1024 * 1024
 
+#: Response-level risk labels the coder schema accepts (A32.3). Anything else
+#: is malformed model output and rejects the whole response.
+RISK_LEVELS = frozenset({"NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
+
 
 class CoderAgent(AgentExecutor):
+    """Implement software changes through the Model Fabric.
+
+    PRIMARY (production): ``CoderAgent → Model Fabric → provider``. The
+    fabric is the authoritative routing layer (capability, policy, health,
+    telemetry, failover).
+
+    LEGACY COMPATIBILITY: ``CoderAgent → legacy ModelRouter → provider``.
+    The ``router=`` argument is preserved verbatim for pre-existing callers
+    and tests; it is compatibility infrastructure, not a second production
+    routing algorithm. New callers must use ``fabric=`` (the default when
+    neither is supplied).
+    """
+
     name = "coder"
 
     def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
-                 fabric: "ModelFabric | None" = None):
+                 fabric: "ModelFabric | None" = None, approval_store=None,
+                 model_policy=None):
         # Routing input priority: explicit fabric > explicit legacy router >
-        # default fabric. The legacy router path is preserved verbatim so
-        # pre-existing integrations keep their exact behavior.
+        # default fabric. The fabric is canonical; the legacy router argument
+        # is a compatibility adapter preserved verbatim so pre-existing
+        # integrations keep their exact behavior.
         if fabric is not None:
             self.fabric = fabric
             self.router = None
@@ -43,7 +63,15 @@ class CoderAgent(AgentExecutor):
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
         # Every model-produced write goes through the controlled change-application
         # layer (path/content/secret validation + permissioned ToolRuntime).
-        self.applier = ChangeApplier(self.runtime)
+        # The repository root enables old-state guard verification.
+        self.applier = ChangeApplier(self.runtime, root=self.root,
+                                     approval_store=approval_store)
+        #: Optional model data policy, enforced by the fabric per request.
+        self.model_policy = model_policy
+        #: Policy decisions from the most recent apply (observability).
+        self.last_decisions: list = []
+        #: Task grant from the most recent apply, when task-scoped.
+        self.last_task_grant: dict | None = None
 
     def describe(self) -> str:
         return "Responsible for implementing software changes using a routed model."
@@ -72,8 +100,11 @@ class CoderAgent(AgentExecutor):
             "You are an autonomous coding agent. Implement the task while preserving architecture. "
             "Return ONLY JSON with either "
             "{changes:{relative/path:str file contents}, explanation:str} or "
-            "{summary:str, changes:[{path:str, action:create|modify, content:str}], "
-            "tests:[relative/path], reasoning_summary:str, risks:[str]}. "
+            "{summary:str, changes:[{path:str, action:create|modify, content:str, "
+            "risk:NONE|LOW|MEDIUM|HIGH|CRITICAL, old_hash:str, old_content:str}], "
+            "tests_to_run:[relative/path], reasoning_summary:str, "
+            "risk_level:NONE|LOW|MEDIUM|HIGH|CRITICAL, risks:[str]}. "
+            "Per-change risk/old_hash/old_content are optional guards. "
             "Never edit outside the repository, never emit secrets, and never include hidden reasoning.\n"
             f"TASK: {request.task.description}\nCONTEXT:\n{context}\nTOOLS/INSTRUCTIONS:{request.instructions}"
         )
@@ -87,8 +118,10 @@ class CoderAgent(AgentExecutor):
         """Parse a model response into validated changes plus structured summary.
 
         Accepts the legacy mapping schema ``{"changes": {path: content}}`` and
-        the richer list schema ``{"changes": [{path, action, content}], ...}``.
-        Deletions are rejected: autonomous runs never delete files implicitly.
+        the richer list schema ``{"changes": [{path, action, content, ...}],
+        ...}``. List entries may carry optional ``risk``, ``old_hash``, and
+        ``old_content`` guards, threaded into the ChangeSet engine. Deletions
+        are rejected: autonomous runs never delete files implicitly.
         """
         cleaned = text.strip()
         if "```" in cleaned:
@@ -103,10 +136,18 @@ class CoderAgent(AgentExecutor):
         summary = data.get("summary", "")
         reasoning = data.get("reasoning_summary", "")
         risks = data.get("risks", [])
-        tests = data.get("tests", [])
+        # ``tests_to_run`` is the canonical A32 field; ``tests`` stays as a
+        # backward-compatible alias carrying the same list.
+        tests = data.get("tests_to_run", data.get("tests", []))
+        risk_level = data.get("risk_level", "NONE")
+        if not isinstance(risk_level, str) or risk_level.upper() not in RISK_LEVELS:
+            raise ValueError(
+                f"Model risk_level must be one of {sorted(RISK_LEVELS)}")
+        risk_level = risk_level.upper()
 
         changes_raw = data.get("changes")
         validated: dict[str, str] = {}
+        change_meta: dict[str, dict[str, str | None]] = {}
         if isinstance(changes_raw, dict):
             if not all(isinstance(path, str) and isinstance(content, str)
                        for path, content in changes_raw.items()):
@@ -114,6 +155,10 @@ class CoderAgent(AgentExecutor):
             for path, content in changes_raw.items():
                 self._validate_change(path, content)
                 validated[path] = content
+                change_meta[path] = {
+                    "risk": risk_level, "expected_old_hash": None,
+                    "expected_old_content": None,
+                }
         elif isinstance(changes_raw, list):
             for item in changes_raw:
                 if not isinstance(item, dict):
@@ -126,15 +171,33 @@ class CoderAgent(AgentExecutor):
                 if action not in ("create", "modify"):
                     raise ValueError(f"Unsupported change action for {path!r}: {action!r}")
                 self._validate_change(path, content)
+                item_risk = item.get("risk", risk_level)
+                if not isinstance(item_risk, str) or item_risk.upper() not in RISK_LEVELS:
+                    raise ValueError(
+                        f"Change risk for {path!r} must be one of {sorted(RISK_LEVELS)}")
+                old_hash = item.get("old_hash")
+                old_content = item.get("old_content")
+                if old_hash is not None and not isinstance(old_hash, str):
+                    raise ValueError(f"Change old_hash for {path!r} must be a string")
+                if old_content is not None and not isinstance(old_content, str):
+                    raise ValueError(f"Change old_content for {path!r} must be a string")
                 validated[path] = content
+                change_meta[path] = {
+                    "risk": item_risk.upper(), "expected_old_hash": old_hash,
+                    "expected_old_content": old_content,
+                }
         else:
             raise ValueError("Model response must contain a changes mapping or list")
 
+        tests_list = [str(t) for t in tests] if isinstance(tests, list) else []
         extra = {
             "summary": summary if isinstance(summary, str) else "",
             "reasoning_summary": reasoning if isinstance(reasoning, str) else "",
             "risks": [str(r) for r in risks] if isinstance(risks, list) else [],
-            "tests": [str(t) for t in tests] if isinstance(tests, list) else [],
+            "tests": tests_list,
+            "tests_to_run": list(tests_list),
+            "risk_level": risk_level,
+            "change_meta": change_meta,
         }
         return validated, extra
 
@@ -151,13 +214,38 @@ class CoderAgent(AgentExecutor):
         validated, _extra = self._parse_changes(text)
         return validated
 
-    def _apply_changes(self, changes: dict[str, str], approved: bool) -> tuple[list[str], list[str]]:
-        """Apply validated changes through the controlled change-application layer."""
+    def _apply_changes(self, changes: dict[str, str], approved: bool,
+                       extra: dict | None = None, task_id: str = "",
+                       approval_token_id: str = "") -> tuple[list[str], list[str]]:
+        """Apply validated changes through the controlled change-application layer.
+
+        Per-change risk and old-state guards parsed from the model response
+        travel with each entry so the ChangeSet engine and the policy gate see
+        exactly what the model proposed. ``extra`` also carries
+        ``change_meta`` for observability; it is never a caller-supplied
+        change shortcut (``request.metadata["changes"]`` is ignored).
+        """
+        meta = (extra or {}).get("change_meta", {})
         result = self.applier.apply(
-            [CodeChange(path=path, content=content) for path, content in changes.items()],
+            [
+                CodeChange(
+                    path=path,
+                    content=content,
+                    risk=meta.get(path, {}).get("risk", "NONE"),
+                    expected_old_hash=meta.get(path, {}).get("expected_old_hash"),
+                    expected_old_content=meta.get(path, {}).get("expected_old_content"),
+                )
+                for path, content in changes.items()
+            ],
             approved=approved,
             label="coder",
+            capability="coding",
+            actor=self.name,
+            task_id=task_id,
+            approval_token_id=approval_token_id,
         )
+        self.last_decisions = list(result.decisions)
+        self.last_task_grant = result.task_grant
         return result.changed_paths, result.errors
 
     @staticmethod
@@ -194,8 +282,9 @@ class CoderAgent(AgentExecutor):
         """
         from forge.models.request import ModelRequest
 
+        prompt_text = self._prompt(request)
         model_request = ModelRequest(
-            prompt=self._prompt(request),
+            prompt=prompt_text,
             capability="coding",
             required_capabilities=("coding",),
             context=str(request.context) if request.context else "",
@@ -203,6 +292,8 @@ class CoderAgent(AgentExecutor):
             min_context_window=request.context.estimated_tokens if request.context else 0,
             prefer_local=True,
             prefer_free=True,
+            metadata={"model_data_policy": self.model_policy}
+            if self.model_policy is not None else {},
         )
         response = self.fabric.generate(model_request)
         if not response.success:
@@ -217,13 +308,18 @@ class CoderAgent(AgentExecutor):
             if not changes:
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
-            applied, errors = self._apply_changes(changes, approved)
+            token_id = str(request.metadata.get("approval_token_id", "") or "")
+            extra["classification"] = classify_text(prompt_text).value
+            applied, errors = self._apply_changes(
+                changes, approved, extra, task_id=request.task.id,
+                approval_token_id=token_id)
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})
             return AgentResponse(True, output=response.text, agent=self.name, stage=request.stage,
                                  metadata={"files": applied, "model": response.model,
-                                           "provider": response.provider, **extra})
+                                           "provider": response.provider, "routing": "fabric",
+                                           **extra})
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})
@@ -237,7 +333,8 @@ class CoderAgent(AgentExecutor):
             if not model or not model.provider:
                 return AgentResponse(False, error="No available coding model provider; configure Ollama or another provider", agent=self.name, stage=request.stage)
             try:
-                result = model.provider.generate(self._prompt(request), context=str(request.context), task=request.task.description)
+                prompt_text = self._prompt(request)
+                result = model.provider.generate(prompt_text, context=str(request.context), task=request.task.description)
             except Exception:
                 self.router.record(model.name, False, None, capability="coding", task_complexity=1.0)
                 raise
@@ -245,13 +342,18 @@ class CoderAgent(AgentExecutor):
             if not changes:
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
-            applied, errors = self._apply_changes(changes, approved)
+            token_id = str(request.metadata.get("approval_token_id", "") or "")
+            extra["classification"] = classify_text(prompt_text).value
+            applied, errors = self._apply_changes(
+                changes, approved, extra, task_id=request.task.id,
+                approval_token_id=token_id)
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})
             self.router.record(model.name, True, result.latency, capability="coding", task_complexity=1.0)
             return AgentResponse(True, output=result.text, agent=self.name, stage=request.stage,
-                                 metadata={"files": applied, "model": model.name, **extra})
+                                 metadata={"files": applied, "model": model.name,
+                                           "routing": "legacy-router", **extra})
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})

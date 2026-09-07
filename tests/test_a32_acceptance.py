@@ -58,6 +58,26 @@ def test_failed_security_blocks_acceptance():
     assert decision.risk_level == "HIGH"
 
 
+def test_failed_build_gate_blocks():
+    decision = AcceptanceEngine().decide(
+        tests=_pass("tests"), build=_fail("build"), lint=_pass("lint"),
+        review=_review(ReviewVerdict.APPROVE), security=_pass("security"),
+        changed_files=["app.py"],
+    )
+    assert not decision.accepted
+    assert decision.failed_gates == ["build"]
+
+
+def test_failed_lint_gate_blocks():
+    decision = AcceptanceEngine().decide(
+        tests=_pass("tests"), build=_pass("build"), lint=_fail("lint"),
+        review=_review(ReviewVerdict.APPROVE), security=_pass("security"),
+        changed_files=["app.py"],
+    )
+    assert not decision.accepted
+    assert decision.failed_gates == ["lint"]
+
+
 def test_one_passing_gate_cannot_override_failure():
     decision = AcceptanceEngine().decide(
         tests=_fail("tests"), build=_pass("build"), lint=_pass("lint"),
