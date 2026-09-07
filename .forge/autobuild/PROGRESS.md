@@ -50,3 +50,24 @@
 
 - This repository includes deterministic provider-contract tests, not a claim that a real model was available during CI. Real autonomous coding requires an Ollama model (or optional API provider) configured by the operator.
 - Approval and permission gates remain enabled; Forge does not silently push or access unauthorized repositories.
+
+## A01–A31 audit & hardening (this pass)
+
+- Audited every stage in the A01–A31 pipeline against the actual code; see
+  `docs/A01-A31-AUDIT.md` for the full matrix, baseline/final numbers, and
+  limitations. Statuses are evidence-derived, never taken from this file.
+- Fixed (with regression tests in `tests/test_audit_hardening.py`):
+  - Debug loop now records the successful final retest and runs tests with
+    `-B -p no:cacheprovider` (no stale-bytecode false results).
+  - Memory store hardened: path confinement + size bound + lifecycle.
+  - Self-analyzer no longer fabricates passed-test or permission metrics.
+  - Coder validates generated Python with `compile()` before writing.
+  - Security gate flags `.env` files on sight and skips vendored/cache dirs.
+  - Checkpoint manager and candidate evaluator skip vendored/cache dirs.
+  - Terminal tool caps captured output at 200 KB.
+  - Model registry records per-capability verification level
+    (declared/detected/verified); Ollama vision is `detected`.
+  - New deterministic multi-model consensus (`forge/models/consensus.py`).
+  - Planner validates empty input and orders steps by dependency.
+- Test count: 365 → 382 passed (1 skipped: opt-in live Ollama).
+- Live-provider verification was not run (no Ollama endpoint in this sandbox).
