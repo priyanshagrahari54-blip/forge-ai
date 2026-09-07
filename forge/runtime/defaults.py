@@ -47,6 +47,21 @@ def create_default_runtime(permission_manager, root: str = "."):
 
     runtime.register(
         ToolDefinition(
+            name="delete_file",
+            description="Delete a project file (explicit approval only).",
+            handler=lambda path: (
+                filesystem.delete(path)
+                or __import__(
+                    "forge.runtime.runtime",
+                    fromlist=["ToolResult"],
+                ).ToolResult.ok("delete_file")
+            ),
+            permission="delete_file",
+        )
+    )
+
+    runtime.register(
+        ToolDefinition(
             name="terminal",
             description="Run an approved terminal command.",
             handler=terminal.run,

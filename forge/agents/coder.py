@@ -43,7 +43,8 @@ class CoderAgent(AgentExecutor):
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
         # Every model-produced write goes through the controlled change-application
         # layer (path/content/secret validation + permissioned ToolRuntime).
-        self.applier = ChangeApplier(self.runtime)
+        # The repository root enables old-state guard verification.
+        self.applier = ChangeApplier(self.runtime, root=self.root)
 
     def describe(self) -> str:
         return "Responsible for implementing software changes using a routed model."
