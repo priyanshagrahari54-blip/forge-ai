@@ -71,3 +71,11 @@
   - Planner validates empty input and orders steps by dependency.
 - Test count: 365 → 382 passed (1 skipped: opt-in live Ollama).
 - Live-provider verification was not run (no Ollama endpoint in this sandbox).
+
+## A31 hardening pass — provider propagation + streaming + live E2E
+
+- **Task/context/constraint propagation**: `ModelRequest.constraints_text()` renders routing/generation constraints; `compose_provider_prompt()` builds the labeled TASK/INSTRUCTIONS/REPOSITORY CONTEXT/CONSTRAINTS input. `ModelFabric.generate()`/`stream()` forward `task`, `context`, `instructions`, `max_output_tokens`, and `temperature` to providers via signature introspection (unsupported keywords are never passed). Ollama uses the native `system` slot + `options.num_predict`/`temperature`; OpenAI uses native `messages` (system=task, user=composed) + `max_tokens`/`temperature`; the local fallback accepts the full request but still refuses to fabricate code.
+- **Streaming reliability**: `ModelFabric.stream()` now mirrors `generate()` — same routing/capability/availability/policy, same failover chain, buffered chunks (no partial/duplicate output on failure), single-chunk `generate()` fallback for non-streaming providers, health/reliability/latency feedback, telemetry, and a raised `ModelUnavailableError` when all candidates fail.
+- **Ollama URL normalization**: bare-host `OLLAMA_BASE_URL`/`OLLAMA_URL` values are normalized to `/api/generate` (previously a bare host POSTed to the server root).
+- **Live autonomous E2E**: `tests/test_ollama_autonomous_e2e.py`, opt-in via `FORGE_LIVE_OLLAMA=1` (or `FORGE_LIVE_MODEL_TESTS=1`), drives the full Supervisor→Fabric→Ollama→coder→permissioned-write→tests→review/security→commit path and verifies real repository behavior. Skipped cleanly without Ollama.
+- Tests added: `test_model_fabric_provider_payload.py` (11), `test_model_fabric_streaming.py` (6), `test_ollama_autonomous_e2e.py` (1 opt-in). Total: 382 → 399 passed, 2 skipped.

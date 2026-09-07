@@ -125,3 +125,29 @@ now repaired this pass).
   authority in `Supervisor.run` yet (acceptance remains the deterministic gate
   chain). It is available for callers that genuinely gather multiple
   independent model responses.
+
+---
+
+## Follow-up: A31 provider/streaming hardening pass
+
+After the initial audit, a targeted A31 hardening pass closed three gaps and
+was verified by the full suite (399 passed, 2 skipped):
+
+1. **Task/context/constraint propagation** — providers previously accepted
+   `context`/`task` but silently dropped them (only `prompt` reached the model).
+   The fabric now forwards `task`, `context`, rendered `constraints`,
+   `max_output_tokens`, and `temperature`, and each production provider
+   incorporates them into the native payload (Ollama `system` + `options`;
+   OpenAI `messages` + `max_tokens`). Proven by
+   `tests/test_model_fabric_provider_payload.py`.
+2. **Streaming reliability** — `ModelFabric.stream()` now shares the `generate()`
+   guarantees (routing, failover chain, health/reliability/latency feedback,
+   telemetry, raised errors), buffers chunks so failures never emit partial or
+   duplicate output, and falls back to a single `generate()` chunk for
+   non-streaming providers. Proven by `tests/test_model_fabric_streaming.py`.
+3. **Live Ollama autonomous E2E** — `tests/test_ollama_autonomous_e2e.py`
+   (opt-in `FORGE_LIVE_OLLAMA=1` / `FORGE_LIVE_MODEL_TESTS=1`) drives the real
+   loop against a live Ollama endpoint and verifies actual repository behavior
+   with no faked response, no caller-supplied changes, and no modifier function.
+   **Skipped in this sandbox** (no Ollama endpoint): implemented but not
+   live-verified here.
