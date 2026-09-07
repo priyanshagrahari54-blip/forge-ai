@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,15 @@ class DependencyGraph:
     """Repository-wide module dependency graph."""
 
     dependencies: list[Dependency] = field(default_factory=list)
+    _seen: set[tuple[str, str, str, str | None]] = field(
+        default_factory=set, init=False, repr=False
+    )
+    _by_source: dict[str, list[Dependency]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
+    _by_target: dict[str, list[Dependency]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
 
     def add(
         self,
@@ -30,44 +40,43 @@ class DependencyGraph:
         kind: str = "external",
         resolved_path: str | None = None,
     ) -> None:
-        dependency = Dependency(
-            source=source,
-            target=target,
-            kind=kind,
-            resolved_path=resolved_path,
-        )
-
-        if dependency not in self.dependencies:
+        key = (source, target, kind, resolved_path)
+        if key not in self._seen:
+            self._seen.add(key)
+            dependency = Dependency(
+                source=source,
+                target=target,
+                kind=kind,
+                resolved_path=resolved_path,
+            )
             self.dependencies.append(dependency)
+            self._by_source[source].append(dependency)
+            self._by_target[target].append(dependency)
 
     def dependencies_of(self, source: str) -> list[str]:
         return [
             dependency.target
-            for dependency in self.dependencies
-            if dependency.source == source
+            for dependency in self._by_source.get(source, [])
         ]
 
     def dependents_of(self, target: str) -> list[str]:
         return [
             dependency.source
-            for dependency in self.dependencies
-            if dependency.target == target
+            for dependency in self._by_target.get(target, [])
         ]
 
     def internal_dependencies_of(self, source: str) -> list[Dependency]:
         return [
             dependency
-            for dependency in self.dependencies
-            if dependency.source == source
-            and dependency.kind == "internal"
+            for dependency in self._by_source.get(source, [])
+            if dependency.kind == "internal"
         ]
 
     def external_dependencies_of(self, source: str) -> list[Dependency]:
         return [
             dependency
-            for dependency in self.dependencies
-            if dependency.source == source
-            and dependency.kind == "external"
+            for dependency in self._by_source.get(source, [])
+            if dependency.kind == "external"
         ]
 
 
