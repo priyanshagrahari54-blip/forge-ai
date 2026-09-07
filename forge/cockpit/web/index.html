@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>Forge Cockpit</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">FORGE <span class="muted">cockpit</span></div>
+  <nav id="nav" class="nav hidden">
+    <a href="#/dashboard" data-route="dashboard">Dashboard</a>
+    <a href="#/tasks" data-route="tasks">Tasks</a>
+    <a href="#/projects" data-route="projects">Projects</a>
+    <a href="#/models" data-route="models">Models</a>
+    <a href="#/permissions" data-route="permissions">Permissions</a>
+    <a href="#/git" data-route="git">Git</a>
+  </nav>
+  <div class="topright">
+    <span id="conn" class="conn ok" title="Backend connection">connected</span>
+    <span id="whoami" class="whoami"></span>
+    <button id="logout" class="btn small hidden">Sign out</button>
+  </div>
+</header>
+
+<main id="view"></main>
+
+<section id="login" class="login hidden">
+  <div class="card">
+    <h1>Forge Cockpit</h1>
+    <p class="muted">Local-development session. The browser is never trusted:
+    every action is authorized server-side by Forge policy.</p>
+    <form id="login-form">
+      <label>Actor (audit identity)
+        <input id="login-actor" name="actor" type="text" autocomplete="username"
+               maxlength="64" placeholder="e.g. alice" required>
+      </label>
+      <label>Project id
+        <input id="login-project" name="project" type="text" maxlength="64"
+               placeholder="e.g. forge" required>
+      </label>
+      <label>Permission profile
+        <select id="login-profile" name="profile">
+          <option value="assisted" selected>assisted (approve changes)</option>
+          <option value="safe">safe (read-only)</option>
+          <option value="autonomous">autonomous (low-risk auto)</option>
+          <option value="locked">locked (no modifications)</option>
+        </select>
+      </label>
+      <div id="login-error" class="error" role="alert"></div>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+  </div>
+</section>
+
+<template id="tpl-dashboard">
+  <div class="grid">
+    <div class="card"><h2>Forge status</h2><div id="d-status"></div></div>
+    <div class="card"><h2>Models</h2><div id="d-models"></div></div>
+    <div class="card"><h2>Workers</h2><div id="d-workers"></div></div>
+    <div class="card wide"><h2>Recent activity</h2><div id="d-activity" class="feed"></div></div>
+  </div>
+</template>
+
+<template id="tpl-tasks">
+  <div class="card">
+    <h2>New task</h2>
+    <form id="new-task-form" class="rowform">
+      <input id="new-task-req" type="text" maxlength="8000"
+             placeholder="Requirement, e.g. Add CSV export functionality" required>
+      <button class="btn primary" type="submit">Submit</button>
+    </form>
+    <div id="new-task-error" class="error" role="alert"></div>
+  </div>
+  <div class="card">
+    <h2>Tasks</h2>
+    <div id="task-list" class="list"></div>
+  </div>
+</template>
+
+<template id="tpl-task">
+  <div class="card">
+    <div class="taskhead">
+      <div>
+        <h2 id="t-title">Task</h2>
+        <div id="t-meta" class="muted"></div>
+      </div>
+      <div class="btnrow" id="t-actions"></div>
+    </div>
+    <div id="t-error" class="error" role="alert"></div>
+    <h3>Pipeline</h3>
+    <ol id="t-timeline" class="timeline"></ol>
+    <div class="grid2">
+      <div><h3>Details</h3><div id="t-details"></div></div>
+      <div><h3>Verification</h3><div id="t-verification"></div></div>
+    </div>
+    <div class="grid2">
+      <div><h3>Checkpoints</h3><div id="t-checkpoints"></div></div>
+      <div><h3>Report</h3><div id="t-report"></div></div>
+    </div>
+    <h3>Events <span id="t-stream-state" class="muted"></span></h3>
+    <div id="t-events" class="feed tall"></div>
+  </div>
+</template>
+
+<template id="tpl-projects">
+  <div class="card"><h2>Projects</h2><div id="p-list" class="list"></div></div>
+  <div class="card"><h2>Current project</h2><div id="p-current"></div></div>
+</template>
+
+<template id="tpl-models">
+  <div class="card wide"><h2>Model Fabric</h2><div id="m-list"></div></div>
+  <div class="card wide"><h2>Providers</h2><div id="m-providers"></div></div>
+  <div class="card wide"><h2>Recent routing</h2><div id="m-routing" class="feed"></div></div>
+</template>
+
+<template id="tpl-permissions">
+  <div class="card"><h2>Effective permissions</h2><div id="pm-effective"></div></div>
+  <div class="card"><h2>Pending approvals</h2><div id="pm-approvals" class="list"></div></div>
+  <div class="card wide"><h2>Policy rules</h2><div id="pm-rules" class="feed"></div></div>
+</template>
+
+<template id="tpl-git">
+  <div class="card"><h2>Repository</h2><div id="g-state"></div></div>
+  <div class="card wide"><h2>Diff (unstaged)</h2><pre id="g-diff" class="diff"></pre></div>
+  <div class="card wide"><h2>Diff (staged)</h2><pre id="g-diff-staged" class="diff"></pre></div>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>
