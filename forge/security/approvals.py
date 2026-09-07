@@ -84,6 +84,10 @@ class ApprovalRequest:
         object.__setattr__(self, "operation", operation)
         if not self.agent or not isinstance(self.agent, str):
             raise ValueError("Approval request needs a named agent")
+        if resource in (Resource.FILESYSTEM, Resource.TERMINAL,
+                        Resource.BROWSER, Resource.NETWORK) and not self.scopes:
+            raise ValueError(
+                f"Approval requests for {resource.value} need at least one scope")
         normalized = tuple(validate_scope(resource, scope)
                            for scope in self.scopes)
         object.__setattr__(self, "scopes", normalized)
@@ -277,6 +281,7 @@ class ApprovalStore:
         self._requests: dict[str, ApprovalRequest] = {}
         self._tokens: dict[str, _TokenRecord] = {}
         self._grants: dict[str, _GrantRecord] = {}
+        self._redemptions: set[tuple[str, tuple, str]] = set()
 
     def now(self) -> float:
         return self._clock()
@@ -367,13 +372,13 @@ class ApprovalStore:
         self._tokens[token.id] = _TokenRecord(token=token)
         return token
 
-    def redeem(self, token_id: str, request: PermissionRequest, *,
-               fingerprint: str = "",
-               now: float | None = None) -> tuple[bool, str]:
-        """Validate a token against an actual request, consuming one use.
+    def check(self, token_id: str, request: PermissionRequest, *,
+              fingerprint: str = "",
+              now: float | None = None) -> tuple[bool, str]:
+        """Validate a token against a request without consuming a use.
 
-        Returns ``(allowed, reason)``; failures are closed, never raised,
-        because redemption happens on the enforcement path.
+        Powers previews (dry runs): answers "would this token authorize?"
+        while leaving the token untouched.
         """
         moment = self.now() if now is None else now
         record = self._tokens.get(token_id)
@@ -400,11 +405,51 @@ class ApprovalStore:
         if token.resource == Resource.FILESYSTEM and token.files:
             if request.scope not in token.files:
                 return False, "Approval token does not cover this file"
-        if not any(_scope_covers(token.resource, granted, request)
-                   for granted in token.scopes):
+        if token.scopes and not any(
+                _scope_covers(token.resource, granted, request)
+                for granted in token.scopes):
             return False, "Approval token does not cover this scope"
-        record.uses += 1
         return True, f"Approved by {token.issued_by} (request {token.request_id})"
+
+    def redeem(self, token_id: str, request: PermissionRequest, *,
+               fingerprint: str = "",
+               now: float | None = None) -> tuple[bool, str]:
+        """Validate a token against an actual request, consuming one use.
+
+        Returns ``(allowed, reason)``; failures are closed, never raised,
+        because redemption happens on the enforcement path. Redemption is
+        idempotent within one enforcement chain: layers sharing a
+        ``request_id`` (gate + runtime for the same change) redeem once,
+        while any new chain, action, or fingerprint consumes anew.
+        """
+        moment = self.now() if now is None else now
+        record = self._tokens.get(token_id)
+        if record is None:
+            return False, "Unknown approval token"
+        token = record.token
+        if record.revoked:
+            return False, "Approval token was revoked"
+        if token.expired(moment):
+            return False, "Approval token has expired"
+        # Chain identity: bound dimensions plus the shared request id, so
+        # enforcement layers carrying different unbound details share one
+        # redemption while any differing chain, bound value, or proposal
+        # redeems anew and re-checks every binding.
+        bound_values = tuple((name, repr(request.detail(name)))
+                             for name, _value in token.bind)
+        action_key = (token_id, request.agent, request.resource.value,
+                      request.operation, request.scope, request.task_id,
+                      request.risk, fingerprint, bound_values,
+                      request.request_id)
+        if action_key in self._redemptions:
+            return True, f"Already approved for this action by {token.issued_by}"
+        allowed, reason = self.check(token_id, request,
+                                     fingerprint=fingerprint, now=moment)
+        if not allowed:
+            return False, reason
+        record.uses += 1
+        self._redemptions.add(action_key)
+        return True, reason
 
     def revoke_token(self, token_id: str) -> bool:
         record = self._tokens.get(token_id)
@@ -471,6 +516,8 @@ class ApprovalStore:
                         if not record.token.expired(moment)}
         self._grants = {key: record for key, record in self._grants.items()
                         if not record.grant.expired(moment)}
+        self._redemptions = {key for key in self._redemptions
+                             if key[0] in self._tokens}
         for request in self._requests.values():
             if (request.status == ApprovalStatus.PENDING
                     and request.expired(moment)):

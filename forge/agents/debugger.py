@@ -68,7 +68,8 @@ class DebuggerAgent(AgentExecutor):
     name = "debugger"
 
     def __init__(self, root: str = ".", runtime: ToolRuntime | None = None, router: ModelRouter | None = None,
-                 fabric: "ModelFabric | None" = None):
+                 fabric: "ModelFabric | None" = None, approval_store=None,
+                 model_policy=None):
         self.root = str(Path(root).resolve())
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
         if fabric is not None:
@@ -83,7 +84,9 @@ class DebuggerAgent(AgentExecutor):
             self.router = None
         # Repairs are model output like any other change: they validate
         # through the ChangeSet engine and authorize through the policy gate.
-        self.applier = ChangeApplier(self.runtime, root=self.root)
+        self.applier = ChangeApplier(self.runtime, root=self.root,
+                                     approval_store=approval_store)
+        self.model_policy = model_policy
         #: Policy decisions accumulated across repairs (observability).
         self.repair_decisions: list = []
         self.last_model = ""
@@ -98,7 +101,8 @@ class DebuggerAgent(AgentExecutor):
     def execute(self, request: AgentRequest) -> AgentResponse:
         return AgentResponse(True, output=self.diagnose(request.instructions or request.metadata.get("error", "")), agent=self.name, stage=request.stage)
 
-    def _apply_repair(self, response_text: str, approved: bool) -> dict[str, str]:
+    def _apply_repair(self, response_text: str, approved: bool, task_id: str = "",
+                      approval_token_id: str = "") -> dict[str, str]:
         """Validate a repair proposal and apply it through the ChangeSet engine."""
         changes, extra = CoderAgent(root=self.root)._parse_changes(response_text)
         if not changes:
@@ -118,6 +122,9 @@ class DebuggerAgent(AgentExecutor):
             approved=approved,
             label="repair",
             capability="debugging",
+            actor=self.name,
+            task_id=task_id,
+            approval_token_id=approval_token_id,
         )
         self.repair_decisions.extend(result.decisions)
         if not result.success:
@@ -125,9 +132,11 @@ class DebuggerAgent(AgentExecutor):
         return changes
 
     def repair(self, task: str, failure: str, context: str = "", approved: bool = True,
-               previous_attempts: list[DebugAttempt] | None = None) -> dict[str, str]:
+               previous_attempts: list[DebugAttempt] | None = None, task_id: str = "",
+               approval_token_id: str = "") -> dict[str, str]:
         if self.fabric is not None:
-            return self._repair_via_fabric(task, failure, context, approved, previous_attempts)
+            return self._repair_via_fabric(task, failure, context, approved, previous_attempts,
+                                           task_id, approval_token_id)
         model = self.router.select("debugging") or self.router.select("coding")
         if not model or not model.provider:
             raise RuntimeError("No debugging model available; configure Ollama or another provider")
@@ -136,7 +145,8 @@ class DebuggerAgent(AgentExecutor):
         try:
             response = model.provider.generate(prompt, context=context, task=task)
             self.last_latency = response.latency
-            changes = self._apply_repair(response.text, approved)
+            changes = self._apply_repair(response.text, approved, task_id,
+                                         approval_token_id)
         except Exception:
             self.router.record(model.name, False, self.last_latency, capability="debugging", task_complexity=1.0)
             raise
@@ -173,7 +183,9 @@ class DebuggerAgent(AgentExecutor):
         return "\n".join(parts)
 
     def _repair_via_fabric(self, task: str, failure: str, context: str = "", approved: bool = True,
-                           previous_attempts: list[DebugAttempt] | None = None) -> dict[str, str]:
+                           previous_attempts: list[DebugAttempt] | None = None,
+                           task_id: str = "",
+                           approval_token_id: str = "") -> dict[str, str]:
         """Apply a model-generated repair through the centralized fabric.
 
         The fabric records provider-level feedback and telemetry; the returned
@@ -192,12 +204,15 @@ class DebuggerAgent(AgentExecutor):
             task=task,
             prefer_local=True,
             prefer_free=True,
+            metadata={"model_data_policy": self.model_policy}
+            if self.model_policy is not None else {},
         ))
         self.last_model = response.model
         self.last_latency = response.latency_ms
         if not response.success:
             raise RuntimeError(response.error or "No debugging model available; configure Ollama or another provider")
-        return self._apply_repair(response.text, approved)
+        return self._apply_repair(response.text, approved, task_id,
+                                  approval_token_id)
 
 
 class TestDebugLoop:
@@ -230,7 +245,8 @@ class TestDebugLoop:
         return safe
 
     def run(self, task: str, context: str = "", approved: bool = True,
-            test_paths: list[str] | tuple[str, ...] | None = None) -> DebugLoopResult:
+            test_paths: list[str] | tuple[str, ...] | None = None,
+            task_id: str = "", approval_token_id: str = "") -> DebugLoopResult:
         """Run tests, repairing bounded failures with structured reports.
 
         When ``test_paths`` names the tests relevant to the change, only those
@@ -252,7 +268,8 @@ class TestDebugLoop:
         test_tool = ("run_tests" if "run_tests" in self.debugger.runtime.tools
                      else "terminal")
         for number in range(1, self.max_retries + 2):
-            result = self.debugger.runtime.execute(test_tool, approved=approved, command=command)
+            result = self.debugger.runtime.execute(test_tool, approved=approved, command=command,
+                                                   actor="debugger", task_id=task_id)
             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
             output = combined or result.error or ""
             exit_code = result.metadata.get("returncode")
@@ -301,7 +318,8 @@ class TestDebugLoop:
             )
             failures.append(report)
             try:
-                changes = self.debugger.repair(task, output, context, approved, previous_attempts=attempts)
+                changes = self.debugger.repair(task, output, context, approved, previous_attempts=attempts,
+                                               task_id=task_id, approval_token_id=approval_token_id)
             except Exception as exc:
                 attempts.append(DebugAttempt(
                     attempt_number=number, failure_error=output, diagnosis=diagnosis,

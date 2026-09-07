@@ -71,6 +71,11 @@ class Supervisor:
         fabric=None,
         max_debug_retries: int = 3,
         mode: OperationMode = OperationMode.ASSISTED,
+        policy=None,
+        approval_store=None,
+        audit_log=None,
+        model_policy=None,
+        approval_token_id: str = "",
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
 
@@ -82,6 +87,14 @@ class Supervisor:
         gate authorizes it under the active mode. ``approved`` carries the
         caller's explicit write approval; it satisfies REQUIRE_APPROVAL but
         can never override DENY.
+
+        A33 options (all no-ops unless provided): ``policy`` attaches a
+        fine-grained permission policy that can only tighten verdicts;
+        ``approval_store`` mints temporary task-scoped grants (surfaced as
+        ``result["task_grant"]``, revoked when the run ends) and redeems
+        ``approval_token_id``; ``audit_log`` collects every permission
+        decision (surfaced as ``result["audit_events"]``); ``model_policy``
+        filters model calls by data classification.
 
         The only model-controlled artifact is the structured response returned by
         the provider. This method deliberately has no ``changes`` or modifier
@@ -115,7 +128,11 @@ class Supervisor:
         if router is None and fabric is None:
             router = ModelRouter([ModelInfo("local", "coding", available=True, free=True, provider=LocalModelProvider(), capabilities=("coding", "debugging"))])
         mode = OperationMode(mode)
-        permissions = PermissionManager(mode=mode)
+        # The fine-grained A33 policy (param) attaches to the permission
+        # manager; the local ``policy`` name keeps meaning the A32 gate below.
+        permissions = PermissionManager(mode=mode, policy=policy,
+                                        store=approval_store,
+                                        agent="supervisor", audit=audit_log)
         policy = PolicyGate(permissions)
         shared_runtime = create_default_runtime(permissions, str(self.root))
         started = perf_counter()
@@ -126,6 +143,7 @@ class Supervisor:
         engine = TaskEngine()
         task = engine.add(f"supervisor-task-{run_id}", requirement)
         touched: list[str] = []
+        task_grant_snapshot: dict[str, Any] | None = None
         files_read: list[str] = []
         commands_run: list[list[str]] = []
         result: dict[str, Any] = {
@@ -166,8 +184,10 @@ class Supervisor:
             event("task_started", {"requirement_chars": len(requirement)})
             intelligence = RepositoryIntelligence.build(self.root)
             task.status = TaskStatus.PLANNING
-            coder = CoderAgent(runtime=shared_runtime, root=str(self.root), router=router, fabric=fabric)
-            debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric)
+            coder = CoderAgent(runtime=shared_runtime, root=str(self.root), router=router, fabric=fabric,
+                               approval_store=approval_store, model_policy=model_policy)
+            debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric,
+                                     approval_store=approval_store, model_policy=model_policy)
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
@@ -190,8 +210,12 @@ class Supervisor:
             context = coder.build_context(intelligence, requirement)
             files_read = sorted({item.path for item in context.items})
             result["context_fingerprint"] = context.fingerprint
-            response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": approved}))
+            coder_metadata: dict[str, Any] = {"approved": approved}
+            if approval_token_id:
+                coder_metadata["approval_token_id"] = approval_token_id
+            response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata=coder_metadata))
             touched = list(response.metadata.get("files", []))
+            task_grant_snapshot = coder.last_task_grant
             timed("code", code_started)
             if not response.success:
                 for decision in coder.last_decisions:
@@ -222,7 +246,8 @@ class Supervisor:
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
             targeted = response.metadata.get("tests_to_run") or None
             debug_result = loop.run(requirement, context=str(context), approved=approved,
-                                    test_paths=targeted)
+                                    test_paths=targeted, task_id=task.id,
+                                    approval_token_id=approval_token_id)
             commands_run.append(list(loop.command))
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
             result["retry_count"] = len(debug_result.attempts)
@@ -339,7 +364,8 @@ class Supervisor:
             commit_decision = policy.evaluate(
                 operation="git_commit", path="", tool="git",
                 risk=result.get("risk_level", "NONE"), capability="release",
-                approved=approved)
+                approved=approved, agent="supervisor", task_id=task.id,
+                approval_token_id=approval_token_id)
             event("permission_decision", commit_decision.to_dict())
             if not commit_decision.allowed:
                 raise RuntimeError(f"commit not permitted: {commit_decision.reason}")
@@ -379,6 +405,12 @@ class Supervisor:
             report.input_tokens = token_usage["input"]
             report.output_tokens = token_usage["output"]
             result["report"] = report.to_dict()
+            if approval_store is not None:
+                # Temporary task authority ends with the run.
+                result["task_grant"] = task_grant_snapshot
+                approval_store.revoke_task(task.id)
+            if audit_log is not None:
+                result["audit_events"] = audit_log.to_dict()
             stage("COMPLETED")
             return result
         except Exception as exc:
@@ -416,4 +448,9 @@ class Supervisor:
                           model_latency_seconds=model_latency,
                           token_usage=dict(token_usage),
                           report=report.to_dict())
+            if approval_store is not None:
+                result["task_grant"] = task_grant_snapshot
+                approval_store.revoke_task(task.id)
+            if audit_log is not None:
+                result["audit_events"] = audit_log.to_dict()
             return result

@@ -140,6 +140,7 @@ def test_redeem_consumes_single_use_token():
     token = store.issue(request.id, "operator")
     allowed, reason = store.redeem(token.id, _permission())
     assert allowed and "operator" in reason
+    # A new enforcement chain consumes anew: the token is spent.
     allowed, reason = store.redeem(token.id, _permission())
     assert not allowed and "already been used" in reason
 
@@ -253,6 +254,56 @@ def test_scope_containment_by_resource():
                               resource=Resource.TERMINAL, operation="execute",
                               scope="/usr/bin/pytest")
     assert store.redeem(terminal_token.id, other)[0] is False
+
+
+# -- redemption semantics ---------------------------------------------------------------
+
+def test_redeem_idempotent_within_chain():
+    store, _ = _store()
+    request = _approved(store, scopes=("src/**",))
+    token = store.issue(request.id, "operator")
+    chain = _permission()
+    assert store.redeem(token.id, chain)[0] is True
+    # Same chain again (e.g. gate layer then runtime layer): no extra use.
+    allowed, reason = store.redeem(token.id, chain)
+    assert allowed and "Already approved" in reason
+    # A new chain consumes anew: single-use token is spent.
+    allowed, reason = store.redeem(token.id, _permission())
+    assert not allowed and "already been used" in reason
+
+
+def test_check_validates_without_consuming():
+    store, _ = _store()
+    request = _approved(store)
+    token = store.issue(request.id, "operator")
+    assert store.check(token.id, _permission())[0] is True
+    assert store.check("missing", _permission())[0] is False
+    # Nothing consumed: the single use is still available.
+    assert store.redeem(token.id, _permission())[0] is True
+    assert store.redeem(token.id, _permission())[0] is False
+
+
+def test_operation_level_token_needs_no_scope():
+    store, _ = _store()
+    request = store.submit(ApprovalRequest(
+        agent="supervisor", resource=Resource.GIT, operation="commit",
+        task_id="t", reason="release"))
+    store.decide(request.id, True, "operator")
+    token = store.issue(request.id, "operator")
+    probe = PermissionRequest(agent="supervisor", task_id="t",
+                              resource=Resource.GIT, operation="commit")
+    assert store.redeem(token.id, probe)[0] is True
+
+
+@pytest.mark.parametrize("resource,operation", [
+    (Resource.FILESYSTEM, "write"),
+    (Resource.TERMINAL, "execute"),
+    (Resource.BROWSER, "navigate"),
+    (Resource.NETWORK, "request"),
+])
+def test_sharp_resources_require_request_scopes(resource, operation):
+    with pytest.raises(ValueError, match="at least one scope"):
+        ApprovalRequest(agent="a", resource=resource, operation=operation)
 
 
 # -- escalation -----------------------------------------------------------------------

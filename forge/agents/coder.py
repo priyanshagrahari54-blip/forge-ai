@@ -10,6 +10,7 @@ from forge.intelligence.repository import RepositoryIntelligence
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
+from forge.security.classification import classify_text
 from forge.security.permissions import PermissionManager
 from forge.tools.change_applier import ChangeApplier, CodeChange
 
@@ -42,7 +43,8 @@ class CoderAgent(AgentExecutor):
     name = "coder"
 
     def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
-                 fabric: "ModelFabric | None" = None):
+                 fabric: "ModelFabric | None" = None, approval_store=None,
+                 model_policy=None):
         # Routing input priority: explicit fabric > explicit legacy router >
         # default fabric. The fabric is canonical; the legacy router argument
         # is a compatibility adapter preserved verbatim so pre-existing
@@ -62,9 +64,14 @@ class CoderAgent(AgentExecutor):
         # Every model-produced write goes through the controlled change-application
         # layer (path/content/secret validation + permissioned ToolRuntime).
         # The repository root enables old-state guard verification.
-        self.applier = ChangeApplier(self.runtime, root=self.root)
+        self.applier = ChangeApplier(self.runtime, root=self.root,
+                                     approval_store=approval_store)
+        #: Optional model data policy, enforced by the fabric per request.
+        self.model_policy = model_policy
         #: Policy decisions from the most recent apply (observability).
         self.last_decisions: list = []
+        #: Task grant from the most recent apply, when task-scoped.
+        self.last_task_grant: dict | None = None
 
     def describe(self) -> str:
         return "Responsible for implementing software changes using a routed model."
@@ -208,7 +215,8 @@ class CoderAgent(AgentExecutor):
         return validated
 
     def _apply_changes(self, changes: dict[str, str], approved: bool,
-                       extra: dict | None = None) -> tuple[list[str], list[str]]:
+                       extra: dict | None = None, task_id: str = "",
+                       approval_token_id: str = "") -> tuple[list[str], list[str]]:
         """Apply validated changes through the controlled change-application layer.
 
         Per-change risk and old-state guards parsed from the model response
@@ -232,8 +240,12 @@ class CoderAgent(AgentExecutor):
             approved=approved,
             label="coder",
             capability="coding",
+            actor=self.name,
+            task_id=task_id,
+            approval_token_id=approval_token_id,
         )
         self.last_decisions = list(result.decisions)
+        self.last_task_grant = result.task_grant
         return result.changed_paths, result.errors
 
     @staticmethod
@@ -270,8 +282,9 @@ class CoderAgent(AgentExecutor):
         """
         from forge.models.request import ModelRequest
 
+        prompt_text = self._prompt(request)
         model_request = ModelRequest(
-            prompt=self._prompt(request),
+            prompt=prompt_text,
             capability="coding",
             required_capabilities=("coding",),
             context=str(request.context) if request.context else "",
@@ -279,6 +292,8 @@ class CoderAgent(AgentExecutor):
             min_context_window=request.context.estimated_tokens if request.context else 0,
             prefer_local=True,
             prefer_free=True,
+            metadata={"model_data_policy": self.model_policy}
+            if self.model_policy is not None else {},
         )
         response = self.fabric.generate(model_request)
         if not response.success:
@@ -293,7 +308,11 @@ class CoderAgent(AgentExecutor):
             if not changes:
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
-            applied, errors = self._apply_changes(changes, approved, extra)
+            token_id = str(request.metadata.get("approval_token_id", "") or "")
+            extra["classification"] = classify_text(prompt_text).value
+            applied, errors = self._apply_changes(
+                changes, approved, extra, task_id=request.task.id,
+                approval_token_id=token_id)
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})
@@ -314,7 +333,8 @@ class CoderAgent(AgentExecutor):
             if not model or not model.provider:
                 return AgentResponse(False, error="No available coding model provider; configure Ollama or another provider", agent=self.name, stage=request.stage)
             try:
-                result = model.provider.generate(self._prompt(request), context=str(request.context), task=request.task.description)
+                prompt_text = self._prompt(request)
+                result = model.provider.generate(prompt_text, context=str(request.context), task=request.task.description)
             except Exception:
                 self.router.record(model.name, False, None, capability="coding", task_complexity=1.0)
                 raise
@@ -322,7 +342,11 @@ class CoderAgent(AgentExecutor):
             if not changes:
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
-            applied, errors = self._apply_changes(changes, approved, extra)
+            token_id = str(request.metadata.get("approval_token_id", "") or "")
+            extra["classification"] = classify_text(prompt_text).value
+            applied, errors = self._apply_changes(
+                changes, approved, extra, task_id=request.task.id,
+                approval_token_id=token_id)
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})

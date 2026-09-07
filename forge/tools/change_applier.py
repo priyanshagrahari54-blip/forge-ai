@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+from uuid import uuid4
 
 from forge.runtime.runtime import ToolRuntime
 from forge.security.policy_gate import PolicyDecision, PolicyGate
@@ -98,6 +99,8 @@ class ApplyResult:
     fingerprint: str | None = None
     #: Policy decision per evaluated change (see ``PolicyOutcome.to_dict``).
     decisions: list[dict[str, Any]] = field(default_factory=list)
+    #: Live task grant authorizing this apply, if task-scoped (A33).
+    task_grant: dict[str, Any] | None = None
 
     @property
     def success(self) -> bool:
@@ -111,6 +114,7 @@ class ApplyResult:
             "fingerprint": self.fingerprint,
             "error_details": [detail.to_dict() for detail in self.error_details],
             "decisions": [dict(decision) for decision in self.decisions],
+            "task_grant": dict(self.task_grant) if self.task_grant else None,
         }
 
 
@@ -168,11 +172,15 @@ class ChangeApplier:
 
     def __init__(self, runtime: ToolRuntime, checkpoint_manager=None,
                  root: str | Path | None = None,
-                 policy_gate: PolicyGate | None = None) -> None:
+                 policy_gate: PolicyGate | None = None,
+                 approval_store=None) -> None:
         self.runtime = runtime
         self.checkpoint_manager = checkpoint_manager
         self.root = Path(root).resolve() if root is not None else None
         self.policy_gate = policy_gate
+        #: Optional A33 approval store: mints task-scoped grants and redeems
+        #: approval tokens. ``None`` preserves exact A32 behavior.
+        self.approval_store = approval_store
 
     def _gate(self) -> PolicyGate:
         """Policy gate sharing the runtime's permission posture by default."""
@@ -325,7 +333,8 @@ class ChangeApplier:
 
     def dry_run(self, changes: Iterable[CodeChange | dict[str, Any]],
                 *, allow_delete: bool = False, approved: bool = False,
-                capability: str = "") -> DryRunResult:
+                capability: str = "", actor: str = "", task_id: str = "",
+                approval_token_id: str = "") -> DryRunResult:
         """Validate a proposal without writing, checkpointing, or staging.
 
         Returns the paths that *would* change plus structured errors for every
@@ -333,7 +342,8 @@ class ChangeApplier:
         path by which an undeclared file can be touched. ``decisions`` previews
         the policy verdict for each structurally valid change without
         filtering ``would_change`` (approval is evaluated for real in
-        :meth:`apply`).
+        :meth:`apply`). A dry run never mints authority: no task grant is
+        created here.
         """
         normalized = _normalize(changes)
         result = DryRunResult(fingerprint=self.fingerprint(normalized))
@@ -348,7 +358,10 @@ class ChangeApplier:
             result.decisions.append(gate.evaluate(
                 operation=operation, path=change.path, tool=tool,
                 risk=change.risk, capability=capability,
-                approved=approved).to_dict())
+                approved=approved, agent=actor, task_id=task_id,
+                approval_token_id=approval_token_id,
+                fingerprint=result.fingerprint or "",
+                preview=True).to_dict())
             if change.path not in result.would_change:
                 result.would_change.append(change.path)
         return result
@@ -365,7 +378,8 @@ class ChangeApplier:
 
     def apply(self, changes: Iterable[CodeChange | dict[str, Any]], approved: bool,
               label: str = "change", *, allow_delete: bool = False,
-              capability: str = "") -> ApplyResult:
+              capability: str = "", actor: str = "", task_id: str = "",
+              approval_token_id: str = "") -> ApplyResult:
         """Checkpoint, validate, authorize, and apply a change set.
 
         A checkpoint is created before the first write when a
@@ -375,6 +389,11 @@ class ChangeApplier:
         skipped, never bypassed. Paths are recorded in application order;
         unrelated files are never touched. Only declared entries are written:
         anything not in ``changes`` cannot be modified through this call.
+
+        When ``task_id`` and an approval store are configured, a temporary
+        task grant is minted over exactly the validated paths (bound to the
+        proposal fingerprint) and each write is checked against it; the grant
+        is revoked if the apply fails.
         """
         normalized = _normalize(changes)
         result = ApplyResult(fingerprint=self.fingerprint(normalized))
@@ -383,6 +402,19 @@ class ChangeApplier:
             checkpoint = self.checkpoint_manager.create(label)
             result.checkpoint_id = checkpoint.id
             result.checkpoint = checkpoint
+        task_scoped = bool(task_id) and self.approval_store is not None
+        if task_scoped:
+            grant_paths: list[str] = []
+            for change in normalized:
+                try:
+                    self.validate(change, allow_delete=allow_delete)
+                except ValueError:
+                    continue
+                if change.path not in grant_paths:
+                    grant_paths.append(change.path)
+            grant = self.approval_store.grant_task(
+                task_id, grant_paths, result.fingerprint or "")
+            result.task_grant = grant.to_dict()
 
         for change in normalized:
             try:
@@ -390,10 +422,27 @@ class ChangeApplier:
             except ValueError as exc:
                 self._record(result.errors, result.error_details, exc)
                 continue
+            if task_scoped:
+                granted, grant_reason = self.approval_store.check_task_grant(
+                    task_id, change.path, result.fingerprint or "")
+                if not granted:
+                    message = f"Change to {change.path} outside task scope: {grant_reason}"
+                    result.errors.append(message)
+                    result.error_details.append(
+                        ChangeError("TASK_SCOPE_DENIED", change.path, message))
+                    continue
             operation, tool = self._operation_for(change)
+            # One enforcement chain per change: the gate and the runtime
+            # layers share this id, so one token redemption authorizes the
+            # single action across both layers.
+            enforcement_id = uuid4().hex
             outcome = gate.evaluate(
                 operation=operation, path=change.path, tool=tool,
-                risk=change.risk, capability=capability, approved=approved)
+                risk=change.risk, capability=capability, approved=approved,
+                agent=actor, task_id=task_id,
+                approval_token_id=approval_token_id,
+                fingerprint=result.fingerprint or "",
+                request_id=enforcement_id)
             result.decisions.append(outcome.to_dict())
             if not outcome.allowed:
                 code = ("POLICY_DENIED"
@@ -406,11 +455,19 @@ class ChangeApplier:
                 continue
             if change.action == "delete":
                 write = self.runtime.execute(
-                    "delete_file", approved=approved, path=change.path
+                    "delete_file", approved=approved, path=change.path,
+                    actor=actor, task_id=task_id,
+                    approval_token_id=approval_token_id, risk=change.risk,
+                    fingerprint=result.fingerprint or "",
+                    request_id=enforcement_id,
                 )
             else:
                 write = self.runtime.execute(
-                    "write_file", approved=approved, path=change.path, content=change.content
+                    "write_file", approved=approved, path=change.path, content=change.content,
+                    actor=actor, task_id=task_id,
+                    approval_token_id=approval_token_id, risk=change.risk,
+                    fingerprint=result.fingerprint or "",
+                    request_id=enforcement_id,
                 )
             if not write.success:
                 message = f"Failed to write {change.path}: {write.error}"
@@ -428,6 +485,10 @@ class ChangeApplier:
             self.checkpoint_manager.cleanup(result.checkpoint)
             result.checkpoint_id = None
             result.checkpoint = None
+        if task_scoped and not result.success:
+            # A failed apply keeps no authority: revoke the task grant.
+            self.approval_store.revoke_task(task_id)
+            result.task_grant = None
         return result
 
     def rollback(self, result: ApplyResult) -> None:
@@ -439,3 +500,9 @@ class ChangeApplier:
         result.checkpoint = None
         result.checkpoint_id = None
         result.changed_paths = []
+        if result.task_grant is not None and self.approval_store is not None:
+            # Rolled-back work keeps no authority.
+            grant_task = result.task_grant.get("task_id", "")
+            if grant_task:
+                self.approval_store.revoke_task(grant_task)
+            result.task_grant = None
