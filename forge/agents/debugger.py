@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
+from pathlib import Path, PurePosixPath
 
 from forge.agents.coder import CoderAgent
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
@@ -11,6 +11,27 @@ from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolRuntime
 from forge.security.permissions import PermissionManager
+from forge.tools.change_applier import ChangeApplier, CodeChange
+
+
+@dataclass
+class FailureReport:
+    """Structured record of one failing test execution (A32.4).
+
+    Every bounded retry is traceable to the exact command, exit code, and
+    captured output that caused it, plus the recorded reason for the retry.
+    Output is capped so a verbose failure cannot exhaust memory.
+    """
+
+    attempt_number: int
+    command: list[str]
+    exit_code: int | None
+    output: str
+    diagnosis: str
+    reason: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -25,6 +46,10 @@ class DebugAttempt:
     model_latency: float = 0.0
     command: list[str] = field(default_factory=list)
     exit_code: int | None = None
+    #: Recorded reason for this retry (empty only for legacy constructions).
+    reason: str = ""
+    #: Structured failure behind this attempt (None for a passing retest).
+    failure: FailureReport | None = None
 
 
 @dataclass
@@ -33,6 +58,8 @@ class DebugLoopResult:
     attempts: list[DebugAttempt] = field(default_factory=list)
     final_state: str = ""
     error: str = ""
+    #: One structured report per failing test execution in order.
+    failures: list[FailureReport] = field(default_factory=list)
 
 
 class DebuggerAgent(AgentExecutor):
@@ -52,6 +79,9 @@ class DebuggerAgent(AgentExecutor):
             from forge.models.fabric import ModelFabric
             self.fabric = ModelFabric.from_defaults()
             self.router = None
+        # Repairs are model output like any other change: they validate
+        # through the ChangeSet engine and authorize through the policy gate.
+        self.applier = ChangeApplier(self.runtime, root=self.root)
         self.last_model = ""
         self.last_latency = 0.0
 
@@ -63,6 +93,31 @@ class DebuggerAgent(AgentExecutor):
 
     def execute(self, request: AgentRequest) -> AgentResponse:
         return AgentResponse(True, output=self.diagnose(request.instructions or request.metadata.get("error", "")), agent=self.name, stage=request.stage)
+
+    def _apply_repair(self, response_text: str, approved: bool) -> dict[str, str]:
+        """Validate a repair proposal and apply it through the ChangeSet engine."""
+        changes, extra = CoderAgent(root=self.root)._parse_changes(response_text)
+        if not changes:
+            raise ValueError("Debugger model proposed no changes")
+        meta = extra.get("change_meta", {})
+        result = self.applier.apply(
+            [
+                CodeChange(
+                    path=path,
+                    content=content,
+                    risk=meta.get(path, {}).get("risk", "NONE"),
+                    expected_old_hash=meta.get(path, {}).get("expected_old_hash"),
+                    expected_old_content=meta.get(path, {}).get("expected_old_content"),
+                )
+                for path, content in changes.items()
+            ],
+            approved=approved,
+            label="repair",
+            capability="debugging",
+        )
+        if not result.success:
+            raise RuntimeError(result.errors[0] if result.errors else "repair rejected")
+        return changes
 
     def repair(self, task: str, failure: str, context: str = "", approved: bool = True,
                previous_attempts: list[DebugAttempt] | None = None) -> dict[str, str]:
@@ -76,15 +131,7 @@ class DebuggerAgent(AgentExecutor):
         try:
             response = model.provider.generate(prompt, context=context, task=task)
             self.last_latency = response.latency
-            # Reuse the coder's complete structural/path/content validation. It
-            # performs no writes; writes still happen below through ToolRuntime.
-            changes = CoderAgent(root=self.root, router=self.router)._changes(response.text)
-            if not changes:
-                raise ValueError("Debugger model proposed no changes")
-            for path, content in changes.items():
-                result = self.runtime.execute("write_file", approved=approved, path=path, content=content)
-                if not result.success:
-                    raise RuntimeError(result.error or "permissioned repair write failed")
+            changes = self._apply_repair(response.text, approved)
         except Exception:
             self.router.record(model.name, False, self.last_latency, capability="debugging", task_complexity=1.0)
             raise
@@ -125,9 +172,9 @@ class DebuggerAgent(AgentExecutor):
         """Apply a model-generated repair through the centralized fabric.
 
         The fabric records provider-level feedback and telemetry; the returned
-        structured change is validated and written through ToolRuntime exactly
-        like the legacy path. Model output never bypasses validation or write
-        permissions.
+        structured change is validated through the ChangeSet engine and
+        written only when the policy gate authorizes it. Model output never
+        bypasses validation or write permissions.
         """
         from forge.models.request import ModelRequest
 
@@ -145,14 +192,7 @@ class DebuggerAgent(AgentExecutor):
         self.last_latency = response.latency_ms
         if not response.success:
             raise RuntimeError(response.error or "No debugging model available; configure Ollama or another provider")
-        changes = CoderAgent(root=self.root, fabric=self.fabric)._changes(response.text)
-        if not changes:
-            raise ValueError("Debugger model proposed no changes")
-        for path, content in changes.items():
-            result = self.runtime.execute("write_file", approved=approved, path=path, content=content)
-            if not result.success:
-                raise RuntimeError(result.error or "permissioned repair write failed")
-        return changes
+        return self._apply_repair(response.text, approved)
 
 
 class TestDebugLoop:
@@ -169,11 +209,40 @@ class TestDebugLoop:
         # an equal-size file within the same mtime granularity window.
         self.command = command or [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
-    def run(self, task: str, context: str = "", approved: bool = True) -> DebugLoopResult:
+    @staticmethod
+    def _sanitize_test_paths(test_paths: list[str] | tuple[str, ...] | None) -> list[str]:
+        """Keep only repository-relative test paths; drop anything unsafe."""
+        safe: list[str] = []
+        for candidate in test_paths or []:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            parsed = PurePosixPath(candidate)
+            if parsed.is_absolute() or ".." in parsed.parts or "\\" in candidate:
+                continue
+            if ".git" in parsed.parts or ".forge" in parsed.parts:
+                continue
+            safe.append(candidate)
+        return safe
+
+    def run(self, task: str, context: str = "", approved: bool = True,
+            test_paths: list[str] | tuple[str, ...] | None = None) -> DebugLoopResult:
+        """Run tests, repairing bounded failures with structured reports.
+
+        When ``test_paths`` names the tests relevant to the change, only those
+        run here (the acceptance gate still runs the full suite, so skipped
+        regressions cannot slip through). Otherwise the full suite runs, as
+        before. Every failing execution produces a :class:`FailureReport` and
+        every retry carries a recorded reason; a failure is never reported as
+        a pass.
+        """
+        scoped = self._sanitize_test_paths(test_paths)
+        command = list(self.command) + scoped
+        scope = "targeted" if scoped else "full suite"
         attempts: list[DebugAttempt] = []
+        failures: list[FailureReport] = []
         # The range has a fixed upper bound: initial test + max_retries repairs.
         for number in range(1, self.max_retries + 2):
-            result = self.debugger.runtime.execute("terminal", approved=approved, command=self.command)
+            result = self.debugger.runtime.execute("terminal", approved=approved, command=command)
             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
             output = combined or result.error or ""
             exit_code = result.metadata.get("returncode")
@@ -194,13 +263,32 @@ class TestDebugLoop:
                         test_output=output,
                         model=self.debugger.last_model,
                         model_latency=self.debugger.last_latency,
-                        command=list(self.command),
+                        command=list(command),
                         exit_code=exit_code,
+                        reason=f"retest passed after {len(attempts)} repair(s)",
+                        failure=None,
                     ))
-                return DebugLoopResult(True, attempts, "tests passed or no test suite")
-            if number > self.max_retries:
-                return DebugLoopResult(False, attempts, "tests failed", output)
+                return DebugLoopResult(True, attempts, "tests passed or no test suite",
+                                       "", failures)
             diagnosis = self.debugger.diagnose(output)
+            if number > self.max_retries:
+                failures.append(FailureReport(
+                    attempt_number=number, command=list(command),
+                    exit_code=exit_code, output=output[-4000:],
+                    diagnosis=diagnosis,
+                    reason=f"retry bound reached ({self.max_retries} repairs); "
+                           f"{scope} tests still failing",
+                ))
+                return DebugLoopResult(False, attempts, "tests failed", output, failures)
+            reason = (f"attempt {number}: {scope} tests failed with exit "
+                      f"{exit_code}; scheduling bounded repair {number} of "
+                      f"{self.max_retries}")
+            report = FailureReport(
+                attempt_number=number, command=list(command),
+                exit_code=exit_code, output=output[-4000:],
+                diagnosis=diagnosis, reason=reason,
+            )
+            failures.append(report)
             try:
                 changes = self.debugger.repair(task, output, context, approved, previous_attempts=attempts)
             except Exception as exc:
@@ -208,9 +296,11 @@ class TestDebugLoop:
                     attempt_number=number, failure_error=output, diagnosis=diagnosis,
                     modifications={}, test_passed=False, test_output=output,
                     model=self.debugger.last_model, model_latency=self.debugger.last_latency,
-                    command=list(self.command), exit_code=exit_code,
+                    command=list(command), exit_code=exit_code,
+                    reason=f"{reason}; repair failed: {exc}",
+                    failure=report,
                 ))
-                return DebugLoopResult(False, attempts, "repair failed", str(exc))
+                return DebugLoopResult(False, attempts, "repair failed", str(exc), failures)
             attempts.append(DebugAttempt(
                 attempt_number=number,
                 failure_error=output,
@@ -220,7 +310,9 @@ class TestDebugLoop:
                 test_output=output,
                 model=self.debugger.last_model,
                 model_latency=self.debugger.last_latency,
-                command=list(self.command),
+                command=list(command),
                 exit_code=exit_code,
+                reason=reason,
+                failure=report,
             ))
-        return DebugLoopResult(False, attempts, "tests failed", "retry bound reached")
+        return DebugLoopResult(False, attempts, "tests failed", "retry bound reached", failures)

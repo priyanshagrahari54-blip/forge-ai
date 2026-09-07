@@ -153,7 +153,9 @@ class Supervisor:
             stage("CODE")
             stage("TEST")
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
-            debug_result = loop.run(requirement, context=str(context), approved=True)
+            targeted = response.metadata.get("tests_to_run") or None
+            debug_result = loop.run(requirement, context=str(context), approved=True,
+                                    test_paths=targeted)
             commands_run.append(list(loop.command))
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
             result["retry_count"] = len(debug_result.attempts)
