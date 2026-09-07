@@ -12,7 +12,11 @@ from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
 from forge.security.classification import classify_text
 from forge.security.permissions import PermissionManager
-from forge.tools.change_applier import ChangeApplier, CodeChange
+from forge.tools.change_applier import (
+    ApprovalCallback,
+    ChangeApplier,
+    CodeChange,
+)
 
 
 _SECRET_PATTERNS = (
@@ -44,7 +48,8 @@ class CoderAgent(AgentExecutor):
 
     def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
                  fabric: "ModelFabric | None" = None, approval_store=None,
-                 model_policy=None):
+                 model_policy=None,
+                 approval_callback: ApprovalCallback | None = None):
         # Routing input priority: explicit fabric > explicit legacy router >
         # default fabric. The fabric is canonical; the legacy router argument
         # is a compatibility adapter preserved verbatim so pre-existing
@@ -65,7 +70,10 @@ class CoderAgent(AgentExecutor):
         # layer (path/content/secret validation + permissioned ToolRuntime).
         # The repository root enables old-state guard verification.
         self.applier = ChangeApplier(self.runtime, root=self.root,
-                                     approval_store=approval_store)
+                                     approval_store=approval_store,
+                                     approval_callback=approval_callback)
+        #: Interactive approval hook (A34); ``None`` keeps A32 behavior.
+        self.approval_callback = approval_callback
         #: Optional model data policy, enforced by the fabric per request.
         self.model_policy = model_policy
         #: Policy decisions from the most recent apply (observability).

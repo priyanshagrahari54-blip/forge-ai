@@ -35,9 +35,10 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from uuid import uuid4
 
+from forge.core.run_control import TaskCancelled
 from forge.runtime.runtime import ToolResult, ToolRuntime
 from forge.security.policy_gate import PolicyDecision, PolicyGate
 
@@ -87,6 +88,42 @@ class _ValidationError(ValueError):
         super().__init__(message)
         self.code = code
         self.path = path
+
+
+@dataclass(frozen=True)
+class ApprovalItem:
+    """One change awaiting an explicit operator decision."""
+
+    operation: str
+    path: str
+    tool: str
+    risk: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ApprovalQuery:
+    """Everything an operator needs to decide on a blocked change set.
+
+    The query is informational: answering it mints no authority by itself.
+    Authority still comes only from a redeemed A33 approval token (or the
+    caller's explicit ``approved`` flag), re-checked by the gate for every
+    change before any write happens.
+    """
+
+    items: tuple[ApprovalItem, ...]
+    agent: str
+    task_id: str
+    capability: str
+    fingerprint: str
+    label: str
+
+
+#: Interactive approval hook: given a query, block until an operator
+#: decides and return an approval-token id, or ``""`` when denied,
+#: expired, or unavailable. May raise :class:`TaskCancelled` to abort
+#: the enclosing run; any other exception fails closed like a denial.
+ApprovalCallback = Callable[[ApprovalQuery], str]
 
 
 @dataclass
@@ -184,7 +221,8 @@ class ChangeApplier:
     def __init__(self, runtime: ToolRuntime, checkpoint_manager=None,
                  root: str | Path | None = None,
                  policy_gate: PolicyGate | None = None,
-                 approval_store=None) -> None:
+                 approval_store=None,
+                 approval_callback: ApprovalCallback | None = None) -> None:
         self.runtime = runtime
         self.checkpoint_manager = checkpoint_manager
         self.root = Path(root).resolve() if root is not None else None
@@ -192,6 +230,11 @@ class ChangeApplier:
         #: Optional A33 approval store: mints task-scoped grants and redeems
         #: approval tokens. ``None`` preserves exact A32 behavior.
         self.approval_store = approval_store
+        #: Optional interactive approval hook (A34). Consulted only when the
+        #: policy pre-flight yields REQUIRE_APPROVAL and nothing worse;
+        #: DENY is never escalated to an operator. ``None`` preserves exact
+        #: A32 behavior (approval-required change sets fail immediately).
+        self.approval_callback = approval_callback
 
     def _gate(self) -> PolicyGate:
         """Policy gate sharing the runtime's permission posture by default."""
@@ -387,6 +430,40 @@ class ChangeApplier:
 
     # -- application ------------------------------------------------------
 
+    def _request_interactive_approval(self, plan: list[CodeChange],
+                                      previews: list[Any], *,
+                                      approved: bool, capability: str,
+                                      actor: str, task_id: str,
+                                      fingerprint: str, label: str) -> str:
+        """Ask the operator for one token covering the blocked changes.
+
+        Returns the granted token id, or ``""`` when denied, expired, or
+        unavailable. Only REQUIRE_APPROVAL outcomes are queried — callers
+        guarantee no DENY is present. :class:`TaskCancelled` propagates so
+        a cancelled run aborts instead of failing closed as a denial.
+        """
+        assert self.approval_callback is not None
+        items: list[ApprovalItem] = []
+        for change, outcome in zip(plan, previews):
+            if outcome.allowed:
+                continue
+            operation, tool = self._operation_for(change)
+            items.append(ApprovalItem(
+                operation=operation, path=change.path, tool=tool,
+                risk=change.risk, reason=outcome.reason))
+        if not items:
+            return ""
+        query = ApprovalQuery(
+            items=tuple(items), agent=actor, task_id=task_id,
+            capability=capability, fingerprint=fingerprint, label=label)
+        try:
+            token_id = self.approval_callback(query)
+        except TaskCancelled:
+            raise
+        except Exception:
+            return ""
+        return token_id if isinstance(token_id, str) else ""
+
     @staticmethod
     def _detect_conflicts(normalized: list[CodeChange],
                           result: ApplyResult) -> list[CodeChange]:
@@ -484,6 +561,31 @@ class ChangeApplier:
                 approval_token_id=approval_token_id,
                 fingerprint=result.fingerprint or "",
                 request_id=enforcement_id, preview=True))
+        # Phase 2b — interactive approval (A34, opt-in): when every block
+        # is REQUIRE_APPROVAL (never DENY) and a callback is configured,
+        # ask the operator once for the whole change set. A granted token
+        # is re-checked by the gate for every change below; a denial (or
+        # callback failure) falls through to the normal failure path.
+        active_token = approval_token_id
+        if (self.approval_callback is not None
+                and any(not outcome.allowed for outcome in previews)
+                and not any(outcome.decision == PolicyDecision.DENY
+                            for outcome in previews)):
+            active_token = self._request_interactive_approval(
+                plan, previews, approved=approved, capability=capability,
+                actor=actor, task_id=task_id,
+                fingerprint=result.fingerprint or "", label=label)
+            if active_token:
+                previews = []
+                for change, enforcement_id in zip(plan, enforcement_ids):
+                    operation, tool = self._operation_for(change)
+                    previews.append(gate.evaluate(
+                        operation=operation, path=change.path, tool=tool,
+                        risk=change.risk, capability=capability,
+                        approved=approved, agent=actor, task_id=task_id,
+                        approval_token_id=active_token,
+                        fingerprint=result.fingerprint or "",
+                        request_id=enforcement_id, preview=True))
         if any(not outcome.allowed for outcome in previews):
             result.decisions.extend(
                 outcome.to_dict() for outcome in previews)
@@ -532,7 +634,7 @@ class ChangeApplier:
                 operation=operation, path=change.path, tool=tool,
                 risk=change.risk, capability=capability, approved=approved,
                 agent=actor, task_id=task_id,
-                approval_token_id=approval_token_id,
+                approval_token_id=active_token,
                 fingerprint=result.fingerprint or "",
                 request_id=enforcement_id)
             result.decisions.append(outcome.to_dict())
@@ -552,7 +654,7 @@ class ChangeApplier:
                     write = self.runtime.execute(
                         "delete_file", approved=approved, path=change.path,
                         actor=actor, task_id=task_id,
-                        approval_token_id=approval_token_id, risk=change.risk,
+                        approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
                     )
@@ -560,7 +662,7 @@ class ChangeApplier:
                     write = self.runtime.execute(
                         "write_file", approved=approved, path=change.path, content=change.content,
                         actor=actor, task_id=task_id,
-                        approval_token_id=approval_token_id, risk=change.risk,
+                        approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
                     )

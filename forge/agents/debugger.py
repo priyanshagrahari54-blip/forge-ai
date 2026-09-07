@@ -11,7 +11,11 @@ from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolRuntime
 from forge.security.permissions import PermissionManager
-from forge.tools.change_applier import ChangeApplier, CodeChange
+from forge.tools.change_applier import (
+    ApprovalCallback,
+    ChangeApplier,
+    CodeChange,
+)
 
 
 @dataclass
@@ -69,7 +73,8 @@ class DebuggerAgent(AgentExecutor):
 
     def __init__(self, root: str = ".", runtime: ToolRuntime | None = None, router: ModelRouter | None = None,
                  fabric: "ModelFabric | None" = None, approval_store=None,
-                 model_policy=None):
+                 model_policy=None,
+                 approval_callback: ApprovalCallback | None = None):
         self.root = str(Path(root).resolve())
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
         if fabric is not None:
@@ -85,7 +90,10 @@ class DebuggerAgent(AgentExecutor):
         # Repairs are model output like any other change: they validate
         # through the ChangeSet engine and authorize through the policy gate.
         self.applier = ChangeApplier(self.runtime, root=self.root,
-                                     approval_store=approval_store)
+                                     approval_store=approval_store,
+                                     approval_callback=approval_callback)
+        #: Interactive approval hook (A34); ``None`` keeps A32 behavior.
+        self.approval_callback = approval_callback
         self.model_policy = model_policy
         #: Policy decisions accumulated across repairs (observability).
         self.repair_decisions: list = []

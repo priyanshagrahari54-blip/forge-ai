@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 from forge.core.planner import Planner
+from forge.core.run_control import SupervisorControl, TaskCancelled
 from forge.core.state import ForgeState
 from forge.security.permissions import OperationMode
 
@@ -76,6 +77,9 @@ class Supervisor:
         audit_log=None,
         model_policy=None,
         approval_token_id: str = "",
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        control: SupervisorControl | None = None,
+        approval_callback: ApprovalCallback | None = None,
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
 
@@ -96,6 +100,15 @@ class Supervisor:
         decision (surfaced as ``result["audit_events"]``); ``model_policy``
         filters model calls by data classification.
 
+        A34 options (all no-ops unless provided): ``on_event`` receives
+        every report event live as ``(name, details)``; ``control`` enables
+        cooperative pause/cancel at stage boundaries (a cancelled run
+        rolls back exactly like a failed one and reports ``CANCELLED``);
+        ``approval_callback`` is consulted when a change set or the commit
+        gate yields REQUIRE_APPROVAL, so an operator can approve mid-run —
+        DENY is never escalated and every granted token is re-checked by
+        the gate before any write.
+
         The only model-controlled artifact is the structured response returned by
         the provider. This method deliberately has no ``changes`` or modifier
         argument. Every write is checkpointed and every commit uses the exact
@@ -115,9 +128,14 @@ class Supervisor:
         from forge.models.provider import LocalModelProvider
         from forge.runtime.defaults import create_default_runtime
         from forge.security.permissions import PermissionManager
-        from forge.security.policy_gate import PolicyGate
+        from forge.security.policy_gate import PolicyDecision, PolicyGate
         from forge.security.review import ReviewGate
         from forge.security.verification import VerificationPipeline
+        from forge.tools.change_applier import (
+            ApprovalCallback,
+            ApprovalItem,
+            ApprovalQuery,
+        )
         from forge.self_development.benchmark import BenchmarkRunner
         from forge.tools.checkpoint import CheckpointManager
         from forge.tools.git import GitTool
@@ -159,7 +177,13 @@ class Supervisor:
             "checkpoint_id": checkpoint.id,
         }
 
+        # Once finishing (success tail or failure path), checkpoints stop
+        # yielding: rollback and completion must never block or re-raise.
+        finishing = False
+
         def stage(name: str) -> None:
+            if control is not None and not finishing:
+                control.checkpoint(name)
             self.set_stage(name)
             result["stages"].append(name)
 
@@ -185,9 +209,11 @@ class Supervisor:
             intelligence = RepositoryIntelligence.build(self.root)
             task.status = TaskStatus.PLANNING
             coder = CoderAgent(runtime=shared_runtime, root=str(self.root), router=router, fabric=fabric,
-                               approval_store=approval_store, model_policy=model_policy)
+                               approval_store=approval_store, model_policy=model_policy,
+                               approval_callback=approval_callback)
             debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric,
-                                     approval_store=approval_store, model_policy=model_policy)
+                                     approval_store=approval_store, model_policy=model_policy,
+                                     approval_callback=approval_callback)
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
@@ -367,6 +393,33 @@ class Supervisor:
                 approved=approved, agent="supervisor", task_id=task.id,
                 approval_token_id=approval_token_id)
             event("permission_decision", commit_decision.to_dict())
+            if (not commit_decision.allowed
+                    and commit_decision.decision == PolicyDecision.REQUIRE_APPROVAL
+                    and approval_callback is not None):
+                # Interactive commit approval (A34): DENY still fails
+                # immediately; a granted token is re-checked below.
+                commit_query = ApprovalQuery(
+                    items=(ApprovalItem(
+                        operation="git_commit", path="", tool="git",
+                        risk=result.get("risk_level", "NONE"),
+                        reason=commit_decision.reason),),
+                    agent="supervisor", task_id=task.id,
+                    capability="release", fingerprint="", label="commit")
+                try:
+                    commit_token = approval_callback(commit_query)
+                except TaskCancelled:
+                    raise
+                except Exception:
+                    commit_token = ""
+                if isinstance(commit_token, str) and commit_token:
+                    commit_decision = policy.evaluate(
+                        operation="git_commit", path="", tool="git",
+                        risk=result.get("risk_level", "NONE"),
+                        capability="release",
+                        approved=approved, agent="supervisor",
+                        task_id=task.id,
+                        approval_token_id=commit_token)
+                    event("permission_decision", commit_decision.to_dict())
             if not commit_decision.allowed:
                 raise RuntimeError(f"commit not permitted: {commit_decision.reason}")
             stage("COMMIT")
@@ -411,11 +464,16 @@ class Supervisor:
                 approval_store.revoke_task(task.id)
             if audit_log is not None:
                 result["audit_events"] = audit_log.to_dict()
+            finishing = True
             stage("COMPLETED")
             return result
         except Exception as exc:
+            finishing = True
+            cancelled = isinstance(exc, TaskCancelled)
             stage("ROLLBACK")
             event("rollback", {"files": list(touched)})
+            if cancelled:
+                event("cancelled", {"files": list(touched)})
             # Restore only files belonging to this run. Unrelated user files are
             # not deleted or rewritten. Also remove candidate index entries after
             # a commit/staging failure without touching the worktree.
@@ -437,7 +495,8 @@ class Supervisor:
             report.error = str(exc)
             report.rollback = True
             report.duration_seconds = perf_counter() - started
-            report.final_status = "FAILED"
+            report.final_status = "CANCELLED" if cancelled else "FAILED"
+            result["cancelled"] = cancelled
             report.timings = dict(timings)
             report.model_latency_seconds = model_latency
             report.input_tokens = token_usage["input"]
