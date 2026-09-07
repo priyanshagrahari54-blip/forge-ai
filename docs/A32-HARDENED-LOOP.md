@@ -15,6 +15,29 @@ requirement → supervisor → plan → agents → Model Fabric → coder
 Failure at any point: structured error → checkpoint rollback of candidate
 files only → report. Unrelated user files are never touched.
 
+## Proposal vs execution
+
+A32 separates *proposing* work from *performing* it:
+
+- **Proposal (no write approval needed):** inspect the repository, build
+  intelligence, plan, select agents, route and call the model, validate the
+  ChangeSet structurally, preview policy decisions (`dry_run`), run the
+  constrained test suite, and run read-only verification.
+- **Execution (policy authorization required):** every file write, every
+  repair write, and the final commit. Each passes the PolicyGate with the
+  operation, path, tool, risk, and requested capability visible, and each
+  decision is recorded in the run's event log.
+
+| Mode | Reads/tests | Low-risk writes | High-risk/sensitive writes | Commit |
+| --- | --- | --- | --- | --- |
+| `safe` | yes | DENY | DENY | DENY |
+| `assisted` (default) | yes | with approval | with approval | with approval |
+| `autonomous` | yes | low-risk auto | with approval | with approval |
+| `locked` | reads only | DENY | DENY | DENY |
+
+`approved=True` satisfies `REQUIRE_APPROVAL`; it can never override `DENY`,
+and a missing approval is never treated as approval.
+
 ## Control points
 
 ### 1. Controlled ChangeSet engine (`forge/tools/change_applier.py`)
@@ -65,6 +88,12 @@ assert outcome.decision.value == "ALLOW"
 - Invalid JSON, unsafe paths, secrets, bad risk labels, and model-proposed
   deletes reject the response. Caller-supplied change shortcuts do not
   exist: `request.metadata["changes"]` is ignored (proven by test).
+
+The Model Fabric is the canonical production route
+(`CoderAgent → Model Fabric → provider`); the `router=` argument is a legacy
+compatibility adapter preserved for pre-existing callers, not a second
+routing algorithm. Successful coder responses record which route served them
+(`routing: fabric | legacy-router`).
 
 ### 4. Test / debug / repair loop (`forge/agents/debugger.py`)
 
@@ -180,6 +209,10 @@ privacy/local policies. The core suite needs no paid API.
 | Supervisor integration | implemented + tested | `tests/test_a32_e2e.py`, `tests/test_a32_failure_matrix.py` |
 | Observability (events, timings, redaction) | implemented + tested | `tests/test_a32_observability.py` |
 | Failure matrix E2E | implemented + tested | `tests/test_a32_failure_matrix.py` |
+| Approval at the policy boundary (modes, commit gating) | implemented + tested | `tests/test_a32_approval.py` |
+| Constrained test execution without write approval | implemented + tested | `forge/runtime/defaults.py` (`run_tests`), `tests/test_a32_approval.py` |
+| Rollback/Git staging hardening | implemented + tested | `tests/test_a32_rollback_git.py` |
+| CSV+tests+docs E2E through the mock fabric provider | implemented + tested | `tests/test_a32_csv_e2e.py` |
 | Live-model (Ollama) autonomous E2E | implemented, opt-in, not run here | `tests/test_ollama_autonomous_e2e.py` (skipped without endpoint) |
 | Model-proposed deletes | not implemented by design | rejected; deletes are an explicit operator path |
 | Multi-model consensus as acceptance authority | not implemented | available as a library (`forge/models/consensus.py`), not wired into acceptance |

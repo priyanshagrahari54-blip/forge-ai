@@ -167,3 +167,34 @@ Known limitations: model-proposed deletes are rejected by design (explicit
 operator path only); the model reviewer needs a review-capable model;
 lint/type checks run only when the target declares them (omission recorded);
 live Ollama E2E remains opt-in and was not run here (no endpoint).
+
+## A32 final hardening — approval at the policy boundary (PR #5)
+
+Focused hardening pass on `arena/01a07aa1-forge-ai` (no rebuild, no
+reset/rebase). Final: **575 passed, 2 skipped** (skips = opt-in live
+Ollama), `compileall` clean, `git diff --check` clean.
+
+- **Approval architecture** (`ad6f7d3`): the supervisor blanket approval
+  gate is gone. Inspection, planning, selection, proposal generation, test
+  execution, and verification proceed without write approval; every write
+  and the commit must pass the PolicyGate under an explicit mode
+  (`safe`/`assisted`/`autonomous`/`locked`). New constrained `run_tests`
+  tool (exact interpreter, pytest only, safe flags/paths) so tests need no
+  write approval; `terminal` stays approval-gated.
+- **Canonical fabric** (`68655fe`): `CoderAgent → Model Fabric → provider`
+  documented as the production route with `router=` as a legacy
+  compatibility adapter; success metadata records `routing`.
+- **Decision semantics** (`d590d2d`): `tests/test_a32_approval.py` (13) —
+  Tests A–F plus commit gating, constrained test execution, routing
+  markers; build/lint acceptance failures added.
+- **Rollback/Git staging** (`16a236e`): `tests/test_a32_rollback_git.py`
+  (4) — behavioral proof of no broad destructive Git commands, exclusion
+  of unrelated tracked modifications from commits, staged-set mismatch
+  refusal, deleted-candidate restore; ChangeSet security regressions.
+- **Strengthened E2E** (`c93d0cf`): `tests/test_a32_csv_e2e.py` — CSV
+  export plus tests plus docs through the mock fabric provider with
+  per-file ALLOW proof, real behavior verification, and safe-commit scope.
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md` + README):
+  proposal vs execution, mode matrix, canonical fabric vs legacy adapter.
+
+No A33 work was started.
