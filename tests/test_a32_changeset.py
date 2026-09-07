@@ -156,6 +156,36 @@ def test_apply_records_structured_error_codes(tmp_path):
     ])
 
 
+# -- security regressions ---------------------------------------------------
+
+@pytest.mark.parametrize("bad_path", [
+    "src/.git/config",
+    "nested/.forge/state.json",
+    "a/b/../../escape.py",
+])
+def test_rejects_nested_protected_and_escape_paths(tmp_path, bad_path):
+    applier = _applier(tmp_path)
+    with pytest.raises(ValueError):
+        applier.validate(CodeChange(path=bad_path, content="x = 1\n"))
+
+
+def test_fingerprint_is_sensitive_to_old_state_guards():
+    base = [CodeChange(path="a.py", content="x = 1\n")]
+    guarded = [CodeChange(path="a.py", content="x = 1\n",
+                          expected_old_hash="abc")]
+    assert ChangeApplier.fingerprint(base) != ChangeApplier.fingerprint(guarded)
+
+
+def test_old_hash_match_is_case_insensitive(tmp_path):
+    (tmp_path / "app.py").write_text("original\n")
+    applier = _applier(tmp_path)
+    result = applier.dry_run([
+        CodeChange(path="app.py", content="changed\n",
+                   expected_old_hash=_sha("original\n").upper()),
+    ])
+    assert result.valid
+
+
 # -- gated delete ---------------------------------------------------------
 
 def test_delete_rejected_by_default(tmp_path):
