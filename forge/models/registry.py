@@ -32,6 +32,11 @@ class Model:
     #: Fallback models (e.g. the deterministic local no-op) are only selected
     #: when no regular model can serve the request.
     fallback: bool = False
+    #: Per-capability verification level: ``declared`` (advertised but not
+    #: independently confirmed), ``detected`` (inferred from a conservative
+    #: heuristic such as Ollama family prefixes), or ``verified`` (confirmed by
+    #: a real capability probe). Unlisted capabilities default to ``declared``.
+    capability_status: dict[str, str] = field(default_factory=dict)
     health: ModelHealth = field(default_factory=ModelHealth)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -41,6 +46,19 @@ class Model:
                 raise ValueError(
                     f"Model {self.name!r} advertises unknown capability {capability!r}"
                 )
+        for capability in self.capability_status:
+            if not is_capability(capability):
+                raise ValueError(
+                    f"Model {self.name!r} records status for unknown capability {capability!r}"
+                )
+
+    def capability_status_for(self, capability: str) -> str:
+        """Return the verification level for a capability.
+
+        One of ``verified``, ``detected``, or ``declared`` (the default when a
+        capability is advertised without independent confirmation).
+        """
+        return self.capability_status.get(capability, "declared")
 
     def supports(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -107,6 +125,7 @@ class Model:
             "reliability": self.reliability,
             "available": self.available,
             "fallback": self.fallback,
+            "capability_status": dict(self.capability_status),
             "health": self.health.to_dict(),
             "metadata": dict(self.metadata),
         }
@@ -127,6 +146,7 @@ class Model:
             reliability=float(data.get("reliability", 1.0)),
             available=bool(data.get("available", True)),
             fallback=bool(data.get("fallback", False)),
+            capability_status=dict(data.get("capability_status", {})),
             health=health,
             metadata=dict(data.get("metadata", {})),
         )

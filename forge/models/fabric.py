@@ -112,6 +112,7 @@ class ModelFabric:
                 name=f"ollama/{config.ollama_model}",
                 provider="ollama",
                 capabilities=capabilities,
+                capability_status=_ollama_capability_status(config.ollama_model, capabilities),
                 context_window=config.ollama_context_window,
                 free=True,
                 local=True,
@@ -437,6 +438,7 @@ class ModelFabric:
                     name=registry_name,
                     provider=name,
                     capabilities=capabilities,
+                    capability_status=_ollama_capability_status(model_name, capabilities),
                     context_window=self.config.ollama_context_window if self.config else 8192,
                     free=True,
                     local=True,
@@ -513,3 +515,15 @@ def _ollama_capabilities(model_name: str, context_window: int) -> tuple[str, ...
     if context_window >= 32768:
         capabilities.append(Capability.LONG_CONTEXT.value)
     return tuple(capabilities)
+
+
+def _ollama_capability_status(model_name: str, capabilities: tuple[str, ...]) -> dict[str, str]:
+    """Verification levels for Ollama-derived capabilities.
+
+    Vision is inferred from a conservative family-prefix heuristic (detected,
+    not independently verified); long context comes from configured metadata.
+    """
+    status: dict[str, str] = {}
+    if Capability.VISION.value in capabilities:
+        status[Capability.VISION.value] = "detected"
+    return status

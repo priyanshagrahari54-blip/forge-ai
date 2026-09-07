@@ -15,6 +15,7 @@ from forge.models.capabilities import (
     normalize_capability,
 )
 from forge.models.config import FabricConfig
+from forge.models.consensus import ConsensusResult, ConsensusStrategy, consensus
 from forge.models.credentials import CredentialError, CredentialStore
 from forge.models.errors import (
     CapabilityNotSupportedError,
@@ -92,4 +93,7 @@ __all__ = [
     "ProviderError",
     "ConfigurationError",
     "ModelFabric",
+    "ConsensusStrategy",
+    "ConsensusResult",
+    "consensus",
 ]
