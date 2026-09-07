@@ -109,3 +109,61 @@ Known limitations: autonomous deletions are rejected (operator must delete expli
 - It is **not yet on the GitHub remote**: `git push` is rejected with `refusing to allow a GitHub App to create or update workflow '.github/workflows/ci.yml' without 'workflows' permission`, and the Contents API returns 403 `Resource not accessible by integration`. The `arena-ai-coding-agent[bot]` App installation lacks the **Workflows (read and write)** permission.
 - Consequence: GitHub Actions cannot run against the PR head until the App is granted `workflows: write` (or GitHub is reconnected in Arena with a token that has it). No CI run is claimed; the local suite (449 passed, 2 skipped) is the verification evidence in the meantime.
 - Exact next action: repo owner grants the App **Workflows → Read and write** on this repository (Settings → GitHub Apps → installed app → permissions), then `git push origin arena/01a0777f-forge-ai` delivers `38f7429` and CI runs.
+
+## A32 rebuild — production-hardened autonomous loop
+
+The previous A32 commits were no longer reachable, so A32 was rebuilt cleanly
+on `arena/01a07aa1-forge-ai` from the A31 tree (baseline: 449 passed,
+2 skipped). Each milestone below is a separate commit; no reset, rebase, or
+squash was used. Final: **550 passed, 2 skipped** (skips = opt-in live
+Ollama), `compileall` clean, `git diff --check` clean.
+
+- **Controlled ChangeSet engine** (`3a25a0a`): deterministic fingerprints,
+  `dry_run()` with zero writes, old-content/hash guards, structured
+  `ChangeError` values, and a `delete` action gated behind `allow_delete`
+  plus explicit approval (model-proposed deletes stay rejected).
+  Tests: `tests/test_a32_changeset.py` (16).
+- **Permission policy gate** (`1c4e78b`): explicit
+  `ALLOW`/`DENY`/`REQUIRE_APPROVAL` over operation, path, tool, risk, and
+  requested capability; `SAFE`/`ASSISTED`/`AUTONOMOUS`/`LOCKED` modes with
+  risk-aware autonomous auto-approval. The engine authorizes every change
+  before modification; denials are recorded, never bypassed.
+  Tests: `tests/test_a32_policy_gate.py` (20).
+- **Model-driven coding pipeline** (`3e48af1`): coder schema gains
+  `tests_to_run`/`risk_level` plus per-change `risk`/`old_hash`/`old_content`
+  guards threaded into the ChangeSet engine and policy gate; the legacy
+  `router=` path is preserved and `request.metadata["changes"]` shortcuts
+  are behaviorally proven absent.
+  Tests: `tests/test_a32_coding_pipeline.py` (11).
+- **Test/debug/repair loop** (`6f72f46`): repairs validate through the
+  ChangeSet engine and authorize via the policy gate; structured
+  `FailureReport`s, recorded retry reasons, and targeted runs from the
+  coder's `tests_to_run` (the acceptance gate still runs the full suite).
+  Tests: `tests/test_a32_debug_loop.py` (9).
+- **Independent review and security gates** (`8c346c4`): configurable
+  `ReviewPolicy` `MEDIUM` budget with `HIGH`/`CRITICAL` always blocking;
+  security flags key/credential files on sight, unsafe and protected paths,
+  and shell/`popen` command usage — no hardcoded scores.
+  Tests: `tests/test_a32_gates.py` (12).
+- **Acceptance and rollback verification** (`c5b43d8`): decisions name
+  `failed_gates` and carry measured `metrics` with explicit lint-execution
+  evidence; checkpoints record exact restore metadata; staging rejects key
+  material; `commit_accepted()` refuses commits unless acceptance succeeded.
+  Tests: `tests/test_a32_acceptance_safety.py` (15).
+- **Autonomous engineering E2E** (`632f3c2`): fabric-path failure matrix —
+  malformed output, unauthorized/traversal paths, secrets, credential files,
+  repair failure, review/security rejection, commit failure — each proving
+  rejection, exact rollback, no commit, and structured reporting.
+  Tests: `tests/test_a32_failure_matrix.py` (9).
+- **Supervisor observability and timing** (`b8b4af2`): ordered redacted
+  event log, measured per-phase timings, real model latency/token metadata
+  (`None` when unreported, never fabricated).
+  Tests: `tests/test_a32_observability.py` (9).
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md` + README):
+  architecture, configuration examples, safety/permission docs, and an
+  implemented/tested/optional/not-yet matrix.
+
+Known limitations: model-proposed deletes are rejected by design (explicit
+operator path only); the model reviewer needs a review-capable model;
+lint/type checks run only when the target declares them (omission recorded);
+live Ollama E2E remains opt-in and was not run here (no endpoint).
