@@ -122,6 +122,10 @@ class ApprovalConflictError(Conflict):
     code = "APPROVAL_CONFLICT"
 
 
+class NotRunning(Conflict):
+    code = "TASK_NOT_RUNNING"
+
+
 class InvalidRequest(ControlError):
     code = "INVALID_REQUEST"
     status = 400
@@ -570,7 +574,9 @@ class ControlPlane:
         """Stop background work. In-flight runs keep their threads only."""
         self._stopping.set()
         self._dispatch_event.set()
-        if self._dispatcher is not None and wait:
+        # The dispatcher always joins: it exits promptly on the set event,
+        # and leaking it would double-dispatch after a later start().
+        if self._dispatcher is not None:
             self._dispatcher.join(timeout=5.0)
             self._dispatcher = None
         if self._executor is not None:
@@ -746,6 +752,8 @@ class ControlPlane:
                         reason="pause requested; takes effect at the next "
                                "stage boundary")
             return updated
+        if run.status in TERMINAL_STATUSES:
+            raise NotRunning(f"Cannot pause a {run.status.value} task.")
         raise Conflict(f"Cannot pause a {run.status.value} task.")
 
     def resume_task(self, session: Session, task_id: str, *,
@@ -753,6 +761,9 @@ class ControlPlane:
         run = self.get_task(session, task_id)
         self._check_version(run, expected_version)
         if run.status != RunStatus.PAUSED:
+            if run.status in TERMINAL_STATUSES:
+                raise NotRunning(
+                    f"Cannot resume a {run.status.value} task.")
             raise Conflict(
                 f"Cannot resume a {run.status.value} task.")
         if run.started_at is None:
@@ -807,6 +818,8 @@ class ControlPlane:
                         reason="cancel requested; takes effect at the next "
                                "stage boundary")
             return run
+        if run.status in TERMINAL_STATUSES:
+            raise NotRunning(f"Cannot cancel a {run.status.value} task.")
         raise Conflict(f"Cannot cancel a {run.status.value} task.")
 
     def retry_task(self, session: Session, task_id: str) -> Run:
@@ -1045,7 +1058,7 @@ class ControlPlane:
         run = self.get_task(session, task_id)
         self._check_version(run, expected_version)
         if run.status != RunStatus.SUCCEEDED:
-            raise Conflict(
+            raise RollbackFailed(
                 "Only completed tasks can be rolled back. "
                 "Failed runs already restore their candidate files; "
                 "cancelled or rolled-back tasks have nothing to restore.")
@@ -1169,10 +1182,12 @@ class ControlPlane:
         project = self.get_project(session.project_id)
         git = GitTool(project.root)
         try:
-            branch = git.run(
-                "branch", "--show-current").stdout.strip()
-            head = git.run(
-                "rev-parse", "--short", "HEAD").stdout.strip()
+            branch_proc = git.run("branch", "--show-current")
+            head_proc = git.run("rev-parse", "--short", "HEAD")
+            if branch_proc.returncode != 0 or head_proc.returncode != 0:
+                raise RuntimeError("not a git repository")
+            branch = branch_proc.stdout.strip()
+            head = head_proc.stdout.strip()
         except Exception:
             return {"project_id": project.id, "available": False,
                     "reason": "Not a git repository."}

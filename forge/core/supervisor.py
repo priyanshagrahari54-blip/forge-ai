@@ -202,7 +202,16 @@ class Supervisor:
         timings: dict[str, float] = {}
 
         def event(name: str, details: dict[str, Any] | None = None) -> None:
-            report.record_event(name, perf_counter() - started, details or {})
+            payload = details or {}
+            report.record_event(name, perf_counter() - started, payload)
+            if on_event is not None:
+                try:
+                    on_event(name, dict(payload))
+                except Exception:
+                    # Live observability must never break the run itself.
+                    pass
+            if control is not None and not finishing:
+                control.checkpoint(name)
 
         def timed(phase: str, phase_started: float) -> None:
             timings[phase] = perf_counter() - phase_started

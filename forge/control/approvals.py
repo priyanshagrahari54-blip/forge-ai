@@ -62,7 +62,8 @@ class ApprovalService:
         self._emit = emit
         self.approval_timeout = approval_timeout
         self.token_ttl = token_ttl
-        self._lock = threading.Lock()
+        # RLock: decide() wakes waiters while holding the lock.
+        self._lock = threading.RLock()
         self._waiters: dict[str, threading.Event] = {}
 
     # -- filing -----------------------------------------------------------
