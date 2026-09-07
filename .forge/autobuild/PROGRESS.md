@@ -359,3 +359,33 @@ desktop control are foundations only; `CUSTOM` profiles rejected; no
 framing controls by default (add at the edge for production).
 
 No A35 work was started.
+
+## A34 UI upgrade — premium browser cockpit (same branch, no backend change)
+
+- **Shell**: sidebar + top status bar + workspace; Overview/Tasks/Projects/
+  Models/Permissions/Git plus Activity, Approval center, and System views —
+  every route backed by a real `/api/v1` endpoint, no fake pages.
+- **Screens**: hero dashboard with real stat cards + active-run card (honest
+  stage-position progress, live elapsed); large task composer (same form
+  contract); filterable/searchable task rows; task workspace with connected
+  pipeline nodes, human-readable live event cards (raw payload in expanders),
+  run/verification/checkpoint/report panels; WHAT/WHY approval cards;
+  model-fabric console (cards, routing policy, routing table, providers);
+  permission matrix with profile banners; read-only git with numbered
+  add/remove diff viewer; polished login with local-dev warning intact.
+- **Command palette** (`Ctrl/Cmd+K`): navigation-only, keyboard driven.
+- **Contracts preserved**: all existing DOM hooks, single same-origin
+  fetch helper, CSRF header, HttpOnly-cookie sessions, no storage, no
+  provider calls, no inline handlers/styles (CSP `self`-only), no backend
+  or API changes whatsoever.
+- **Proof**: 16 new `tests/test_a34_ui.py` tests (hooks, nav↔template↔route
+  mapping, CSP/static scans, palette/approval/task/event coverage, live
+  endpoint grounding). Full suite: 885 passed, 2 skipped. Executed the real
+  bundle in jsdom (64 checks incl. login flow, filters, palette, error
+  states, stage-rewind regression) and against the live backend (18 checks
+  incl. real task create + terminal cleanup, real git/models/permissions).
+  Pixel screenshots were not possible in this sandbox (browser CDNs
+  blocked); layout was verified by executed-DOM inspection, markup dumps,
+  and CSS review at desktop/tablet/mobile breakpoints.
+
+No A35 work was started.
