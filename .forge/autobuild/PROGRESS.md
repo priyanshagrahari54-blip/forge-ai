@@ -250,4 +250,53 @@ I/O by design; the cockpit has backend interfaces only (no UI); terminal
 `ALLOW` rules require exact pinned argv; live Ollama E2E remains opt-in
 and was not run here (no endpoint).
 
+## PR #5 final hardening — atomic ChangeSet transaction boundary
+
+Single focused commit `fix(A32): make ChangeSet application
+transaction-safe` on `arena/01a07aa1-forge-ai` atop `2ef2065` (no
+rebuild, no reset/rebase, no A32/A33 redesign). Baseline before changes:
+**782 passed, 2 skipped** (verified by running the suite). Final:
+**806 passed, 2 skipped** (skips = opt-in live Ollama),
+`tests/test_a32_transaction.py` 24/24, targeted A32/A33
+transaction/permission/rollback/Git/E2E selection 320/320,
+`compileall` clean, `git diff --check` clean, forbidden-command grep
+(`git reset --hard`, `git add .`, `git add -A`, `git add --all`) clean
+on the changed files.
+
+- **Transaction boundary** (`forge/tools/change_applier.py` only):
+  `ChangeApplier.apply()` now runs normalize → validate EVERY change →
+  authorize EVERY change through the existing A33 PolicyGate in preview
+  (non-consuming) mode → checkpoint → mint task grant → apply with
+  stop-on-first-failure. Invalid, conflicting (`CONFLICTING_CHANGES`),
+  malformed (`MALFORMED_CHANGESET`), denied, or approval-missing change
+  sets produce zero writes and no checkpoint; mid-application failures
+  (including unexpected runtime exceptions) stop immediately and roll the
+  checkpoint back over exactly the candidate files. Token consumption is
+  unchanged (preview consumes nothing; one redemption per enforcement
+  chain at execution). `ApplyResult` gains `proposed_paths`,
+  `rolled_back`, and `duration_ms` for transaction observability; error
+  paths carry no secret content.
+- **Regression tests** (`tests/test_a32_transaction.py`, 24): Test A
+  later-validation-failure (with and without checkpoint manager), Test B
+  later-policy-denial via an explicit engine DENY, Test C mixed
+  ALLOW/REQUIRE_APPROVAL without approval, Test D full multi-file
+  success, Test E mid-application failure (failed result + raised
+  exception) with candidate restore and unrelated-work preservation,
+  Test F modify/delete and content conflicts plus identical-duplicate
+  dedupe, Test G stale hash guard, Test H security/mode/approval
+  regression battery, single-use-token-exhaustion-mid-transaction
+  fail-closed proof, checkpoint-ordering spy proof, malformed-entry
+  rejection, and secret-free observability.
+- **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md`): the
+  invariant "Forge performs complete ChangeSet validation and
+  authorization before creating a checkpoint or modifying any candidate
+  file" plus the transaction sequence and a status-matrix row.
+
+Known limitations: rollback of mid-application failures still requires
+a configured `CheckpointManager` (unchanged pre-existing requirement).
+Verified semantics (tested, not a limitation): a single-use approval
+token covering several changes in one set authorizes the first
+execution and fails the rest closed — the transaction stops and rolls
+back to zero candidate writes.
+
 No A34 work was started.

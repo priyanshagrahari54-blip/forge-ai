@@ -1,10 +1,11 @@
 """Controlled code-change application layer (A32.1 / A32.4).
 
 The single place where model-produced changes become repository writes. It
-validates every path and payload, enforces permissions through the
-``ToolRuntime``, records every changed path, and (when a ``CheckpointManager``
-is provided) checkpoints before the first modification so a change set can be
-rolled back exactly.
+validates and authorizes the ENTIRE change set before modifying anything,
+enforces permissions through the ``ToolRuntime``, records every changed path,
+and (when a ``CheckpointManager`` is provided) checkpoints after full
+validation and authorization but before the first modification, so a change
+set can be rolled back exactly.
 
 Model output never bypasses this layer: the coder and debugger write through
 it, and the supervisor rolls back through the same recorded path set.
@@ -31,12 +32,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from uuid import uuid4
 
-from forge.runtime.runtime import ToolRuntime
+from forge.runtime.runtime import ToolResult, ToolRuntime
 from forge.security.policy_gate import PolicyDecision, PolicyGate
 
 #: Hard bound on a single generated file, so a runaway model cannot produce an
@@ -101,6 +103,12 @@ class ApplyResult:
     decisions: list[dict[str, Any]] = field(default_factory=list)
     #: Live task grant authorizing this apply, if task-scoped (A33).
     task_grant: dict[str, Any] | None = None
+    #: Every declared path, recorded before validation (transaction audit).
+    proposed_paths: list[str] = field(default_factory=list)
+    #: True when this apply rolled its own checkpoint back after a failure.
+    rolled_back: bool = False
+    #: Wall-clock time spent inside :meth:`ChangeApplier.apply`, in ms.
+    duration_ms: float | None = None
 
     @property
     def success(self) -> bool:
@@ -115,6 +123,9 @@ class ApplyResult:
             "error_details": [detail.to_dict() for detail in self.error_details],
             "decisions": [dict(decision) for decision in self.decisions],
             "task_grant": dict(self.task_grant) if self.task_grant else None,
+            "proposed_paths": list(self.proposed_paths),
+            "rolled_back": self.rolled_back,
+            "duration_ms": self.duration_ms,
         }
 
 
@@ -376,66 +387,147 @@ class ChangeApplier:
 
     # -- application ------------------------------------------------------
 
+    @staticmethod
+    def _detect_conflicts(normalized: list[CodeChange],
+                          result: ApplyResult) -> list[CodeChange]:
+        """Reject ambiguous repeats of one path; dedupe exact repeats.
+
+        Two entries for the same path that differ in any way (action,
+        content, or guards) make the change set ambiguous, so the whole
+        transaction is rejected. Byte-identical repeats are harmless and are
+        collapsed to a single planned change.
+        """
+        plan: list[CodeChange] = []
+        seen: dict[str, CodeChange] = {}
+        for change in normalized:
+            previous = seen.get(change.path)
+            if previous is None:
+                seen[change.path] = change
+                plan.append(change)
+                continue
+            if previous == change:
+                continue
+            message = (f"Conflicting changes for {change.path!r}: the same "
+                       f"path appears with different actions or content")
+            result.errors.append(message)
+            result.error_details.append(
+                ChangeError("CONFLICTING_CHANGES", change.path, message))
+        return plan
+
     def apply(self, changes: Iterable[CodeChange | dict[str, Any]], approved: bool,
               label: str = "change", *, allow_delete: bool = False,
               capability: str = "", actor: str = "", task_id: str = "",
               approval_token_id: str = "") -> ApplyResult:
-        """Checkpoint, validate, authorize, and apply a change set.
+        """Validate, authorize, checkpoint, and apply a change set atomically.
 
-        A checkpoint is created before the first write when a
-        ``CheckpointManager`` is configured, so the pre-change state can be
-        restored exactly. Every change is validated, then authorized by the
-        policy gate *before* modification; denied changes are recorded and
-        skipped, never bypassed. Paths are recorded in application order;
-        unrelated files are never touched. Only declared entries are written:
-        anything not in ``changes`` cannot be modified through this call.
+        The transaction boundary is strict: the ENTIRE change set is
+        normalized, structurally validated, and policy-authorized BEFORE the
+        checkpoint is created and before any candidate file is modified. A
+        checkpoint is created only for a fully validated and fully authorized
+        plan, when a ``CheckpointManager`` is configured, so the pre-change
+        state can be restored exactly. Paths are recorded in application
+        order; unrelated files are never touched. Only declared entries are
+        written: anything not in ``changes`` cannot be modified through this
+        call.
+
+        If any write (or its execution-time re-check) fails mid-application,
+        the transaction stops immediately and the checkpoint is rolled back,
+        restoring exactly the files this candidate touched.
 
         When ``task_id`` and an approval store are configured, a temporary
         task grant is minted over exactly the validated paths (bound to the
         proposal fingerprint) and each write is checked against it; the grant
         is revoked if the apply fails.
         """
-        normalized = _normalize(changes)
-        result = ApplyResult(fingerprint=self.fingerprint(normalized))
+        started = time.perf_counter()
+        result = ApplyResult()
+        try:
+            normalized = _normalize(changes)
+        except (KeyError, TypeError, AttributeError) as exc:
+            message = f"Malformed change set entry: {exc}"
+            result.errors.append(message)
+            result.error_details.append(
+                ChangeError("MALFORMED_CHANGESET", "", message))
+            result.duration_ms = (time.perf_counter() - started) * 1000
+            return result
+        result.fingerprint = self.fingerprint(normalized)
+        for change in normalized:
+            if change.path not in result.proposed_paths:
+                result.proposed_paths.append(change.path)
         gate = self._gate()
-        if self.checkpoint_manager is not None:
-            checkpoint = self.checkpoint_manager.create(label)
-            result.checkpoint_id = checkpoint.id
-            result.checkpoint = checkpoint
-        task_scoped = bool(task_id) and self.approval_store is not None
-        if task_scoped:
-            grant_paths: list[str] = []
-            for change in normalized:
-                try:
-                    self.validate(change, allow_delete=allow_delete)
-                except ValueError:
-                    continue
-                if change.path not in grant_paths:
-                    grant_paths.append(change.path)
-            grant = self.approval_store.grant_task(
-                task_id, grant_paths, result.fingerprint or "")
-            result.task_grant = grant.to_dict()
 
+        # Phase 1 — structural pre-flight: validate EVERY change. Any
+        # failure rejects the whole transaction before any policy state,
+        # checkpoint, grant, or write exists.
         for change in normalized:
             try:
                 self.validate(change, allow_delete=allow_delete)
             except ValueError as exc:
                 self._record(result.errors, result.error_details, exc)
-                continue
+        plan = self._detect_conflicts(normalized, result)
+        if result.errors:
+            result.duration_ms = (time.perf_counter() - started) * 1000
+            return result
+
+        # Phase 2 — policy pre-flight: authorize EVERY change through the
+        # existing gate in preview mode (no token consumption, no writes).
+        # One enforcement chain per change: the preview, the real
+        # evaluation, and the runtime layer share this id.
+        enforcement_ids = [uuid4().hex for _ in plan]
+        previews: list[Any] = []
+        for change, enforcement_id in zip(plan, enforcement_ids):
+            operation, tool = self._operation_for(change)
+            previews.append(gate.evaluate(
+                operation=operation, path=change.path, tool=tool,
+                risk=change.risk, capability=capability, approved=approved,
+                agent=actor, task_id=task_id,
+                approval_token_id=approval_token_id,
+                fingerprint=result.fingerprint or "",
+                request_id=enforcement_id, preview=True))
+        if any(not outcome.allowed for outcome in previews):
+            result.decisions.extend(
+                outcome.to_dict() for outcome in previews)
+            for change, outcome in zip(plan, previews):
+                if outcome.allowed:
+                    continue
+                code = ("POLICY_DENIED"
+                        if outcome.decision == PolicyDecision.DENY
+                        else "APPROVAL_REQUIRED")
+                message = (f"Change to {change.path} not permitted: "
+                           f"{outcome.reason}")
+                result.errors.append(message)
+                result.error_details.append(
+                    ChangeError(code, change.path, message))
+            result.duration_ms = (time.perf_counter() - started) * 1000
+            return result
+
+        # Phase 3 — checkpoint the fully validated + authorized plan.
+        if self.checkpoint_manager is not None:
+            checkpoint = self.checkpoint_manager.create(label)
+            result.checkpoint_id = checkpoint.id
+            result.checkpoint = checkpoint
+
+        # Phase 4 — mint the task grant over exactly the planned paths.
+        task_scoped = bool(task_id) and self.approval_store is not None
+        if task_scoped:
+            grant = self.approval_store.grant_task(
+                task_id, [change.path for change in plan],
+                result.fingerprint or "")
+            result.task_grant = grant.to_dict()
+
+        # Phase 5 — apply the plan, stopping at the first failure.
+        for change, enforcement_id in zip(plan, enforcement_ids):
             if task_scoped:
                 granted, grant_reason = self.approval_store.check_task_grant(
                     task_id, change.path, result.fingerprint or "")
                 if not granted:
-                    message = f"Change to {change.path} outside task scope: {grant_reason}"
+                    message = (f"Change to {change.path} outside task scope: "
+                               f"{grant_reason}")
                     result.errors.append(message)
                     result.error_details.append(
                         ChangeError("TASK_SCOPE_DENIED", change.path, message))
-                    continue
+                    break
             operation, tool = self._operation_for(change)
-            # One enforcement chain per change: the gate and the runtime
-            # layers share this id, so one token redemption authorizes the
-            # single action across both layers.
-            enforcement_id = uuid4().hex
             outcome = gate.evaluate(
                 operation=operation, path=change.path, tool=tool,
                 risk=change.risk, capability=capability, approved=approved,
@@ -445,36 +537,45 @@ class ChangeApplier:
                 request_id=enforcement_id)
             result.decisions.append(outcome.to_dict())
             if not outcome.allowed:
+                # Pre-flight authorized this plan; a flip here fails closed.
                 code = ("POLICY_DENIED"
                         if outcome.decision == PolicyDecision.DENY
                         else "APPROVAL_REQUIRED")
-                message = f"Change to {change.path} not permitted: {outcome.reason}"
+                message = (f"Change to {change.path} not permitted: "
+                           f"{outcome.reason}")
                 result.errors.append(message)
                 result.error_details.append(
                     ChangeError(code, change.path, message))
-                continue
-            if change.action == "delete":
-                write = self.runtime.execute(
-                    "delete_file", approved=approved, path=change.path,
-                    actor=actor, task_id=task_id,
-                    approval_token_id=approval_token_id, risk=change.risk,
-                    fingerprint=result.fingerprint or "",
-                    request_id=enforcement_id,
-                )
-            else:
-                write = self.runtime.execute(
-                    "write_file", approved=approved, path=change.path, content=change.content,
-                    actor=actor, task_id=task_id,
-                    approval_token_id=approval_token_id, risk=change.risk,
-                    fingerprint=result.fingerprint or "",
-                    request_id=enforcement_id,
-                )
+                break
+            try:
+                if change.action == "delete":
+                    write = self.runtime.execute(
+                        "delete_file", approved=approved, path=change.path,
+                        actor=actor, task_id=task_id,
+                        approval_token_id=approval_token_id, risk=change.risk,
+                        fingerprint=result.fingerprint or "",
+                        request_id=enforcement_id,
+                    )
+                else:
+                    write = self.runtime.execute(
+                        "write_file", approved=approved, path=change.path, content=change.content,
+                        actor=actor, task_id=task_id,
+                        approval_token_id=approval_token_id, risk=change.risk,
+                        fingerprint=result.fingerprint or "",
+                        request_id=enforcement_id,
+                    )
+            except Exception as exc:
+                # An unexpected execution failure fails closed: the
+                # transaction stops and rolls back like any write failure.
+                write = ToolResult.fail(
+                    "delete_file" if change.action == "delete" else "write_file",
+                    f"{type(exc).__name__}: {exc}")
             if not write.success:
                 message = f"Failed to write {change.path}: {write.error}"
                 result.errors.append(message)
                 result.error_details.append(
                     ChangeError("WRITE_FAILED", change.path, message))
-                continue
+                break
             if change.path not in result.changed_paths:
                 result.changed_paths.append(change.path)
 
@@ -485,10 +586,12 @@ class ChangeApplier:
             self.checkpoint_manager.cleanup(result.checkpoint)
             result.checkpoint_id = None
             result.checkpoint = None
+            result.rolled_back = True
         if task_scoped and not result.success:
             # A failed apply keeps no authority: revoke the task grant.
             self.approval_store.revoke_task(task_id)
             result.task_grant = None
+        result.duration_ms = (time.perf_counter() - started) * 1000
         return result
 
     def rollback(self, result: ApplyResult) -> None:
@@ -506,3 +609,4 @@ class ChangeApplier:
             if grant_task:
                 self.approval_store.revoke_task(grant_task)
             result.task_grant = None
+        result.task_grant = None

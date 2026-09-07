@@ -6,11 +6,14 @@ point, its configuration, and its honest status.
 
 ```text
 requirement → supervisor → plan → agents → Model Fabric → coder
-→ ChangeSet (validate) → policy gate (authorize) → apply
-→ test → debug/repair (bounded) → retest → independent review
-→ security → build/lint → benchmark → acceptance → checkpoint
+→ ChangeSet (validate ALL) → policy gate (authorize ALL) → checkpoint
+→ apply → test → debug/repair (bounded) → retest → independent review
+→ security → build/lint → benchmark → acceptance
 → commit (accepted files only)
 ```
+
+> Forge performs complete ChangeSet validation and authorization before
+> creating a checkpoint or modifying any candidate file.
 
 Failure at any point: structured error → checkpoint rollback of candidate
 files only → report. Unrelated user files are never touched.
@@ -142,6 +145,12 @@ under the explicit, documented pass-when-unconfigured policy, recorded in
 
 ### 8. Checkpoints and rollback (`forge/tools/checkpoint.py`)
 
+- The transaction boundary is strict: normalize → validate EVERY change →
+  authorize EVERY change through the PolicyGate (preview, non-consuming) →
+  checkpoint → mint task grant → apply, stopping at the first failure. An
+  invalid or unauthorized change set produces zero writes and no
+  checkpoint; conflicting entries for one path (`CONFLICTING_CHANGES`) and
+  malformed entries (`MALFORMED_CHANGESET`) are rejected in pre-flight.
 - Before a change set applies, the checkpoint captures exact original bytes
   plus restore metadata (`existed`, `sha256`, `size`, `mode`) per path.
 - Rollback restores **only** candidate files and deletes only
@@ -198,6 +207,7 @@ privacy/local policies. The core suite needs no paid API.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | ChangeSet engine (validate/dry-run/fingerprint/guards/gated delete) | implemented + tested | `tests/test_a32_changeset.py`, `tests/test_a32_change_applier.py` |
+| Atomic ChangeSet transaction (validate all → authorize all → checkpoint → apply) | implemented + tested | `tests/test_a32_transaction.py` |
 | Policy gate (ALLOW/DENY/REQUIRE_APPROVAL, 4 modes) | implemented + tested | `tests/test_a32_policy_gate.py`, `tests/test_a32_permissions_mode.py` |
 | Model→coder→ChangeSet (schema, guards, no shortcuts) | implemented + tested | `tests/test_a32_coding_pipeline.py`, `tests/test_a32_coder_schema.py` |
 | Test/debug/repair (ChangeSet repairs, reports, targeted runs) | implemented + tested | `tests/test_a32_debug_loop.py` |
