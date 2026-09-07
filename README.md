@@ -15,6 +15,28 @@ Forge is a repository-scoped software-engineering runtime. It combines repositor
 
 The self-development loop A26-A30 follows analyze → candidate → model-selected implementation → checkpoint → code → debug → verification → measurable benchmark → compare → commit or restore, and records history under `.forge/self/history/` (history is not committed).
 
+## Autonomous Engineering Core (A32)
+
+The `Supervisor` is the controller of a real closed-loop engineering engine (A32). Every autonomous task runs:
+
+```text
+requirement → understand → inspect → plan → select agents → route model
+→ generate implementation → apply changes (controlled layer) → run tests
+→ diagnose failures → repair → retest → independent review → security
+→ acceptance decision → checkpoint → commit approved files
+```
+
+- **Controlled code-change application** (`forge.tools.change_applier`): the single layer where model output becomes repository writes. It validates paths (relative, no `..`/`.git`/`.forge`/backslashes), rejects secrets/credentials/`.env`/oversized/invalid-Python content, writes through the permissioned `ToolRuntime`, records every changed path, and checkpoints before the first write when a `CheckpointManager` is supplied. Deletions are never performed implicitly.
+- **Structured coder schema** (`forge.agents.coder`): the coder accepts the legacy `{changes: {path: content}}` mapping and the richer `{summary, changes: [{path, action, content}], tests, reasoning_summary, risks}` list schema, and surfaces the structured summary in its response metadata.
+- **Bounded test/debug loop** (`forge.agents.debugger`): each repair attempt records the command, exit code, captured output, model, and latency; the repair prompt carries prior-attempt diagnostics so the model changes strategy instead of repeating the same failed fix. Retries are hard-bounded.
+- **Independent review gate** (`forge.security.review`): a deterministic, severity-typed review (INFO/LOW/MEDIUM/HIGH/CRITICAL) producing `APPROVE`/`REQUEST_CHANGES`/`BLOCK`; HIGH/CRITICAL always block. An optional model-driven reviewer (`forge.agents.reviewer`) contributes findings through the Model Fabric (capability `review`), but the deterministic gate remains mandatory.
+- **Acceptance engine** (`forge.core.acceptance`): aggregates the mandatory gates — tests, build, lint, review, security, benchmark, permissions, and rollback availability — into one `AcceptanceDecision`. One passing component can never override a failed mandatory gate.
+- **Permission modes** (`forge.security.permissions`): `SAFE` (read/analyze only), `ASSISTED` (modifications require approval; default), `AUTONOMOUS` (project-scope writes auto-approved; destructive/sensitive operations still require approval), and `LOCKED` (no modifications). Modes only ever make a session *more* restrictive; blocked operations can never escalate.
+- **Observability** (`forge.core.report`): every task produces a structured `TaskReport` (`task_id`, `trace_id`, stages, model/provider, `context_fingerprint`, files read/changed, commands run, tests run, gate results, checkpoint id, retries, duration, final status) — never raw prompts or credentials. `Supervisor.run()` returns the report under `result["report"]` alongside its existing keys.
+- **Git safety**: commits stage only the explicitly validated touched files and never use `git add .`; failures restore the checkpoint exactly and preserve unrelated work.
+
+A deterministic provider that behaves like a model still exercises the *complete* orchestration path in the E2E tests; a separate opt-in real-model test drives Ollama end to end (see Testing).
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

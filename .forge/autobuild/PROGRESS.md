@@ -79,3 +79,18 @@
 - **Ollama URL normalization**: bare-host `OLLAMA_BASE_URL`/`OLLAMA_URL` values are normalized to `/api/generate` (previously a bare host POSTed to the server root).
 - **Live autonomous E2E**: `tests/test_ollama_autonomous_e2e.py`, opt-in via `FORGE_LIVE_OLLAMA=1` (or `FORGE_LIVE_MODEL_TESTS=1`), drives the full Supervisor→Fabric→Ollama→coder→permissioned-write→tests→review/security→commit path and verifies real repository behavior. Skipped cleanly without Ollama.
 - Tests added: `test_model_fabric_provider_payload.py` (11), `test_model_fabric_streaming.py` (6), `test_ollama_autonomous_e2e.py` (1 opt-in). Total: 382 → 399 passed, 2 skipped.
+
+## A32 — Autonomous Engineering Core
+
+- **Controlled code-change application** (`forge/tools/change_applier.py`): `CodeChange`/`ApplyResult`/`ChangeApplier` validate paths (relative, no `..`/`.git`/`.forge`/backslashes), reject secrets/credentials/`.env`/oversized/invalid-Python content, write through the permissioned `ToolRuntime`, record changed paths, and checkpoint before the first write (with exact rollback). `CoderAgent` writes through this layer.
+- **Structured coder schema**: `CoderAgent._parse_changes` accepts both the legacy `{changes: {path: content}}` mapping and the richer `{summary, changes: [{path, action, content}], tests, reasoning_summary, risks}` list schema; `summary`/`reasoning_summary`/`risks`/`tests` are surfaced in response metadata. Deletions are rejected.
+- **Context completeness**: `AgentContextBuilder` seeds a deterministic repository-fallback context when the relevance engine selects nothing, so the model never receives an empty context.
+- **Debug recovery loop**: `DebugAttempt` now records `command` and `exit_code`; `_repair_prompt` includes actual diagnostics plus `PREVIOUS ATTEMPTS` so the model changes strategy; retries remain hard-bounded.
+- **Review gate** (`forge/security/review.py`): deterministic `ReviewDecision` (APPROVE/REQUEST_CHANGES/BLOCK) with severity (INFO…CRITICAL); HIGH/CRITICAL block. Optional model-driven `ReviewerAgent` (capability `review`) merges findings; the deterministic gate always runs.
+- **Acceptance engine** (`forge/core/acceptance.py`): central `AcceptanceDecision` aggregating tests/build/lint/review/security/benchmark/permissions/rollback; a failed mandatory gate always rejects.
+- **Permission modes** (`forge.security.permissions.py`): `OperationMode` SAFE/ASSISTED/AUTONOMOUS/LOCKED wired into `ToolRuntime` via `PermissionManager.may_execute` (backward compatible; ASSISTED preserves existing behavior). Modes only restrict, never escalate.
+- **Observability** (`forge/core/report.py`): structured `TaskReport`; `Supervisor.run()` returns `result["report"]`, `result["review"]`, `result["acceptance"]`, `result["checkpoint_id"]`.
+- **Supervisor integration**: runs the full lifecycle (plan → agents → model → controlled code → test/debug → review → security → benchmark → acceptance → checkpoint → explicit commit/rollback) and reports it.
+- Tests: `test_a32_change_applier.py` (15), `test_a32_review.py` (11), `test_a32_acceptance.py` (8), `test_a32_permissions_mode.py` (7), `test_a32_coder_schema.py` (6), `test_a32_e2e.py` (3) — 50 new tests. Total: 399 → 449 passed, 2 skipped (opt-in live Ollama).
+
+Known limitations: autonomous deletions are rejected (operator must delete explicitly); the model-driven reviewer is optional and only runs when a review-capable model is available through the fabric; live Ollama E2E remains opt-in.
