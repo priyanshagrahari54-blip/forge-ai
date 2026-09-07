@@ -231,7 +231,7 @@ class Supervisor:
             if not touched:
                 raise RuntimeError("model produced no accepted files")
             stage("COMMIT")
-            commit = git.commit_files(touched, "forge: " + requirement)
+            commit = git.commit_accepted(touched, "forge: " + requirement, decision)
             if commit.returncode != 0:
                 raise RuntimeError(commit.stderr.strip() or "git commit failed")
             checkpoint_manager.cleanup(checkpoint)
