@@ -60,6 +60,8 @@ class DebugLoopResult:
     error: str = ""
     #: One structured report per failing test execution in order.
     failures: list[FailureReport] = field(default_factory=list)
+    #: Test scope that ran: "targeted" names or "full suite".
+    scope: str = "full suite"
 
 
 class DebuggerAgent(AgentExecutor):
@@ -82,6 +84,8 @@ class DebuggerAgent(AgentExecutor):
         # Repairs are model output like any other change: they validate
         # through the ChangeSet engine and authorize through the policy gate.
         self.applier = ChangeApplier(self.runtime, root=self.root)
+        #: Policy decisions accumulated across repairs (observability).
+        self.repair_decisions: list = []
         self.last_model = ""
         self.last_latency = 0.0
 
@@ -115,6 +119,7 @@ class DebuggerAgent(AgentExecutor):
             label="repair",
             capability="debugging",
         )
+        self.repair_decisions.extend(result.decisions)
         if not result.success:
             raise RuntimeError(result.errors[0] if result.errors else "repair rejected")
         return changes
@@ -269,7 +274,7 @@ class TestDebugLoop:
                         failure=None,
                     ))
                 return DebugLoopResult(True, attempts, "tests passed or no test suite",
-                                       "", failures)
+                                       "", failures, scope)
             diagnosis = self.debugger.diagnose(output)
             if number > self.max_retries:
                 failures.append(FailureReport(
@@ -279,7 +284,8 @@ class TestDebugLoop:
                     reason=f"retry bound reached ({self.max_retries} repairs); "
                            f"{scope} tests still failing",
                 ))
-                return DebugLoopResult(False, attempts, "tests failed", output, failures)
+                return DebugLoopResult(False, attempts, "tests failed", output, failures,
+                                       scope)
             reason = (f"attempt {number}: {scope} tests failed with exit "
                       f"{exit_code}; scheduling bounded repair {number} of "
                       f"{self.max_retries}")
@@ -300,7 +306,8 @@ class TestDebugLoop:
                     reason=f"{reason}; repair failed: {exc}",
                     failure=report,
                 ))
-                return DebugLoopResult(False, attempts, "repair failed", str(exc), failures)
+                return DebugLoopResult(False, attempts, "repair failed", str(exc), failures,
+                                       scope)
             attempts.append(DebugAttempt(
                 attempt_number=number,
                 failure_error=output,

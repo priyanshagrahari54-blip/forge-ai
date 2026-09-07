@@ -49,6 +49,8 @@ class CoderAgent(AgentExecutor):
         # layer (path/content/secret validation + permissioned ToolRuntime).
         # The repository root enables old-state guard verification.
         self.applier = ChangeApplier(self.runtime, root=self.root)
+        #: Policy decisions from the most recent apply (observability).
+        self.last_decisions: list = []
 
     def describe(self) -> str:
         return "Responsible for implementing software changes using a routed model."
@@ -217,6 +219,7 @@ class CoderAgent(AgentExecutor):
             label="coder",
             capability="coding",
         )
+        self.last_decisions = list(result.decisions)
         return result.changed_paths, result.errors
 
     @staticmethod
