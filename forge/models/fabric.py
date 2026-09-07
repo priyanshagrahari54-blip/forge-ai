@@ -12,12 +12,14 @@ caller.
 """
 from __future__ import annotations
 
+import inspect
 from time import perf_counter
 from typing import Any, Iterator
 
 from forge.models.capabilities import Capability, TEXT_CAPABILITIES
 from forge.models.config import FabricConfig
 from forge.models.credentials import CredentialStore
+from forge.models.errors import ModelUnavailableError
 from forge.models.feedback import RouterFeedback
 from forge.models.policy import RoutingPolicy
 from forge.models.provider import (
@@ -32,6 +34,29 @@ from forge.models.registry import Model, ModelRegistry
 from forge.models.request import ModelRequest, ModelResponse
 from forge.models.router import FabricRouter, ModelInfo, ModelRouter, RouteDecision
 from forge.models.telemetry import Telemetry
+
+
+def _forwardable_kwargs(callable_obj: Any, **kwargs: Any) -> dict[str, Any]:
+    """Forward only the keyword arguments a provider callable accepts.
+
+    Providers may implement a subset of the full keyword contract
+    (``context``/``task``/``instructions``/``max_output_tokens``/``temperature``).
+    This keeps the fabric honest — it never passes a keyword a provider did not
+    declare, and providers with ``**kwargs`` receive everything.
+    """
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return {}
+    parameters = list(signature.parameters.values())
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return dict(kwargs)
+    accepted = {
+        parameter.name
+        for parameter in parameters
+        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {key: value for key, value in kwargs.items() if key in accepted}
 
 
 class ModelFabric:
@@ -219,7 +244,17 @@ class ModelFabric:
                 continue
 
             try:
-                result = provider.generate(request.prompt, context=request.context, task=request.task)
+                result = provider.generate(
+                    request.prompt,
+                    **_forwardable_kwargs(
+                        provider.generate,
+                        context=request.context,
+                        task=request.task,
+                        instructions=request.constraints_text(),
+                        max_output_tokens=request.max_output_tokens,
+                        temperature=request.temperature,
+                    ),
+                )
             except Exception as exc:  # provider failures are feedback, not crashes
                 last_error = str(exc)
                 self.record_feedback(
@@ -260,28 +295,127 @@ class ModelFabric:
         self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
         return ModelResponse.failure(last_error or "no model available", request_id=request.trace_id)
 
-    def stream(self, request: ModelRequest | str) -> Iterator[str]:
-        """Stream response text from the selected provider.
+    def stream(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> Iterator[str]:
+        """Stream response text with the same guarantees as :meth:`generate`.
 
-        If the chosen provider exposes ``stream``, deltas are yielded
-        incrementally (design placeholder for future browser/voice UIs);
-        otherwise the full response is yielded as a single chunk. Provider
-        failures raise; routing failures yield nothing.
+        Routing, capability validation, availability checking, and policy
+        filtering are identical to ``generate``. The selected provider's
+        ``stream`` is used when available; otherwise its ``generate`` result is
+        yielded as a single chunk (an explicit, tested fallback). Provider
+        failures fall through the same failover chain as ``generate`` — chunks
+        are buffered and only emitted after the provider completes, so a failed
+        stream never emits partial or duplicate output. If every candidate
+        fails, a ``ModelUnavailableError`` is raised (never silently swallowed);
+        health, reliability, latency, feedback, and telemetry are recorded for
+        both success and failure.
         """
         if isinstance(request, str):
             request = ModelRequest(prompt=request, capability=self._default_capability())
-        decision = self.route(request)
+        started = perf_counter()
+        decision = self.route(request, policy=policy)
         if not decision.chosen:
+            error = decision.error or "no model available for this request"
+            self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=error)
+            raise ModelUnavailableError(error)
+
+        chain = self._failover_chain(decision)
+        last_error = ""
+        for model_name in chain:
+            try:
+                model = self.registry.get(model_name)
+            except KeyError:
+                continue
+            provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
+            if provider is None:
+                model.available = False
+                last_error = f"provider {model.provider!r} for model {model.name!r} is not registered"
+                self.record_feedback(
+                    model=model.name, provider=model.provider, capability=request.capability,
+                    success=False, error=last_error,
+                )
+                continue
+
+            stream_fn = getattr(provider, "stream", None)
+            call_kwargs = _forwardable_kwargs(
+                stream_fn if callable(stream_fn) else provider.generate,
+                context=request.context,
+                task=request.task,
+                instructions=request.constraints_text(),
+                max_output_tokens=request.max_output_tokens,
+                temperature=request.temperature,
+            )
+
+            if callable(stream_fn):
+                chunks, ok, error = self._collect_stream(
+                    stream_fn, request, call_kwargs
+                )
+                if not ok:
+                    last_error = error
+                    self.record_feedback(
+                        model=model.name, provider=model.provider, capability=request.capability,
+                        success=False, latency_ms=(perf_counter() - started) * 1000.0,
+                        complexity=request.complexity, error=error,
+                    )
+                    continue
+                latency_ms = (perf_counter() - started) * 1000.0
+                self.record_feedback(
+                    model=model.name, provider=model.provider, capability=request.capability,
+                    success=True, latency_ms=latency_ms, complexity=request.complexity,
+                )
+                self.telemetry.record(
+                    "response", trace_id=request.trace_id, model=model.name,
+                    provider=model.provider, success=True, latency_ms=latency_ms,
+                )
+                yield from chunks
+                return
+
+            # Explicit, tested fallback: provider without streaming is served
+            # a single complete response from generate().
+            try:
+                result = provider.generate(request.prompt, **call_kwargs)
+            except Exception as exc:
+                last_error = str(exc)
+                self.record_feedback(
+                    model=model.name, provider=model.provider, capability=request.capability,
+                    success=False, latency_ms=(perf_counter() - started) * 1000.0,
+                    complexity=request.complexity, error=last_error,
+                )
+                continue
+            latency_ms = (perf_counter() - started) * 1000.0
+            self.record_feedback(
+                model=model.name, provider=model.provider, capability=request.capability,
+                success=True, latency_ms=latency_ms, complexity=request.complexity,
+                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            )
+            self.telemetry.record(
+                "response", trace_id=request.trace_id, model=model.name,
+                provider=model.provider, success=True, latency_ms=latency_ms,
+                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            )
+            yield result.text
             return
-        model = self.registry.get(decision.model.name)
-        provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
-        if provider is None:
-            return
-        stream = getattr(provider, "stream", None)
-        if callable(stream):
-            yield from stream(request.prompt, context=request.context, task=request.task)
-        else:
-            yield provider.generate(request.prompt, context=request.context, task=request.task).text
+
+        self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
+        raise ModelUnavailableError(last_error or "no model available")
+
+    @staticmethod
+    def _collect_stream(stream_fn: Any, request: ModelRequest, call_kwargs: dict[str, Any]) -> tuple[list[str], bool, str]:
+        """Buffer a provider stream and report success/failure.
+
+        Chunks are buffered so a provider that fails partway through never
+        emits partial output (which would corrupt the result or duplicate
+        output if the caller falls back to the next candidate).
+        """
+        chunks: list[str] = []
+        try:
+            for chunk in stream_fn(request.prompt, **call_kwargs):
+                if isinstance(chunk, str):
+                    chunks.append(chunk)
+                else:
+                    chunks.append(str(chunk))
+        except Exception as exc:
+            return [], False, str(exc)
+        return chunks, True, ""
 
     def _failover_chain(self, decision: RouteDecision) -> list[str]:
         chain: list[str] = []

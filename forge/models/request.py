@@ -58,6 +58,29 @@ class ModelRequest:
             return (self.capability,)
         return ()
 
+    def constraints_text(self) -> str:
+        """Render the routing/generation constraints as a short instruction.
+
+        Providers include this (when their API has no native slot for it) so
+        the model invocation carries the constraints that were actually applied
+        during routing, instead of dropping them at the provider boundary.
+        """
+        lines: list[str] = []
+        capabilities = self.effective_capabilities()
+        if capabilities:
+            lines.append("required capabilities: " + ", ".join(capabilities))
+        if self.min_context_window:
+            lines.append(f"minimum context window: {self.min_context_window} tokens")
+        if self.max_output_tokens is not None:
+            lines.append(f"maximum output tokens: {self.max_output_tokens}")
+        if self.max_latency_ms is not None:
+            lines.append(f"maximum latency: {self.max_latency_ms} ms")
+        if self.prefer_free is True:
+            lines.append("prefer free provider")
+        if self.prefer_local is True:
+            lines.append("prefer local provider")
+        return "\n".join(lines)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "prompt_chars": len(self.prompt),
