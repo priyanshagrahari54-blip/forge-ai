@@ -9,6 +9,7 @@ class GitIgnoreMatcher:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.patterns: list[str] = []
+        self._cache: dict[str, bool] = {}
         self._load()
 
     def _load(self) -> None:
@@ -32,17 +33,26 @@ class GitIgnoreMatcher:
 
     def is_ignored(self, path: str | Path) -> bool:
         """Return True if a repository path matches .gitignore."""
+        path_key = str(path)
+        if path_key in self._cache:
+            return self._cache[path_key]
+
         target = Path(path)
 
         if not target.is_absolute():
             target = self.root / target
 
         try:
-            relative = target.resolve().relative_to(self.root)
+            relative = target.relative_to(self.root)
         except ValueError:
-            return False
+            try:
+                relative = target.resolve().relative_to(self.root)
+            except ValueError:
+                self._cache[path_key] = False
+                return False
 
         path_str = relative.as_posix()
+        parts = relative.parts
 
         for pattern in self.patterns:
             pattern = pattern.strip()
@@ -58,19 +68,24 @@ class GitIgnoreMatcher:
 
             # Direct path match.
             if path_str == pattern:
+                self._cache[path_key] = True
                 return True
 
             # Match anything below a directory/pattern.
             if path_str.startswith(pattern + "/"):
+                self._cache[path_key] = True
                 return True
 
             # Simple filename / glob matching.
             if relative.match(pattern):
+                self._cache[path_key] = True
                 return True
 
             # Pattern without a slash can match any path component.
             if "/" not in pattern:
-                if any(part == pattern for part in relative.parts):
+                if pattern in parts:
+                    self._cache[path_key] = True
                     return True
 
+        self._cache[path_key] = False
         return False

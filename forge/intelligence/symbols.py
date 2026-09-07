@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,43 +27,47 @@ class SymbolIndex:
     """Repository-wide index of discovered symbols."""
 
     symbols: list[Symbol] = field(default_factory=list)
+    _by_name: dict[str, list[Symbol]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
+    _by_file: dict[str, list[Symbol]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
+    _by_kind: dict[str, list[Symbol]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
+    _by_qualified: dict[str, list[Symbol]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
 
     def add(self, symbol: Symbol) -> None:
         self.symbols.append(symbol)
+        self._by_name[symbol.name].append(symbol)
+        self._by_file[symbol.file].append(symbol)
+        self._by_kind[symbol.kind].append(symbol)
+        self._by_qualified[symbol.qualified_name].append(symbol)
 
     def by_name(self, name: str) -> list[Symbol]:
-        return [
-            symbol
-            for symbol in self.symbols
-            if symbol.name == name
-        ]
+        return list(self._by_name.get(name, []))
 
     def by_file(self, file: str) -> list[Symbol]:
-        return [
-            symbol
-            for symbol in self.symbols
-            if symbol.file == file
-        ]
+        return list(self._by_file.get(file, []))
 
     def by_kind(self, kind: str) -> list[Symbol]:
-        return [
-            symbol
-            for symbol in self.symbols
-            if symbol.kind == kind
-        ]
+        return list(self._by_kind.get(kind, []))
 
     def find(self, query: str) -> list[Symbol]:
         """Find symbols by name or qualified name."""
         query = query.strip()
-
-        return [
-            symbol
-            for symbol in self.symbols
-            if (
-                symbol.name == query
-                or symbol.qualified_name == query
-            )
-        ]
+        matched = self._by_name.get(query, []) + self._by_qualified.get(query, [])
+        seen: set[int] = set()
+        res: list[Symbol] = []
+        for s in matched:
+            s_id = id(s)
+            if s_id not in seen:
+                seen.add(s_id)
+                res.append(s)
+        return res
 
 
 class SymbolIndexer:
