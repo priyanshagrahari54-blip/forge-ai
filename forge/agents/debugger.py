@@ -23,6 +23,8 @@ class DebugAttempt:
     test_output: str
     model: str = ""
     model_latency: float = 0.0
+    command: list[str] = field(default_factory=list)
+    exit_code: int | None = None
 
 
 @dataclass
@@ -62,19 +64,15 @@ class DebuggerAgent(AgentExecutor):
     def execute(self, request: AgentRequest) -> AgentResponse:
         return AgentResponse(True, output=self.diagnose(request.instructions or request.metadata.get("error", "")), agent=self.name, stage=request.stage)
 
-    def repair(self, task: str, failure: str, context: str = "", approved: bool = True) -> dict[str, str]:
+    def repair(self, task: str, failure: str, context: str = "", approved: bool = True,
+               previous_attempts: list[DebugAttempt] | None = None) -> dict[str, str]:
         if self.fabric is not None:
-            return self._repair_via_fabric(task, failure, context, approved)
+            return self._repair_via_fabric(task, failure, context, approved, previous_attempts)
         model = self.router.select("debugging") or self.router.select("coding")
         if not model or not model.provider:
             raise RuntimeError("No debugging model available; configure Ollama or another provider")
         self.last_model = model.name
-        prompt = (
-            "Diagnose and fix this test failure. Return ONLY JSON "
-            "{changes:{relative/path:file contents}, explanation:str}. "
-            "Make the smallest safe fix; do not modify tests to hide failures.\n"
-            f"TASK:{task}\nFAILURE:{failure}\nCONTEXT:{context}"
-        )
+        prompt = self._repair_prompt(task, failure, context, previous_attempts)
         try:
             response = model.provider.generate(prompt, context=context, task=task)
             self.last_latency = response.latency
@@ -93,7 +91,37 @@ class DebuggerAgent(AgentExecutor):
         self.router.record(model.name, True, response.latency, capability="debugging", task_complexity=1.0)
         return changes
 
-    def _repair_via_fabric(self, task: str, failure: str, context: str = "", approved: bool = True) -> dict[str, str]:
+    @staticmethod
+    def _repair_prompt(task: str, failure: str, context: str = "",
+                       previous_attempts: list[DebugAttempt] | None = None) -> str:
+        """Build the repair prompt with actual diagnostics and prior attempts.
+
+        The model receives the command, captured output, and a compact history
+        of previous repair attempts so it can change strategy instead of
+        repeating the same failed fix.
+        """
+        parts = [
+            "Diagnose and fix this test failure. Return ONLY JSON "
+            "{changes:{relative/path:file contents}, explanation:str}. "
+            "Make the smallest safe fix; do not modify tests to hide failures.",
+            f"TASK:{task}",
+            f"FAILURE:{failure}",
+        ]
+        if context:
+            parts.append(f"CONTEXT:{context}")
+        if previous_attempts:
+            history = []
+            for attempt in previous_attempts:
+                history.append(
+                    f"attempt {attempt.attempt_number}: "
+                    f"exit_code={attempt.exit_code} model={attempt.model or '-'} "
+                    f"modified={sorted(attempt.modifications) or '-'}"
+                )
+            parts.append("PREVIOUS ATTEMPTS:\n" + "\n".join(history))
+        return "\n".join(parts)
+
+    def _repair_via_fabric(self, task: str, failure: str, context: str = "", approved: bool = True,
+                           previous_attempts: list[DebugAttempt] | None = None) -> dict[str, str]:
         """Apply a model-generated repair through the centralized fabric.
 
         The fabric records provider-level feedback and telemetry; the returned
@@ -103,12 +131,7 @@ class DebuggerAgent(AgentExecutor):
         """
         from forge.models.request import ModelRequest
 
-        prompt = (
-            "Diagnose and fix this test failure. Return ONLY JSON "
-            "{changes:{relative/path:file contents}, explanation:str}. "
-            "Make the smallest safe fix; do not modify tests to hide failures.\n"
-            f"TASK:{task}\nFAILURE:{failure}\nCONTEXT:{context}"
-        )
+        prompt = self._repair_prompt(task, failure, context, previous_attempts)
         response = self.fabric.generate(ModelRequest(
             prompt=prompt,
             capability="debugging",
@@ -153,7 +176,8 @@ class TestDebugLoop:
             result = self.debugger.runtime.execute("terminal", approved=approved, command=self.command)
             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
             output = combined or result.error or ""
-            no_tests = result.metadata.get("returncode") == 5 and (
+            exit_code = result.metadata.get("returncode")
+            no_tests = exit_code == 5 and (
                 "no tests ran" in combined.lower() or "collected 0 items" in combined.lower()
             )
             if result.success or no_tests:
@@ -170,18 +194,21 @@ class TestDebugLoop:
                         test_output=output,
                         model=self.debugger.last_model,
                         model_latency=self.debugger.last_latency,
+                        command=list(self.command),
+                        exit_code=exit_code,
                     ))
                 return DebugLoopResult(True, attempts, "tests passed or no test suite")
             if number > self.max_retries:
                 return DebugLoopResult(False, attempts, "tests failed", output)
             diagnosis = self.debugger.diagnose(output)
             try:
-                changes = self.debugger.repair(task, output, context, approved)
+                changes = self.debugger.repair(task, output, context, approved, previous_attempts=attempts)
             except Exception as exc:
                 attempts.append(DebugAttempt(
                     attempt_number=number, failure_error=output, diagnosis=diagnosis,
                     modifications={}, test_passed=False, test_output=output,
                     model=self.debugger.last_model, model_latency=self.debugger.last_latency,
+                    command=list(self.command), exit_code=exit_code,
                 ))
                 return DebugLoopResult(False, attempts, "repair failed", str(exc))
             attempts.append(DebugAttempt(
@@ -193,5 +220,7 @@ class TestDebugLoop:
                 test_output=output,
                 model=self.debugger.last_model,
                 model_latency=self.debugger.last_latency,
+                command=list(self.command),
+                exit_code=exit_code,
             ))
         return DebugLoopResult(False, attempts, "tests failed", "retry bound reached")
