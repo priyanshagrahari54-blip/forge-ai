@@ -5,6 +5,45 @@ from forge.tools.search import SearchTool
 from forge.tools.git import GitTool
 
 
+def _is_pytest_command(command) -> bool:
+    """True only for a constrained project-pytest invocation.
+
+    The ``run_tests`` tool executes without write approval, so it accepts
+    nothing but the exact current interpreter running ``-m pytest`` with safe
+    flags and repository-relative paths. No shell, no other binaries, no
+    interpreter escapes.
+    """
+    import sys
+    from pathlib import PurePosixPath
+
+    if not isinstance(command, list) or len(command) < 4:
+        return False
+    if command[0] != sys.executable:
+        return False
+    try:
+        module_index = next(
+            index for index, arg in enumerate(command)
+            if arg == "-m" and command[index + 1] == "pytest")
+    except (StopIteration, IndexError):
+        return False
+    if module_index < 1:
+        return False
+    for arg in command[1:module_index]:
+        if arg not in ("-B", "-I", "-E"):
+            return False
+    for arg in command[module_index + 2:]:
+        if arg in ("-q", "-p", "no:cacheprovider"):
+            continue
+        if not isinstance(arg, str) or not arg or arg.startswith("-"):
+            return False
+        candidate = PurePosixPath(arg)
+        if (candidate.is_absolute() or ".." in candidate.parts
+                or "\\" in arg or ".git" in candidate.parts
+                or ".forge" in candidate.parts):
+            return False
+    return True
+
+
 def create_default_runtime(permission_manager, root: str = "."):
     from forge.runtime.runtime import ToolRuntime
 
@@ -66,6 +105,25 @@ def create_default_runtime(permission_manager, root: str = "."):
             description="Run an approved terminal command.",
             handler=terminal.run,
             permission="run_command",
+        )
+    )
+
+    def run_tests_handler(command: list[str]):
+        from forge.runtime.runtime import ToolResult
+
+        if not _is_pytest_command(command):
+            return ToolResult.fail(
+                "run_tests",
+                "Only the project pytest suite may run without write approval.",
+            )
+        return terminal.run(command)
+
+    runtime.register(
+        ToolDefinition(
+            name="run_tests",
+            description="Run the project pytest suite (constrained).",
+            handler=run_tests_handler,
+            permission="run_tests",
         )
     )
 

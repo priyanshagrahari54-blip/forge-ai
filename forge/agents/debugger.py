@@ -246,8 +246,13 @@ class TestDebugLoop:
         attempts: list[DebugAttempt] = []
         failures: list[FailureReport] = []
         # The range has a fixed upper bound: initial test + max_retries repairs.
+        # Test execution uses the constrained ``run_tests`` tool (SAFE: no write
+        # approval needed) when the runtime provides it, falling back to the
+        # approval-gated ``terminal`` tool for custom runtimes.
+        test_tool = ("run_tests" if "run_tests" in self.debugger.runtime.tools
+                     else "terminal")
         for number in range(1, self.max_retries + 2):
-            result = self.debugger.runtime.execute("terminal", approved=approved, command=command)
+            result = self.debugger.runtime.execute(test_tool, approved=approved, command=command)
             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
             output = combined or result.error or ""
             exit_code = result.metadata.get("returncode")

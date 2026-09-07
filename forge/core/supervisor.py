@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 from forge.core.planner import Planner
 from forge.core.state import ForgeState
+from forge.security.permissions import OperationMode
 
 
 def _history_latency_seconds(history) -> float:
@@ -69,8 +70,18 @@ class Supervisor:
         router=None,
         fabric=None,
         max_debug_retries: int = 3,
+        mode: OperationMode = OperationMode.ASSISTED,
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
+
+        Read-only work — repository inspection, planning, agent and model
+        selection, proposal generation, test execution, verification — never
+        requires write approval. Approval is evaluated at the actual
+        permission boundary instead: every proposed write passes the
+        PolicyGate, and nothing is written, committed, or staged unless the
+        gate authorizes it under the active mode. ``approved`` carries the
+        caller's explicit write approval; it satisfies REQUIRE_APPROVAL but
+        can never override DENY.
 
         The only model-controlled artifact is the structured response returned by
         the provider. This method deliberately has no ``changes`` or modifier
@@ -89,20 +100,24 @@ class Supervisor:
         from forge.intelligence.repository import RepositoryIntelligence
         from forge.models.router import ModelInfo, ModelRouter
         from forge.models.provider import LocalModelProvider
+        from forge.runtime.defaults import create_default_runtime
+        from forge.security.permissions import PermissionManager
+        from forge.security.policy_gate import PolicyGate
         from forge.security.review import ReviewGate
         from forge.security.verification import VerificationPipeline
         from forge.self_development.benchmark import BenchmarkRunner
         from forge.tools.checkpoint import CheckpointManager
         from forge.tools.git import GitTool
 
-        if not approved:
-            return {"accepted": False, "stage": "APPROVAL_REQUIRED", "error": "Explicit write approval is required"}
-
         # A supplied router (or fabric) is an adapter for a real provider, not
         # a change set. A caller may pass either the legacy router or the
         # centralized Model Fabric; the fabric is used when provided.
         if router is None and fabric is None:
             router = ModelRouter([ModelInfo("local", "coding", available=True, free=True, provider=LocalModelProvider(), capabilities=("coding", "debugging"))])
+        mode = OperationMode(mode)
+        permissions = PermissionManager(mode=mode)
+        policy = PolicyGate(permissions)
+        shared_runtime = create_default_runtime(permissions, str(self.root))
         started = perf_counter()
         run_id = uuid4().hex
         git = GitTool(self.root)
@@ -116,6 +131,7 @@ class Supervisor:
         result: dict[str, Any] = {
             "run_id": run_id,
             "requirement": requirement,
+            "mode": mode.value,
             "task": {"id": task.id, "description": task.description},
             "accepted": False,
             "stages": [],
@@ -134,6 +150,7 @@ class Supervisor:
             trace_id=run_id,
             requirement=requirement,
             checkpoint_id=checkpoint.id,
+            mode=mode.value,
         )
         timings: dict[str, float] = {}
 
@@ -149,8 +166,8 @@ class Supervisor:
             event("task_started", {"requirement_chars": len(requirement)})
             intelligence = RepositoryIntelligence.build(self.root)
             task.status = TaskStatus.PLANNING
-            coder = CoderAgent(root=str(self.root), router=router, fabric=fabric)
-            debugger = DebuggerAgent(str(self.root), router=router, fabric=fabric)
+            coder = CoderAgent(runtime=shared_runtime, root=str(self.root), router=router, fabric=fabric)
+            debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric)
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
@@ -173,7 +190,7 @@ class Supervisor:
             context = coder.build_context(intelligence, requirement)
             files_read = sorted({item.path for item in context.items})
             result["context_fingerprint"] = context.fingerprint
-            response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": True}))
+            response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": approved}))
             touched = list(response.metadata.get("files", []))
             timed("code", code_started)
             if not response.success:
@@ -185,6 +202,7 @@ class Supervisor:
             result["summary"] = response.metadata.get("summary", "")
             result["reasoning_summary"] = response.metadata.get("reasoning_summary", "")
             result["risks"] = response.metadata.get("risks", [])
+            result["risk_level"] = response.metadata.get("risk_level", "NONE")
             if fabric is not None:
                 result["model_routing"] = {
                     "policy": fabric.policy.to_dict(),
@@ -203,7 +221,7 @@ class Supervisor:
             test_started = perf_counter()
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
             targeted = response.metadata.get("tests_to_run") or None
-            debug_result = loop.run(requirement, context=str(context), approved=True,
+            debug_result = loop.run(requirement, context=str(context), approved=approved,
                                     test_paths=targeted)
             commands_run.append(list(loop.command))
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
@@ -316,6 +334,15 @@ class Supervisor:
             touched = [path for path in sorted(set(touched)) if not path.startswith(".forge/")]
             if not touched:
                 raise RuntimeError("model produced no accepted files")
+            # The commit itself is a permission boundary: even an accepted
+            # candidate cannot commit unless the gate authorizes git_commit.
+            commit_decision = policy.evaluate(
+                operation="git_commit", path="", tool="git",
+                risk=result.get("risk_level", "NONE"), capability="release",
+                approved=approved)
+            event("permission_decision", commit_decision.to_dict())
+            if not commit_decision.allowed:
+                raise RuntimeError(f"commit not permitted: {commit_decision.reason}")
             stage("COMMIT")
             commit_started = perf_counter()
             commit = git.commit_accepted(touched, "forge: " + requirement, decision)

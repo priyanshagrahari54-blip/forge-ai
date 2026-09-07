@@ -87,6 +87,8 @@ class TaskReport:
     #: Summed token counts when providers report them, else ``None``.
     input_tokens: int | None = None
     output_tokens: int | None = None
+    #: Permission mode the run executed under (safe/assisted/autonomous/locked).
+    mode: str = ""
 
     def record_event(self, name: str, elapsed: float,
                      details: dict[str, Any] | None = None) -> None:
@@ -122,5 +124,6 @@ class TaskReport:
             "model_latency_seconds": self.model_latency_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "mode": self.mode,
         }
         return redact(payload)

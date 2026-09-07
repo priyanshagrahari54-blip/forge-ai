@@ -108,7 +108,9 @@ def test_success_path_emits_ordered_events(tmp_path):
     ])
     decisions = [item for item in outcome["report"]["events"]
                  if item["name"] == "permission_decision"]
-    assert len(decisions) == 2
+    assert len(decisions) == 3  # two coder writes plus the git_commit boundary
+    assert [item["details"]["operation"] for item in decisions] == [
+        "write_file", "write_file", "git_commit"]
     assert all(item["details"]["decision"] == "ALLOW" for item in decisions)
     assert all(isinstance(item["t"], float) and item["t"] >= 0
                for item in outcome["report"]["events"])
