@@ -130,6 +130,24 @@ def translate_a32(operation: str) -> tuple[Resource, str] | None:
     return A32_OPERATION_MAP.get(operation)
 
 
+def validate_scope(resource: Resource | str, scope: str) -> str:
+    """Validate an approval/grant scope, returning its normalized form.
+
+    Raises ``ValueError`` for malformed scopes so approvals can never be
+    minted over ambiguous ranges.
+    """
+    resource = Resource(resource)
+    if not isinstance(scope, str) or not scope:
+        raise ValueError(f"Scope for {resource.value} must be a non-empty string")
+    if resource == Resource.FILESYSTEM:
+        return _validate_fs_pattern(scope)
+    if resource in (Resource.BROWSER, Resource.NETWORK):
+        return _validate_domain_pattern(scope)
+    if resource == Resource.TERMINAL and scope == "**":
+        raise ValueError("Terminal approvals cannot cover '**'")
+    return scope
+
+
 def scope_for_a32(operation: str, call: dict[str, Any]) -> str:
     """Derive an engine scope from A32 tool-call keyword arguments."""
     if "path" in call and isinstance(call["path"], str):
