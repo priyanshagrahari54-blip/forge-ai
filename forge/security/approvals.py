@@ -64,6 +64,9 @@ class ApprovalRequest:
     model: str = ""
     provider: str = ""
     escalation: bool = False
+    #: Suggested detail bindings (port, args, provider, ...) carried onto the
+    #: minted token so redemption re-checks them.
+    bind: tuple[tuple[str, Any], ...] = ()
     id: str = field(default_factory=lambda: uuid4().hex)
     created_at: float = field(default_factory=time.time)
     expires_at: float | None = None
@@ -108,6 +111,9 @@ class ApprovalRequest:
         if self.files:
             lines += ["Files:", *self.files, ""]
         lines += ["Risk:", self.risk, ""]
+        if self.bind:
+            lines += ["Bindings:", *(
+                f"{name} = {value!r}" for name, value in self.bind), ""]
         if self.model or self.provider:
             lines += ["Model:", f"{self.model} ({self.provider})".strip(), ""]
         lines += ["Reason:", self.reason or "(no reason given)", ""]
@@ -133,6 +139,7 @@ class ApprovalRequest:
             "model": self.model,
             "provider": self.provider,
             "escalation": self.escalation,
+            "bind": {name: value for name, value in self.bind},
             "status": self.status.value,
             "decided_by": self.decided_by,
             "created_at": self.created_at,
@@ -245,6 +252,21 @@ def _scope_covers(resource: Resource, granted: str,
     return granted == request.scope
 
 
+def enforce_with_token(store: "ApprovalStore | None", token_id: str,
+                       request: PermissionRequest,
+                       fingerprint: str = "") -> tuple[bool, str]:
+    """Redeem a token for a ``REQUIRE_APPROVAL`` outcome on an enforcement path.
+
+    Missing store or token fails closed with an explanatory reason; token
+    bindings recorded at issuance are re-checked by :meth:`ApprovalStore.redeem`.
+    """
+    if not token_id:
+        return False, "Approval required before executing this operation."
+    if store is None:
+        return False, "Approval required, and no approval store is configured."
+    return store.redeem(token_id, request, fingerprint=fingerprint)
+
+
 class ApprovalStore:
     """Mint, redeem, and revoke approvals and task grants."""
 
@@ -333,13 +355,15 @@ class ApprovalStore:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         issued_at = self.now()
+        merged_bind = tuple(request.bind) + tuple(bind)
         token = ApprovalToken(
             agent=request.agent, task_id=request.task_id,
             resource=request.resource, operation=request.operation,
             scopes=request.scopes, files=request.files,
             issued_by=decided_by, issued_at=issued_at,
             expires_at=issued_at + ttl_seconds, max_uses=max_uses,
-            fingerprint=fingerprint, bind=tuple(bind), request_id=request.id)
+            fingerprint=fingerprint, bind=merged_bind,
+            request_id=request.id)
         self._tokens[token.id] = _TokenRecord(token=token)
         return token
 
