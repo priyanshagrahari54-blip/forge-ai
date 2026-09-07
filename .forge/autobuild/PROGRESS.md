@@ -300,3 +300,92 @@ execution and fails the rest closed — the transaction stops and rolls
 back to zero candidate writes.
 
 No A34 work was started.
+
+## A34 — Browser Cockpit + Secure Control Plane
+
+- **Core hooks (minimal, inert by default)**: `SupervisorControl` /
+  `TaskCancelled` cooperative pause-cancel at stage boundaries
+  (`forge/core/run_control.py`); `Supervisor.run(on_event=, control=,
+  approval_callback=)` with live event fan-out, interactive commit-gate
+  approval, and `CANCELLED` rollback semantics; `ChangeApplier`
+  `ApprovalQuery`/`ApprovalCallback` phase-2 hook consulted only for
+  `REQUIRE_APPROVAL` (never `DENY`), with granted tokens re-checked per
+  change; `approval_callback` passthrough in `CoderAgent`/`DebuggerAgent`;
+  `TaskCancelled` propagation through coder/debugger handlers.
+- **Control plane (`forge/control/`)**: persistent project-scoped sessions
+  (local-dev auth foundation); dispatcher + worker pool over the existing
+  `PersistentTaskQueue`/`TaskStore`/`Supervisor` (never inline in HTTP,
+  never tied to a tab); persistent cursor-replayable `EventStore` with
+  live wait and secret redaction; `ApprovalService` adapter over the A33
+  store (file/wait/decide, exact-`max_uses` tokens, fingerprint binding,
+  project visibility, idempotent retries, expiry); pre-run checkpoints
+  with candidate-scoped rollback authorized per file through the existing
+  `PolicyGate`; read-only git/model/permission/verification views; finite
+  command vocabulary with deterministic NL/voice translation that never
+  executes; desktop capability foundation (permission preview only);
+  JSONL-backed audit of every sensitive action.
+- **API (`forge/api/`)**: versioned `/api/v1` (health, sessions,
+  dashboard, projects, tasks, runs, events, approvals, models, providers,
+  permissions, verification, checkpoints, rollback, git, commands,
+  interpret, voice, desktop); SSE stream with `after=` + `Last-Event-ID`
+  resume; structured stable error codes; request IDs; 1 MB body cap;
+  bounded pagination; per-IP rate limits; CORS same-origin default (`*`
+  refused at startup); CSRF header for cookie mutations; HttpOnly
+  SameSite=Lax cookies; CSP + nosniff + no-store headers.
+- **Cockpit (`forge/cockpit/web/`)**: dependency-free HTML/CSS/vanilla-JS
+  (no build, no Node in CI): dashboard, tasks, task detail with real
+  pipeline timeline + live events, projects, models, permissions with
+  WHAT/WHY approval cards, git views, reports. Talks only to same-origin
+  `/api/v1`; keeps no token in storage (HttpOnly cookie only).
+- **`forge serve`**: uvicorn entrypoint, loopback by default, explicit
+  local-dev labeling.
+- **Proof**: 63 new tests (`tests/test_a34_*.py`) — API (18), events/SSE
+  over real sockets (6), security (17: traversal, isolation, replay,
+  self-authz, expiry, CSRF, CORS, rate limits, redaction, no-bypass),
+  approval E2E (4: approve/deny/commit-scope/expiry on real runs), task
+  E2E (4: full CSV pipeline with stage/event/commit verification,
+  mid-run pause/resume/cancel), failure E2E (rollback exactness),
+  rollback (approval-gated restore), disconnect/reconnect replay,
+  commands/voice/desktop, frontend static + backend-authority checks.
+  Full suite: 869 passed, 2 skipped (baseline 806 passed, 2 skipped).
+- **Docs**: `docs/A34-BROWSER-COCKPIT.md` (architecture, API reference,
+  event catalog, security model, config, limitations), README section.
+
+Known limitations (honest): local-dev auth only (no passwords/SSO);
+SSE not WebSockets; pending A33 approvals do not survive API restart
+(fail closed); rollback restores worktree files only (commit stays);
+pause/cancel cooperative at stage boundaries; voice transcription and
+desktop control are foundations only; `CUSTOM` profiles rejected; no
+framing controls by default (add at the edge for production).
+
+No A35 work was started.
+
+## A34 UI upgrade — premium browser cockpit (same branch, no backend change)
+
+- **Shell**: sidebar + top status bar + workspace; Overview/Tasks/Projects/
+  Models/Permissions/Git plus Activity, Approval center, and System views —
+  every route backed by a real `/api/v1` endpoint, no fake pages.
+- **Screens**: hero dashboard with real stat cards + active-run card (honest
+  stage-position progress, live elapsed); large task composer (same form
+  contract); filterable/searchable task rows; task workspace with connected
+  pipeline nodes, human-readable live event cards (raw payload in expanders),
+  run/verification/checkpoint/report panels; WHAT/WHY approval cards;
+  model-fabric console (cards, routing policy, routing table, providers);
+  permission matrix with profile banners; read-only git with numbered
+  add/remove diff viewer; polished login with local-dev warning intact.
+- **Command palette** (`Ctrl/Cmd+K`): navigation-only, keyboard driven.
+- **Contracts preserved**: all existing DOM hooks, single same-origin
+  fetch helper, CSRF header, HttpOnly-cookie sessions, no storage, no
+  provider calls, no inline handlers/styles (CSP `self`-only), no backend
+  or API changes whatsoever.
+- **Proof**: 16 new `tests/test_a34_ui.py` tests (hooks, nav↔template↔route
+  mapping, CSP/static scans, palette/approval/task/event coverage, live
+  endpoint grounding). Full suite: 885 passed, 2 skipped. Executed the real
+  bundle in jsdom (64 checks incl. login flow, filters, palette, error
+  states, stage-rewind regression) and against the live backend (18 checks
+  incl. real task create + terminal cleanup, real git/models/permissions).
+  Pixel screenshots were not possible in this sandbox (browser CDNs
+  blocked); layout was verified by executed-DOM inspection, markup dumps,
+  and CSS review at desktop/tablet/mobile breakpoints.
+
+No A35 work was started.

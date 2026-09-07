@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>Forge — Autonomous Engineering</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<a class="skip" href="#view">Skip to main content</a>
+
+<div id="app" class="app hidden">
+  <aside class="sidebar" id="sidebar" aria-label="Forge navigation">
+    <div class="brand">
+      <svg class="mark" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <path d="M14 2 25 8.5v11L14 26 3 19.5v-11Z" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M9 17.5v-7h8M9 13.5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">FORGE</span>
+        <span class="brand-sub">Autonomous Engineering</span>
+      </div>
+    </div>
+    <nav id="nav" aria-label="Primary">
+      <div class="nav-group" role="group" aria-label="Workspace">
+        <a href="#/dashboard" data-route="dashboard">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor"/><rect x="9" y="9" width="5.5" height="5.5" rx="1" fill="none" stroke="currentColor"/></svg>
+          <span>Overview</span></a>
+        <a href="#/tasks" data-route="tasks">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h7" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Tasks</span></a>
+        <a href="#/projects" data-route="projects">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5c0-.8.7-1.5 1.5-1.5h3l1.5 2h5c.8 0 1.5.7 1.5 1.5v4c0 .8-.7 1.5-1.5 1.5h-10c-.8 0-1.5-.7-1.5-1.5Z" fill="none" stroke="currentColor"/></svg>
+          <span>Projects</span></a>
+        <a href="#/models" data-route="models">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="none" stroke="currentColor"/><path d="M6.5 1.5v2M9.5 1.5v2M6.5 12.5v2M9.5 12.5v2M1.5 6.5h2M1.5 9.5h2M12.5 6.5h2M12.5 9.5h2" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Models</span></a>
+        <a href="#/permissions" data-route="permissions">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.5-2.3 6-5.5 7-3.2-1-5.5-3.5-5.5-7v-4Z" fill="none" stroke="currentColor"/><path d="M5.5 8l1.8 1.8L10.8 6" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Permissions</span></a>
+        <a href="#/git" data-route="git">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="4" r="1.8" fill="none" stroke="currentColor"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor"/><circle cx="11.5" cy="6.5" r="1.8" fill="none" stroke="currentColor"/><path d="M4.5 5.8v4.9M11.5 8.3c0 2-2.5 2-4.5 2.4" fill="none" stroke="currentColor"/></svg>
+          <span>Git</span></a>
+      </div>
+      <div class="nav-group" role="group" aria-label="Operations">
+        <div class="nav-label">Operations</div>
+        <a href="#/activity" data-route="activity">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8h3l2-4 3 8 2-4h3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Activity</span></a>
+        <a href="#/approvals" data-route="approvals">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor"/><path d="M5.5 8.2 7.3 10 10.7 6.4" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Approvals</span><span id="nav-appr-count" class="nav-badge hidden"></span></a>
+      </div>
+      <div class="nav-group" role="group" aria-label="System">
+        <div class="nav-label">System</div>
+        <a href="#/system" data-route="system">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="4.5" rx="1" fill="none" stroke="currentColor"/><rect x="2" y="9" width="12" height="4.5" rx="1" fill="none" stroke="currentColor"/><circle cx="4.5" cy="4.7" r=".9" fill="currentColor"/><circle cx="4.5" cy="11.2" r=".9" fill="currentColor"/></svg>
+          <span>System</span></a>
+      </div>
+    </nav>
+    <div class="side-foot">
+      <span class="env-pill">local-dev</span>
+      <span class="muted">Browser is never trusted</span>
+    </div>
+  </aside>
+
+  <div class="shell-main">
+    <header class="topbar">
+      <button id="menu-toggle" class="icon-btn" aria-label="Toggle navigation" aria-expanded="false">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 4.5h14M2 9h14M2 13.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <div class="crumb" aria-label="Breadcrumb">
+        <span class="crumb-root">Forge</span>
+        <span class="crumb-sep" aria-hidden="true">/</span>
+        <a id="project-chip" class="project-chip" href="#/projects" title="Open projects">project</a>
+      </div>
+      <div class="topright">
+        <button id="palette-open" class="palette-hint" aria-label="Open command palette">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor"/><path d="M9.3 9.3 12.5 12.5" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Commands</span><kbd>Ctrl K</kbd>
+        </button>
+        <span id="conn" class="conn ok" role="status" title="Backend connection">Connected</span>
+        <span id="whoami" class="whoami"></span>
+        <span id="profile-chip" class="profile-chip" title="Permission profile"></span>
+        <button id="logout" class="btn small hidden">Sign out</button>
+      </div>
+    </header>
+    <main id="view" tabindex="-1"></main>
+  </div>
+</div>
+<div id="scrim" class="scrim hidden"></div>
+
+<section id="login" class="login hidden" aria-label="Sign in">
+  <div class="login-split">
+    <div class="login-brand">
+      <div class="brand">
+        <svg class="mark" width="34" height="34" viewBox="0 0 28 28" aria-hidden="true">
+          <path d="M14 2 25 8.5v11L14 26 3 19.5v-11Z" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M9 17.5v-7h8M9 13.5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <div class="brand-text">
+          <span class="brand-name">FORGE</span>
+          <span class="brand-sub">Autonomous Engineering</span>
+        </div>
+      </div>
+      <h1>Autonomous engineering,<br>under your control.</h1>
+      <p class="muted">Forge plans, codes, tests, reviews, and ships — every
+      write authorized by policy, every approval decided by you.</p>
+      <svg class="login-flow" viewBox="0 0 300 248" role="img" aria-label="Forge pipeline: requirement, agents, models, code, verification, ship">
+        <path d="M30 20v208" stroke="currentColor" stroke-width="2" opacity=".25"/>
+        <g font-size="13" fill="currentColor">
+          <circle cx="30" cy="24" r="6"/><text x="48" y="29">Requirement</text>
+          <circle cx="30" cy="64" r="6"/><text x="48" y="69">Agents</text>
+          <circle cx="30" cy="104" r="6"/><text x="48" y="109">Models</text>
+          <circle cx="30" cy="144" r="6"/><text x="48" y="149">Code</text>
+          <circle cx="30" cy="184" r="6"/><text x="48" y="189">Verification</text>
+          <circle cx="30" cy="224" r="6"/><text x="48" y="229">Ship</text>
+        </g>
+      </svg>
+    </div>
+    <div class="login-card surface">
+      <h2>Enter Forge</h2>
+      <p class="muted">Local-development session. The browser is never trusted:
+      every action is authorized server-side by Forge policy.</p>
+      <form id="login-form">
+        <label for="login-actor">Actor (audit identity)</label>
+        <input id="login-actor" name="actor" type="text" autocomplete="username"
+               maxlength="64" placeholder="e.g. alice" required>
+        <label for="login-project">Project id</label>
+        <input id="login-project" name="project" type="text" maxlength="64"
+               placeholder="e.g. forge" required>
+        <label for="login-profile">Permission profile</label>
+        <select id="login-profile" name="profile">
+          <option value="assisted" selected>assisted (approve changes)</option>
+          <option value="safe">safe (read-only)</option>
+          <option value="autonomous">autonomous (low-risk auto)</option>
+          <option value="locked">locked (no modifications)</option>
+        </select>
+        <div id="login-error" class="error" role="alert"></div>
+        <button class="btn primary block" type="submit">Enter cockpit →</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<div id="palette" class="palette hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palette-box surface-elevated">
+    <input id="palette-input" class="command-bar" type="text" autocomplete="off"
+           spellcheck="false" placeholder="Type a command — navigation only" aria-label="Command input">
+    <div id="palette-list" role="listbox" aria-label="Commands"></div>
+  </div>
+</div>
+
+<template id="tpl-dashboard">
+  <div class="page-head hero">
+    <div>
+      <div id="d-greet" class="hero-greet">Forge</div>
+      <h2 class="hero-title">Forge is ready to build.</h2>
+    </div>
+    <a class="btn primary" href="#/tasks" data-action="new-task">New task →</a>
+  </div>
+  <div id="d-active"></div>
+  <div class="section-header"><h3>System health</h3></div>
+  <div id="d-stats" class="stat-grid"></div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Recent activity</h3><a class="link" href="#/activity">View all</a></div>
+      <div id="d-activity" class="feed"></div>
+    </div>
+    <div class="surface">
+      <div class="section-header"><h3>Security</h3><a class="link" href="#/system">Details</a></div>
+      <div id="d-security"></div>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-tasks">
+  <div class="page-head">
+    <div>
+      <h2>Tasks</h2>
+      <p class="muted">Describe what to build. Forge runs the full pipeline in the background.</p>
+    </div>
+  </div>
+  <div class="surface composer">
+    <h3>What should Forge build?</h3>
+    <form id="new-task-form">
+      <label class="visually-hidden" for="new-task-req">Requirement</label>
+      <textarea id="new-task-req" rows="3" maxlength="8000"
+                placeholder="Add CSV export functionality to the API…" required></textarea>
+      <div class="composer-foot">
+        <div class="composer-ctx">
+          <span class="ctx-chip">Project <strong id="composer-project">–</strong></span>
+          <span class="ctx-chip">Profile <strong id="composer-profile">–</strong></span>
+        </div>
+        <button class="btn primary" type="submit">Start task →</button>
+      </div>
+    </form>
+    <div id="new-task-error" class="error" role="alert"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header">
+      <h3>All tasks</h3>
+      <input id="task-search" class="search" type="text" placeholder="Filter tasks…"
+             aria-label="Filter tasks" autocomplete="off">
+    </div>
+    <div id="task-filters" class="filters" role="group" aria-label="Filter by status"></div>
+    <div id="task-list" class="list"></div>
+  </div>
+</template>
+
+<template id="tpl-task">
+  <a class="back link" href="#/tasks">← Tasks</a>
+  <div class="page-head task-head">
+    <div class="task-titleblock">
+      <h2 id="t-title">Task</h2>
+      <div id="t-badges" class="badge-row"></div>
+      <div id="t-meta" class="muted meta"></div>
+    </div>
+    <div class="btnrow" id="t-actions"></div>
+  </div>
+  <div id="t-error" class="error" role="alert"></div>
+  <div class="surface">
+    <div class="section-header"><h3>Autonomous pipeline</h3><span id="t-stage-label" class="muted"></span></div>
+    <ol id="t-timeline" class="pipeline"></ol>
+  </div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Live events</h3><span id="t-stream-state" class="muted"></span></div>
+      <div id="t-events" class="feed tall"></div>
+    </div>
+    <div class="side-stack">
+      <div class="surface">
+        <div class="section-header"><h3>Run information</h3></div>
+        <div id="t-details"></div>
+      </div>
+      <div class="surface">
+        <div class="section-header"><h3>Verification</h3></div>
+        <div id="t-verification"><span class="muted">Available when the run finishes.</span></div>
+      </div>
+      <div class="surface">
+        <div class="section-header"><h3>Checkpoints</h3></div>
+        <div id="t-checkpoints"></div>
+      </div>
+      <div class="surface">
+        <div class="section-header"><h3>Report</h3></div>
+        <div id="t-report"><span class="muted">Available when the run finishes.</span></div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-projects">
+  <div class="page-head">
+    <div>
+      <h2>Projects</h2>
+      <p class="muted">Registered workspaces. Your session is bound to one project.</p>
+    </div>
+  </div>
+  <div class="section-header"><h3>All projects</h3></div>
+  <div id="p-list" class="card-grid"></div>
+  <div class="section-header"><h3>Current project</h3></div>
+  <div class="surface"><div id="p-current"></div></div>
+</template>
+
+<template id="tpl-models">
+  <div class="page-head">
+    <div>
+      <h2>Model Fabric</h2>
+      <p class="muted">Routing, providers, and live model health.</p>
+    </div>
+  </div>
+  <div class="section-header"><h3>Routing policy</h3></div>
+  <div class="surface"><div id="m-policy"></div></div>
+  <div class="section-header"><h3>Models</h3></div>
+  <div id="m-list" class="card-grid"></div>
+  <div class="section-header"><h3>Providers</h3></div>
+  <div id="m-providers" class="card-grid"></div>
+  <div class="section-header"><h3>Recent routing</h3></div>
+  <div class="surface scroll-x"><div id="m-routing"></div></div>
+</template>
+
+<template id="tpl-permissions">
+  <div class="page-head">
+    <div>
+      <h2>Permissions</h2>
+      <p class="muted">Effective profile, pending approvals, and attached policy rules.</p>
+    </div>
+  </div>
+  <div id="pm-banner"></div>
+  <div class="surface">
+    <div class="section-header"><h3>Effective permissions</h3></div>
+    <div id="pm-effective" class="scroll-x"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Pending approvals</h3><a class="link" href="#/approvals">Approval center</a></div>
+    <div id="pm-approvals" class="list"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Policy rules</h3></div>
+    <div id="pm-rules" class="feed"></div>
+  </div>
+</template>
+
+<template id="tpl-git">
+  <div class="page-head">
+    <div>
+      <h2>Git</h2>
+      <p class="muted">Read-only repository view. Forge stages only explicitly validated files.</p>
+    </div>
+  </div>
+  <div class="surface"><div id="g-state"></div></div>
+  <div class="surface">
+    <div class="section-header"><h3>Diff (unstaged)</h3></div>
+    <div id="g-diff" class="diff scroll-x" tabindex="0" aria-label="Unstaged diff"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Diff (staged)</h3></div>
+    <div id="g-diff-staged" class="diff scroll-x" tabindex="0" aria-label="Staged diff"></div>
+  </div>
+</template>
+
+<template id="tpl-activity">
+  <div class="page-head">
+    <div>
+      <h2>Activity</h2>
+      <p class="muted">Latest control-plane events across this project.</p>
+    </div>
+  </div>
+  <div class="surface">
+    <div id="act-list" class="feed"></div>
+  </div>
+</template>
+
+<template id="tpl-approvals">
+  <div class="page-head">
+    <div>
+      <h2>Approval center</h2>
+      <p class="muted">Nothing is applied until you decide. Denials fail closed.</p>
+    </div>
+  </div>
+  <div id="ap-list" class="appr-grid"></div>
+</template>
+
+<template id="tpl-system">
+  <div class="page-head">
+    <div>
+      <h2>System</h2>
+      <p class="muted">Backend health, workers, session, and guaranteed security posture.</p>
+    </div>
+  </div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Backend</h3></div>
+      <div id="sys-backend"></div>
+    </div>
+    <div class="surface">
+      <div class="section-header"><h3>Workers</h3></div>
+      <div id="sys-workers"></div>
+    </div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Session</h3></div>
+    <div id="sys-session"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Security posture</h3></div>
+    <div id="sys-security"></div>
+  </div>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

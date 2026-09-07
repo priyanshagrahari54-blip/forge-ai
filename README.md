@@ -55,6 +55,39 @@ A33 generalizes A32's policy core into a fine-grained platform controlling files
 
 See `docs/A33-PERMISSION-PLATFORM.md` for the architecture, precedence algorithm, scope syntax, approval model, configuration format, threat model, and the ten tested security invariants.
 
+## Browser Cockpit + Secure Control Plane (A34)
+
+A34 operates Forge from the browser without trusting the browser. The
+cockpit (`forge/cockpit/web/`, dependency-free, no build step) talks only
+to the versioned API (`/api/v1/*`); the API talks only to the control
+plane (`forge/control/`); the control plane drives the existing A32
+supervisor through the existing A33 policy gates:
+
+```bash
+forge serve --project myproject=/path/to/repo
+# open http://127.0.0.1:8000
+```
+
+- **Secure control plane**: project-scoped sessions, background dispatcher
+  + worker over the existing task queue/supervisor, persistent replayable
+  events (SSE live stream), approval adaptation over the A33 store
+  (scoped/task-bound/time-bounded/non-replayable), pre-run checkpoints
+  with candidate-scoped rollback through the policy gate, and JSONL audit.
+- **Browser cockpit**: dashboard, tasks with a real pipeline timeline,
+  WHAT/WHY approval cards, model fabric view, effective-permission view,
+  git views, verification gates, and final reports.
+- **Browser is never trusted**: server-side auth/scope/policy/approval for
+  every call, CSRF + CORS lockdown, rate limits, no bypass fields, secret
+  redaction, structured errors without tracebacks.
+- **Core hooks are minimal and inert by default**: live events,
+  cooperative pause/cancel, and interactive mid-run approval in the
+  supervisor/ChangeSet path (`TaskCancelled` propagates; `DENY` is never
+  escalated).
+
+Auth is local-development sessions (no passwords). See
+`docs/A34-BROWSER-COCKPIT.md` for the architecture, full API reference,
+event catalog, security model, configuration, and honest limitations.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

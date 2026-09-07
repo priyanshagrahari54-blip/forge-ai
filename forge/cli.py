@@ -148,6 +148,23 @@ def main() -> None:
 
     subparsers.add_parser("self-status")
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the browser cockpit server (local development)",
+        description="Start the Forge cockpit API + web UI. Local-dev "
+        "auth only; do not expose to untrusted networks.",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument(
+        "--project", dest="projects", action="append", default=[],
+        metavar="ID=ROOT",
+        help="Register a project (repeatable). Defaults to the "
+        "current directory.",
+    )
+    serve_parser.add_argument("--db", default="",
+                             help="Control-plane database path.")
+
     args = parser.parse_args()
 
     if args.command == "status":
@@ -208,6 +225,18 @@ def main() -> None:
         print(f"Total Runs in History: {st['total_runs_in_history']}")
         print(f"Accepted Runs: {st['accepted_runs']}")
         print(f"Rejected Runs: {st['rejected_runs']}")
+
+    elif args.command == "serve":
+        from forge.api.server import run as serve
+
+        projects: dict[str, str] = {}
+        for spec in args.projects:
+            name, _, root = spec.partition("=")
+            if not name or not root:
+                parser.error("--project must look like ID=ROOT")
+            projects[name] = root
+        serve(host=args.host, port=args.port,
+              projects=projects or None, db_path=args.db)
 
     else:
         parser.print_help()
