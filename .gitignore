@@ -17,3 +17,11 @@ dist/
 # IDE
 .vscode/
 .idea/
+
+# Forge runtime state (sessions, tasks, events, audit)
+.forge/*.db
+.forge/*.db-shm
+.forge/*.db-wal
+.forge/*.db-journal
+.forge/audit.jsonl
+.forge/self/history/
