@@ -9,6 +9,7 @@ from forge.agents.coder import CoderAgent
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
+from forge.core.run_control import TaskCancelled
 from forge.runtime.runtime import ToolRuntime
 from forge.security.permissions import PermissionManager
 from forge.tools.change_applier import (
@@ -328,6 +329,8 @@ class TestDebugLoop:
             try:
                 changes = self.debugger.repair(task, output, context, approved, previous_attempts=attempts,
                                                task_id=task_id, approval_token_id=approval_token_id)
+            except TaskCancelled:
+                raise
             except Exception as exc:
                 attempts.append(DebugAttempt(
                     attempt_number=number, failure_error=output, diagnosis=diagnosis,

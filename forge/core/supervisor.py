@@ -186,6 +186,11 @@ class Supervisor:
                 control.checkpoint(name)
             self.set_stage(name)
             result["stages"].append(name)
+            if on_event is not None:
+                try:
+                    on_event("stage_started", {"stage": name})
+                except Exception:
+                    pass
 
         report = TaskReport(
             task_id=task.id,

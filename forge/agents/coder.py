@@ -10,6 +10,7 @@ from forge.intelligence.repository import RepositoryIntelligence
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
+from forge.core.run_control import TaskCancelled
 from forge.security.classification import classify_text
 from forge.security.permissions import PermissionManager
 from forge.tools.change_applier import (
@@ -328,6 +329,8 @@ class CoderAgent(AgentExecutor):
                                  metadata={"files": applied, "model": response.model,
                                            "provider": response.provider, "routing": "fabric",
                                            **extra})
+        except TaskCancelled:
+            raise
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})
@@ -362,6 +365,8 @@ class CoderAgent(AgentExecutor):
             return AgentResponse(True, output=result.text, agent=self.name, stage=request.stage,
                                  metadata={"files": applied, "model": model.name,
                                            "routing": "legacy-router", **extra})
+        except TaskCancelled:
+            raise
         except Exception as exc:
             return AgentResponse(False, error=str(exc), agent=self.name, stage=request.stage,
                                  metadata={"files": []})
