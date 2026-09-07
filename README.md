@@ -131,6 +131,10 @@ The suite includes repository intelligence and task lifecycle tests, checkpoint 
 python -m pytest -q
 ```
 
+## Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request: it checks out the repository, installs the project with test dependencies (`pip install -e ".[dev]"`), runs `python -m pytest -q`, compiles the package (`python -m compileall forge`), and checks the diff (`git diff --check`). The job fails if any step fails; it never depends on a local Ollama server, so it is fully deterministic and offline. The opt-in live-model tests are skipped by default (see below).
+
 Live Ollama integration tests are opt-in and auto-skip when no Ollama endpoint is reachable, so normal CI never fails merely because Ollama is not installed:
 
 - `FORGE_LIVE_MODEL_TESTS=1` enables `tests/test_ollama_live.py` (live generation/telemetry smoke test).

@@ -94,3 +94,11 @@
 - Tests: `test_a32_change_applier.py` (15), `test_a32_review.py` (11), `test_a32_acceptance.py` (8), `test_a32_permissions_mode.py` (7), `test_a32_coder_schema.py` (6), `test_a32_e2e.py` (3) — 50 new tests. Total: 399 → 449 passed, 2 skipped (opt-in live Ollama).
 
 Known limitations: autonomous deletions are rejected (operator must delete explicitly); the model-driven reviewer is optional and only runs when a review-capable model is available through the fabric; live Ollama E2E remains opt-in.
+
+## A31 final hardening — CI + merge readiness
+
+- **CI added**: `.github/workflows/ci.yml` runs on every push and pull request — checkout, `pip install -e ".[dev]"`, `python -m pytest -q`, `python -m compileall forge`, `git diff --check`. The job fails on any failing step and never depends on a local Ollama server (deterministic/offline).
+- **Generated artifacts removed from Git tracking**: `forge_ai.egg-info/*` (PKG-INFO, SOURCES.txt, dependency_links.txt, entry_points.txt, requires.txt, top_level.txt) was accidentally tracked; removed from the index. It remains on disk only as an ignored, regenerable build artifact.
+- **Real test numbers**: `python -m pytest -q` → **449 passed, 2 skipped** (2 skips = opt-in live Ollama tests, no endpoint in the run environment). `python -m compileall forge` clean; `git diff --check` clean. PR #4 description updated from the stale "365 passed, 1 skipped" to the recorded value.
+- **Merge state**: branch `arena/01a0777f-forge-ai` is up to date with `main` (it is ahead, not behind); PR #4 reports `mergeable=TRUE`, `mergeable_state=CLEAN`.
+- **Verification without fabrication**: no hardcoded `return True`/`return 0` success paths in the security/self-development gates; provider propagation, streaming parity/failover, and opt-in Ollama E2E are each backed by executable tests (see `tests/test_model_fabric_*.py`, `tests/test_ollama_*.py`).
