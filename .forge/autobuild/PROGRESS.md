@@ -102,3 +102,10 @@ Known limitations: autonomous deletions are rejected (operator must delete expli
 - **Real test numbers**: `python -m pytest -q` → **449 passed, 2 skipped** (2 skips = opt-in live Ollama tests, no endpoint in the run environment). `python -m compileall forge` clean; `git diff --check` clean. PR #4 description updated from the stale "365 passed, 1 skipped" to the recorded value.
 - **Merge state**: branch `arena/01a0777f-forge-ai` is up to date with `main` (it is ahead, not behind); PR #4 reports `mergeable=TRUE`, `mergeable_state=CLEAN`.
 - **Verification without fabrication**: no hardcoded `return True`/`return 0` success paths in the security/self-development gates; provider propagation, streaming parity/failover, and opt-in Ollama E2E are each backed by executable tests (see `tests/test_model_fabric_*.py`, `tests/test_ollama_*.py`).
+
+## A31 — CI push status (blocked on App permission)
+
+- The CI workflow `.github/workflows/ci.yml` is written, validated, and committed on the PR branch at `38f7429` (checkout → `pip install -e ".[dev]"` → `python -m pytest -q` → `python -m compileall forge` → `git diff --check`).
+- It is **not yet on the GitHub remote**: `git push` is rejected with `refusing to allow a GitHub App to create or update workflow '.github/workflows/ci.yml' without 'workflows' permission`, and the Contents API returns 403 `Resource not accessible by integration`. The `arena-ai-coding-agent[bot]` App installation lacks the **Workflows (read and write)** permission.
+- Consequence: GitHub Actions cannot run against the PR head until the App is granted `workflows: write` (or GitHub is reconnected in Arena with a token that has it). No CI run is claimed; the local suite (449 passed, 2 skipped) is the verification evidence in the meantime.
+- Exact next action: repo owner grants the App **Workflows → Read and write** on this repository (Settings → GitHub Apps → installed app → permissions), then `git push origin arena/01a0777f-forge-ai` delivers `38f7429` and CI runs.
