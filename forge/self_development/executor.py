@@ -11,8 +11,6 @@ from forge.agents.execution import AgentRequest
 from forge.core.task_engine import TaskEngine, TaskStatus
 from forge.core.supervisor import Supervisor
 from forge.intelligence.repository import RepositoryIntelligence
-from forge.models.provider import LocalModelProvider
-from forge.models.router import ModelInfo, ModelRouter
 from forge.security.verification import VerificationPipeline
 from forge.self_development.evaluator import CandidateEvaluator, EvaluationResult
 from forge.self_development.improvements import ImprovementCandidate
@@ -24,18 +22,24 @@ class SelfDevelopmentExecutor:
     """Run A26-A30 candidates through the same guarded coding infrastructure."""
 
     def __init__(self, root=".", supervisor=None, task_engine=None, registry=None,
-                 router=None, permissions=None, memory=None, git_tool=None):
+                 router=None, fabric=None, permissions=None, memory=None, git_tool=None):
         self.root = Path(root).resolve()
         self.supervisor = supervisor or Supervisor("forge-self", self.root)
         self.task_engine = task_engine or TaskEngine()
-        self.router = router or ModelRouter([ModelInfo(
-            "local", "coding", available=True, free=True, provider=LocalModelProvider(),
-            capabilities=("coding", "debugging"),
-        )])
+        if fabric is not None:
+            self.fabric = fabric
+            self.router = None
+        elif router is not None:
+            self.fabric = None
+            self.router = router
+        else:
+            from forge.models.fabric import ModelFabric
+            self.fabric = ModelFabric.from_defaults()
+            self.router = None
         self.evaluator = CandidateEvaluator(self.root)
         self.git_tool = git_tool or GitTool(str(self.root))
         self.checkpoints = CheckpointManager(self.root)
-        self.coder = CoderAgent(root=str(self.root), router=self.router)
+        self.coder = CoderAgent(root=str(self.root), router=self.router, fabric=self.fabric)
         self.verifier = VerificationPipeline(self.root)
 
     def execute_candidate(self, candidate: ImprovementCandidate,
@@ -71,7 +75,7 @@ class SelfDevelopmentExecutor:
                 if not response.success:
                     raise RuntimeError(response.error or "model coding failed")
 
-            debugger = DebuggerAgent(str(self.root), router=self.router)
+            debugger = DebuggerAgent(str(self.root), router=self.router, fabric=self.fabric)
             debug_result = TestDebugLoop(self.root, max_retries=3, debugger=debugger).run(
                 candidate.proposed_improvement, approved=True
             )
@@ -102,11 +106,12 @@ class SelfDevelopmentExecutor:
             self.checkpoints.cleanup(checkpoint)
             result = EvaluationResult(accepted=False, rejection_reason=str(exc))
 
+        history_source = self.fabric.router.history if self.fabric is not None else self.router.history
         record = {
             "timestamp": time.time(), "candidate": candidate.to_dict(),
             "accepted": result.accepted, "rejection_reason": result.rejection_reason,
             "duration": time.perf_counter() - started, "files_changed": touched,
-            "router_history": self.router.history[-20:], "status": self.supervisor.current_stage,
+            "router_history": history_source[-20:], "status": self.supervisor.current_stage,
         }
         history = self.root / ".forge" / "self" / "history"
         history.mkdir(parents=True, exist_ok=True)

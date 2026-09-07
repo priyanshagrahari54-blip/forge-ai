@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from forge.intelligence.budget import ContextBudget, ContextBudgetManager
-from forge.intelligence.context import ContextPack, ContextQuery
+from forge.intelligence.context import ContextItem, ContextPack, ContextQuery
 from forge.intelligence.context_pack import DeterministicContextPack
 from forge.intelligence.context_query import ContextQueryEngine
 from forge.intelligence.dependency_context import DependencyContextExpander
@@ -68,6 +68,20 @@ class AgentContextBuilder:
         final_pack = DeterministicContextPack.normalize(
             budgeted.pack
         )
+
+        # Deterministic fallback: when the relevance engine selects nothing
+        # (e.g. a task with no symbol/keyword overlap), the agent still needs
+        # repository context. Seed with the project's source files so the model
+        # never receives an empty context, without dumping the whole repo.
+        if not final_pack.items:
+            source_files = sorted(self.intelligence.architecture.source_files)
+            for path in source_files[: query.max_files]:
+                final_pack.add(ContextItem(
+                    path=path,
+                    kind="file",
+                    reason="repository fallback context",
+                    score=1.0,
+                ))
 
         fingerprint = DeterministicContextPack.fingerprint(
             final_pack

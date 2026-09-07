@@ -83,19 +83,28 @@ class ToolRuntime:
 
         tool = self.tools[tool_name]
 
-        permission = self.permission_manager.check(tool.permission)
+        # Prefer the mode-aware policy when available (PermissionManager with
+        # OperationMode); fall back to the original level check for custom
+        # permission managers that only implement check().
+        may_execute = getattr(self.permission_manager, "may_execute", None)
+        if callable(may_execute):
+            allowed, reason = may_execute(tool.permission, approved=approved)
+            if not allowed:
+                return ToolResult.fail(tool_name, reason)
+        else:
+            permission = self.permission_manager.check(tool.permission)
 
-        if permission.value == "blocked":
-            return ToolResult.fail(
-                tool_name,
-                "Operation blocked by security policy.",
-            )
+            if permission.value == "blocked":
+                return ToolResult.fail(
+                    tool_name,
+                    "Operation blocked by security policy.",
+                )
 
-        if permission.value == "approval_required" and not approved:
-            return ToolResult.fail(
-                tool_name,
-                "Approval required before executing this operation.",
-            )
+            if permission.value == "approval_required" and not approved:
+                return ToolResult.fail(
+                    tool_name,
+                    "Approval required before executing this operation.",
+                )
 
         started = datetime.now(timezone.utc)
 

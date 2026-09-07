@@ -118,10 +118,11 @@ class CandidateEvaluator:
     def _check_security(self) -> int:
         # Count concrete high-risk findings; never use a synthetic constant.
         import re
+        from forge.security.verification import is_excluded
         patterns = [re.compile(r"(?:api[_-]?key|secret|password)\\s*[:=]\\s*['\\\"][^'\\\"]{8,}", re.I), re.compile(r"-----BEGIN .*PRIVATE KEY-----")]
         count = 0
         for path in self.root.rglob("*"):
-            if not path.is_file() or ".git" in path.parts or ".forge" in path.parts:
+            if not path.is_file() or is_excluded(path.relative_to(self.root).parts):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

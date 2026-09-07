@@ -41,6 +41,7 @@ class Supervisor:
         *,
         approved: bool = False,
         router=None,
+        fabric=None,
         max_debug_retries: int = 3,
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
@@ -55,10 +56,14 @@ class Supervisor:
         from forge.agents.execution import AgentRequest, CallableAgentExecutor
         from forge.agents.registry import AgentRegistration, AgentRegistry
         from forge.agents.planner import CapabilityAgentPlanner
+        from forge.agents.reviewer import ReviewerAgent
+        from forge.core.acceptance import AcceptanceEngine, GateOutcome
+        from forge.core.report import TaskReport
         from forge.core.task_engine import TaskEngine, TaskStatus
         from forge.intelligence.repository import RepositoryIntelligence
         from forge.models.router import ModelInfo, ModelRouter
         from forge.models.provider import LocalModelProvider
+        from forge.security.review import ReviewGate
         from forge.security.verification import VerificationPipeline
         from forge.self_development.benchmark import BenchmarkRunner
         from forge.tools.checkpoint import CheckpointManager
@@ -67,8 +72,10 @@ class Supervisor:
         if not approved:
             return {"accepted": False, "stage": "APPROVAL_REQUIRED", "error": "Explicit write approval is required"}
 
-        # A supplied router is an adapter for a real provider, not a change set.
-        if router is None:
+        # A supplied router (or fabric) is an adapter for a real provider, not
+        # a change set. A caller may pass either the legacy router or the
+        # centralized Model Fabric; the fabric is used when provided.
+        if router is None and fabric is None:
             router = ModelRouter([ModelInfo("local", "coding", available=True, free=True, provider=LocalModelProvider(), capabilities=("coding", "debugging"))])
         started = perf_counter()
         run_id = uuid4().hex
@@ -78,6 +85,8 @@ class Supervisor:
         engine = TaskEngine()
         task = engine.add(f"supervisor-task-{run_id}", requirement)
         touched: list[str] = []
+        files_read: list[str] = []
+        commands_run: list[list[str]] = []
         result: dict[str, Any] = {
             "run_id": run_id,
             "requirement": requirement,
@@ -87,18 +96,26 @@ class Supervisor:
             "attempts": [],
             "gates": [],
             "rollback": False,
+            "checkpoint_id": checkpoint.id,
         }
 
         def stage(name: str) -> None:
             self.set_stage(name)
             result["stages"].append(name)
 
+        report = TaskReport(
+            task_id=task.id,
+            trace_id=run_id,
+            requirement=requirement,
+            checkpoint_id=checkpoint.id,
+        )
+
         try:
             stage("PLAN")
             intelligence = RepositoryIntelligence.build(self.root)
             task.status = TaskStatus.PLANNING
-            coder = CoderAgent(root=str(self.root), router=router)
-            debugger = DebuggerAgent(str(self.root), router=router)
+            coder = CoderAgent(root=str(self.root), router=router, fabric=fabric)
+            debugger = DebuggerAgent(str(self.root), router=router, fabric=fabric)
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
@@ -116,17 +133,28 @@ class Supervisor:
             stage("MODEL")
             task.status = TaskStatus.CODING
             context = coder.build_context(intelligence, requirement)
+            files_read = sorted({item.path for item in context.items})
             result["context_fingerprint"] = context.fingerprint
             response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata={"approved": True}))
             touched = list(response.metadata.get("files", []))
             if not response.success:
                 raise RuntimeError(response.error or "model coding failed")
             result["selected_model"] = response.metadata.get("model", "")
+            result["selected_provider"] = response.metadata.get("provider", "")
+            result["summary"] = response.metadata.get("summary", "")
+            result["reasoning_summary"] = response.metadata.get("reasoning_summary", "")
+            result["risks"] = response.metadata.get("risks", [])
+            if fabric is not None:
+                result["model_routing"] = {
+                    "policy": fabric.policy.to_dict(),
+                    "history": list(fabric.router.history[-20:]),
+                }
 
             stage("CODE")
             stage("TEST")
             loop = TestDebugLoop(self.root, max_retries=max_debug_retries, debugger=debugger)
             debug_result = loop.run(requirement, context=str(context), approved=True)
+            commands_run.append(list(loop.command))
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
             result["retry_count"] = len(debug_result.attempts)
             result["test_result"] = {"passed": debug_result.success, "final_state": debug_result.final_state, "error": debug_result.error}
@@ -149,10 +177,23 @@ class Supervisor:
             repaired_files = [path for attempt in result["attempts"] for path in attempt["modifications"]]
             touched = sorted(set(touched) | set(repaired_files))
             review = verification.review(diff, touched)
+            # Structured, severity-typed review (A32.8); a model-driven reviewer
+            # contributes findings through the fabric when one is available.
+            model_findings = None
+            if fabric is not None:
+                try:
+                    model_findings = ReviewerAgent(fabric=fabric).review(requirement, diff, tuple(touched))
+                except Exception:
+                    model_findings = None
+            review_decision = ReviewGate(self.root).review(
+                diff, touched, requirement=requirement, model_findings=model_findings,
+            )
+            result["review"] = review_decision.to_dict()
             stage("SECURITY")
             security = verification.security(touched)
             stage("BENCHMARK")
-            model_latency = sum(event.get("latency") or 0.0 for event in router.history)
+            history_source = fabric.router.history if fabric is not None else router.history
+            model_latency = sum(event.get("latency") or 0.0 for event in history_source)
             benchmark = BenchmarkRunner(self.root).run_benchmarks(
                 task_success=debug_result.success,
                 repair_attempts=len(result["attempts"]),
@@ -160,11 +201,27 @@ class Supervisor:
                 model_latency=model_latency,
             )
             stage("ACCEPTANCE")
-            gates = [verification.tests(), verification.build(), verification.lint(), security, review]
+            gate_tests = verification.tests()
+            gate_build = verification.build()
+            gate_lint = verification.lint()
+            gates = [gate_tests, gate_build, gate_lint, security, review]
             result["gates"] = [asdict(gate) for gate in gates]
             result["benchmark"] = benchmark.to_dict()
-            if not all(gate.passed for gate in gates) or benchmark.passed_benchmarks < benchmark.total_benchmarks:
-                raise RuntimeError("verification or benchmark gate failed")
+            benchmark_passed = benchmark.passed_benchmarks >= benchmark.total_benchmarks
+            decision = AcceptanceEngine().decide(
+                tests=gate_tests,
+                build=gate_build,
+                lint=gate_lint,
+                review=review_decision,
+                security=security,
+                benchmark=GateOutcome("benchmark", benchmark_passed, "" if benchmark_passed else "benchmark incomplete"),
+                permissions_ok=True,
+                rollback_available=True,
+                changed_files=touched,
+            )
+            result["acceptance"] = decision.to_dict()
+            if not decision.accepted:
+                raise RuntimeError("acceptance gate failed: " + "; ".join(decision.reasons))
 
             stage("CHECKPOINT")
             # stage_files is deliberately explicit and rejects Forge state.
@@ -178,6 +235,24 @@ class Supervisor:
             checkpoint_manager.cleanup(checkpoint)
             result.update(accepted=True, files=touched, model=response.metadata.get("model"),
                           duration_seconds=perf_counter() - started)
+            report.stages = list(result["stages"])
+            report.agent = "coder"
+            report.model = response.metadata.get("model", "")
+            report.provider = response.metadata.get("provider", "")
+            report.context_fingerprint = context.fingerprint
+            report.files_read = files_read
+            report.files_changed = touched
+            report.commands_run = commands_run
+            report.tests_run = len(debug_result.attempts)
+            report.test_result = result["test_result"]
+            report.review_result = review_decision.to_dict()
+            report.security_result = asdict(security)
+            report.build_result = asdict(gate_build)
+            report.acceptance = decision.to_dict()
+            report.retries = len(debug_result.attempts)
+            report.duration_seconds = perf_counter() - started
+            report.final_status = "COMPLETED"
+            result["report"] = report.to_dict()
             stage("COMPLETED")
             return result
         except Exception as exc:
@@ -188,6 +263,15 @@ class Supervisor:
             git.unstage_files(touched)
             checkpoint_manager.rollback(checkpoint, sorted(set(touched)))
             checkpoint_manager.cleanup(checkpoint)
+            report.stages = list(result["stages"])
+            report.files_read = files_read
+            report.files_changed = touched
+            report.commands_run = commands_run
+            report.error = str(exc)
+            report.rollback = True
+            report.duration_seconds = perf_counter() - started
+            report.final_status = "FAILED"
             result.update(error=str(exc), rollback=True, files=touched,
-                          failure_reason=str(exc), duration_seconds=perf_counter() - started)
+                          failure_reason=str(exc), duration_seconds=perf_counter() - started,
+                          report=report.to_dict())
             return result
