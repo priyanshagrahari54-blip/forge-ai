@@ -304,6 +304,10 @@ class ApprovalStore:
                 if request.status == ApprovalStatus.PENDING
                 and not request.expired(self.now())]
 
+    def all_requests(self) -> list[ApprovalRequest]:
+        """Return every filed request, in filing order."""
+        return list(self._requests.values())
+
     def decide(self, request_id: str, approved: bool,
                decided_by: str) -> ApprovalRequest:
         """Record the operator's decision. The approver must differ from the
