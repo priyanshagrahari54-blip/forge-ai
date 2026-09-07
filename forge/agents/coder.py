@@ -55,6 +55,9 @@ class CoderAgent(AgentExecutor):
     def _prompt(self, request: AgentRequest) -> str:
         context_parts = []
         for item in (request.context.items if request.context else []):
+            # Defense in depth: context files must stay inside the repository.
+            if not self._is_repo_relative(item.path):
+                continue
             try:
                 content = (Path(self.root) / item.path).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -67,6 +70,11 @@ class CoderAgent(AgentExecutor):
             "Never edit outside the repository.\n"
             f"TASK: {request.task.description}\nCONTEXT:\n{context}\nTOOLS/INSTRUCTIONS:{request.instructions}"
         )
+
+    @staticmethod
+    def _is_repo_relative(path: str) -> bool:
+        candidate = PurePosixPath(path)
+        return bool(path) and not candidate.is_absolute() and ".." not in candidate.parts
 
     def _changes(self, text: str) -> dict[str, str]:
         cleaned = text.strip()
@@ -87,6 +95,7 @@ class CoderAgent(AgentExecutor):
         validated: dict[str, str] = {}
         for path, content in changes.items():
             self._validate_path(path)
+            self._validate_content(path, content)
             encoded = content.encode("utf-8")
             if len(encoded) > _MAX_FILE_BYTES:
                 raise ValueError(f"Model file exceeds {_MAX_FILE_BYTES} bytes: {path}")
@@ -95,6 +104,20 @@ class CoderAgent(AgentExecutor):
             # Encoding above is also an explicit UTF-8 validation.
             validated[path] = content
         return validated
+
+    @staticmethod
+    def _validate_content(path: str, content: str) -> None:
+        """Reject syntactically invalid Python before it can be written.
+
+        ``compile`` parses without executing, so untrusted model output is
+        syntax-checked safely. Non-Python files are validated structurally only.
+        """
+        if not path.endswith(".py"):
+            return
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            raise ValueError(f"Model produced invalid Python for {path}: {exc}") from exc
 
     @staticmethod
     def _validate_path(path: str) -> None:

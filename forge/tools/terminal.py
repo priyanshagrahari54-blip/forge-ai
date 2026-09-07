@@ -3,6 +3,9 @@ from forge.runtime.runtime import ToolResult
 
 
 class TerminalTool:
+    #: Cap on captured output so a runaway command cannot exhaust memory.
+    MAX_OUTPUT_CHARS = 200_000
+
     def __init__(self, root: str = ".") -> None:
         self.root = root
 
@@ -32,6 +35,9 @@ class TerminalTool:
 
             if result.stderr:
                 output += result.stderr
+
+            if len(output) > self.MAX_OUTPUT_CHARS:
+                output = output[: self.MAX_OUTPUT_CHARS] + "\n...[output truncated]"
 
             if result.returncode != 0:
                 return ToolResult.fail(

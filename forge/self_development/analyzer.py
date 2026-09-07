@@ -62,18 +62,28 @@ class ForgeSelfAnalyzer:
         # Collect metrics
         repo_metrics = self._collect_repo_metrics(repo_intel)
         total_test_files = len(repo_intel.tests.test_to_sources)
+
+        # Test pass/fail is measured during evaluation (BenchmarkRunner actually
+        # runs pytest), never invented here. Analysis reports only what is
+        # statically knowable: the number of mapped test files.
         test_metrics = TestMetrics(
             total_tests=total_test_files,
-            passed_tests=total_test_files,
+            passed_tests=0,
             failed_tests=0,
             duration=0.0,
         )
+
+        # Permission counts are read from the live permission table so they can
+        # never drift from the enforced policy.
+        permission_rules, blocked_operations, approval_required_operations = self._permission_metrics()
         security_metrics = SecurityMetrics(
-            permission_rules_count=12,
-            blocked_operations=2,
-            approval_required_operations=5,
+            permission_rules_count=permission_rules,
+            blocked_operations=blocked_operations,
+            approval_required_operations=approval_required_operations,
             potential_vulnerabilities=len(sec_findings),
         )
+
+        # Not measured during static analysis; recorded as zero (unmeasured).
         performance_metrics = PerformanceMetrics(
             avg_execution_time=0.0,
             memory_usage_mb=0.0,
@@ -279,6 +289,17 @@ class ForgeSelfAnalyzer:
                     )
 
         return findings, counter
+
+    def _permission_metrics(self) -> tuple[int, int, int]:
+        """Read the live permission table (never a hardcoded constant)."""
+        from forge.security.permissions import PermissionLevel, PermissionManager
+
+        rules = PermissionManager().rules
+        blocked = sum(1 for level in rules.values() if level == PermissionLevel.BLOCKED)
+        approval = sum(
+            1 for level in rules.values() if level == PermissionLevel.APPROVAL_REQUIRED
+        )
+        return len(rules), blocked, approval
 
     def _collect_repo_metrics(
         self, repo_intel: RepositoryIntelligence

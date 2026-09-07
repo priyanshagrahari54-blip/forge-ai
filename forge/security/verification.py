@@ -17,6 +17,33 @@ class GateResult:
     evidence: dict = field(default_factory=dict)
 
 
+#: Directories never scanned for secrets/danger or snapshotted: runtime state,
+#: virtualenvs, package caches, and build output. Shared so scanners and the
+#: checkpoint manager agree on what is "application" content.
+EXCLUDED_DIRS = frozenset({
+    ".git",
+    ".forge",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".cache",
+    "build",
+    "dist",
+})
+
+
+def is_excluded(relative_parts) -> bool:
+    """True when any path component is a known non-application directory."""
+    return any(part in EXCLUDED_DIRS for part in relative_parts)
+
+
 @dataclass
 class VerificationResult:
     passed: bool
@@ -54,13 +81,14 @@ class VerificationPipeline:
             return None
 
     def tests(self) -> GateResult:
-        process = self._run([sys.executable, "-m", "pytest", "-q"])
+        command = [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+        process = self._run(command)
         output = (process.stdout + process.stderr) if process else "test command failed"
         no_tests = bool(process and process.returncode == 5 and "no tests ran" in output.lower())
         return GateResult("tests", bool(process and (process.returncode == 0 or no_tests)), output[-4000:], {
             "returncode": process.returncode if process else None,
             "no_tests": no_tests,
-            "command": [sys.executable, "-m", "pytest", "-q"],
+            "command": command,
         })
 
     def build(self) -> GateResult:
@@ -92,7 +120,11 @@ class VerificationPipeline:
 
     def _candidate_files(self, changed_files: Iterable[str] | None) -> list[Path]:
         if changed_files is None:
-            return [path for path in self.root.rglob("*") if path.is_file()]
+            return [
+                path
+                for path in self.root.rglob("*")
+                if path.is_file() and not is_excluded(path.relative_to(self.root).parts)
+            ]
         files = []
         for name in changed_files:
             path = (self.root / name).resolve()
@@ -107,7 +139,15 @@ class VerificationPipeline:
     def security(self, changed_files: Iterable[str] | None = None) -> GateResult:
         findings: list[dict[str, str]] = []
         for path in self._candidate_files(changed_files):
-            if ".git" in path.parts or ".forge" in path.parts or path.stat().st_size > 2_000_000:
+            rel_parts = path.relative_to(self.root).parts
+            if is_excluded(rel_parts):
+                continue
+            if path.stat().st_size > 2_000_000:
+                continue
+            # Environment/credential files are findings on sight; they must not
+            # enter a commit even if their contents evade a regex.
+            if path.name == ".env" or path.name.endswith(".env"):
+                findings.append({"file": str(path.relative_to(self.root)), "rule": "environment file"})
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

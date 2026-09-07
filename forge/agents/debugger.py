@@ -133,12 +133,18 @@ class DebuggerAgent(AgentExecutor):
 
 
 class TestDebugLoop:
+    # Not a pytest test class; prevents collection warnings when imported.
+    __test__ = False
+
     def __init__(self, root: str | Path = ".", max_retries: int = 3,
                  debugger: DebuggerAgent | None = None, command: list[str] | None = None):
         self.root = str(root)
         self.max_retries = max(0, min(max_retries, 10))
         self.debugger = debugger or DebuggerAgent(self.root)
-        self.command = command or [sys.executable, "-m", "pytest", "-q"]
+        # ``-B`` (interpreter) and ``no:cacheprovider`` stop stale bytecode and
+        # last-failed caches from producing false results when a repair writes
+        # an equal-size file within the same mtime granularity window.
+        self.command = command or [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
     def run(self, task: str, context: str = "", approved: bool = True) -> DebugLoopResult:
         attempts: list[DebugAttempt] = []
@@ -151,6 +157,20 @@ class TestDebugLoop:
                 "no tests ran" in combined.lower() or "collected 0 items" in combined.lower()
             )
             if result.success or no_tests:
+                # A successful final retest is itself recorded as a passing
+                # attempt so run telemetry shows the repair -> pass transition,
+                # not just the failures that preceded it.
+                if result.success and attempts:
+                    attempts.append(DebugAttempt(
+                        attempt_number=number,
+                        failure_error="",
+                        diagnosis="",
+                        modifications={},
+                        test_passed=True,
+                        test_output=output,
+                        model=self.debugger.last_model,
+                        model_latency=self.debugger.last_latency,
+                    ))
                 return DebugLoopResult(True, attempts, "tests passed or no test suite")
             if number > self.max_retries:
                 return DebugLoopResult(False, attempts, "tests failed", output)

@@ -43,7 +43,7 @@ class BenchmarkRunner:
                        repair_attempts: int = 0, files_changed: list[str] | None = None,
                        model_latency: float = 0.0, rollback_count: int = 0) -> BenchmarkResult:
         started = time.perf_counter()
-        tests, test_latency, output, test_code = self._run([sys.executable, "-m", "pytest", "-q"])
+        tests, test_latency, output, test_code = self._run([sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"])
         build, build_latency, build_output, build_code = self._run([sys.executable, "-m", "compileall", "-q", "."])
         checks = [tests, build]
         details = {
