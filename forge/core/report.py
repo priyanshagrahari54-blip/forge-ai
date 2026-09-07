@@ -25,6 +25,7 @@ _REDACT_PATTERNS = (
                r"(?:-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)?", re.S),
     re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
     re.compile(r"(?:postgres|mysql|mongodb(?:\+srv)?)://[^\s'\"]+", re.I),
+    re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{20,}"),
 )
 
 
