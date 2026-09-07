@@ -42,6 +42,19 @@ See `docs/A32-HARDENED-LOOP.md` for the full A32 architecture, configuration exa
 
 A deterministic provider that behaves like a model still exercises the *complete* orchestration path in the E2E tests; a separate opt-in real-model test drives Ollama end to end (see Testing).
 
+## Permission & Policy Platform (A33)
+
+A33 generalizes A32's policy core into a fine-grained platform controlling files, folders, tools, terminal commands, websites, browser actions, desktop resources, model providers, network access, and voice intents — with A32's `ALLOW` / `DENY` / `REQUIRE_APPROVAL` and modes still authoritative:
+
+- **Policy engine** (`forge.security.policy`): `PermissionRequest` (who/what/where/when/how/risk/why) evaluated against `PermissionRule`s with deterministic most-specific-wins precedence (`DENY` → `REQUIRE_APPROVAL` → `ALLOW` → fail-closed default). Filesystem, terminal (exact-argv `ALLOW`s only), git, domain, network, model, desktop, and voice scopes; strict config validation; side-effect-free simulation; cached decisions with invalidation.
+- **Approvals & task scope** (`forge.security.approvals`): structured approval requests, scoped single-use non-transferable time-bounded tokens (idempotent per enforcement chain, previewable without consumption), escalation requests that still need a distinct approver, and temporary task grants over declared files, revoked on failure/rollback/task end. Agents cannot self-grant.
+- **Audit** (`forge.security.audit`): every decision recorded with request/task/trace ids, actor, resource, operation, scope, risk, decision, matched rules, and approval linkage — with secret redaction throughout.
+- **Data classification** (`forge.security.classification`): `PUBLIC/INTERNAL/CONFIDENTIAL/SECRET` detection (detection always wins upwards) plus a model data policy enforced per candidate model by the Model Fabric, so classified content never reaches an unauthorized provider.
+- **Tighten-only A32 integration**: the gate and runtime consult attached policies — explicit rules can restrict A32 verdicts further but never loosen them; with nothing attached, A32 behavior is byte-identical.
+- **Safe foundations**: policy-gated mock browser/network/desktop (`forge.tools`), a voice interface routed through permissions (`forge.voice`), and cockpit backend interfaces for tasks/approvals/events (`forge.cockpit`). No real browser automation, sockets, input control, speech recognition, or frontend.
+
+See `docs/A33-PERMISSION-PLATFORM.md` for the architecture, precedence algorithm, scope syntax, approval model, configuration format, threat model, and the ten tested security invariants.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

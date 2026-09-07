@@ -197,4 +197,57 @@ Ollama), `compileall` clean, `git diff --check` clean.
 - **Documentation** (this entry + `docs/A32-HARDENED-LOOP.md` + README):
   proposal vs execution, mode matrix, canonical fabric vs legacy adapter.
 
-No A33 work was started.
+## A33 — Permission & Policy Platform (PR #5)
+
+Built on `arena/01a07aa1-forge-ai` on top of the hardened A32 loop (no
+rebuild, no reset/rebase, A32 suite untouched and green). Baseline before
+changes: **575 passed, 2 skipped** (verified by running the suite, not
+assumed). Final: **782 passed, 2 skipped** (skips = opt-in live Ollama),
+`compileall` clean, `git diff --check` clean.
+
+- **Policy engine** (`95f03bd`): `forge/security/policy.py` —
+  `PermissionRequest/Rule/Policy` with documented most-specific-wins
+  precedence, filesystem/domain/terminal/network/model/git/desktop/voice
+  scopes, simulation, decision cache with invalidation, strict config
+  validation, and locked/safe/assisted/autonomous/custom profiles.
+  Tests: `tests/test_a33_policy.py` (81).
+- **Approvals & task scope** (`e6533ca` + M5 refinements): structured
+  requests, scoped single-use non-transferable time-bounded tokens with
+  per-chain idempotent redemption and non-consuming previews, escalation
+  requiring a distinct approver, temporary task grants. Tests:
+  `tests/test_a33_approvals.py` (27).
+- **Audit & classification** (`5ca93d1`): secret-safe audit events/log
+  (shared redactor extended with Bearer-token masking), data
+  classification with detection-wins semantics, model data policy. Tests:
+  `tests/test_a33_audit.py` + `tests/test_a33_data_policy.py` (23).
+- **Resource foundations** (`9ed783b`): policy-gated mock browser,
+  network, desktop plus a permission-routed voice interface. No real
+  automation, sockets, input control, or speech recognition. Tests:
+  `tests/test_a33_resources.py` (15).
+- **A32 integration** (`89655d7`): tighten-only wiring through the gate
+  and runtime (explicit rules restrict, never loosen), token redemption
+  at both layers, task grants in the applier, audit at every layer,
+  context classification, per-model data-policy filtering in the fabric,
+  supervisor surfacing (`task_grant`, `audit_events`). Tests:
+  `tests/test_a33_integration.py` (20).
+- **Cockpit interfaces** (`d59ab15`): `forge/cockpit.py` — task
+  submission/status, approval queue/decisions/token minting, event
+  streams, logs, model/agent summaries. No frontend. Tests:
+  `tests/test_a33_cockpit.py` (5).
+- **Invariants & attacks** (`32efb42`): all ten §23 invariants tested
+  plus defensive abuse coverage (§24). Tests:
+  `tests/test_a33_invariants.py` + `tests/test_a33_attack.py` (33).
+- **E2E** (`a14bebb`): full CSV run through the platform (task grant,
+  gates, safe commit, audit report, approval-gated twin, late-stage
+  rollback) plus mock browser/desktop E2E. Tests: `tests/test_a33_e2e.py`.
+- **Documentation** (this entry + `docs/A33-PERMISSION-PLATFORM.md` +
+  README): architecture, precedence algorithm, scopes, agent identity,
+  task permissions, approval model, expiration, resource foundations,
+  invariants, examples, threat model, audit logging, config format.
+
+Known limitations: mocks stand in for real browser/network/desktop/voice
+I/O by design; the cockpit has backend interfaces only (no UI); terminal
+`ALLOW` rules require exact pinned argv; live Ollama E2E remains opt-in
+and was not run here (no endpoint).
+
+No A34 work was started.
