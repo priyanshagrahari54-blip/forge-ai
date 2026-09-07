@@ -160,19 +160,20 @@ class Supervisor:
             result["attempts"] = [asdict(attempt) for attempt in debug_result.attempts]
             result["retry_count"] = len(debug_result.attempts)
             result["test_result"] = {"passed": debug_result.success, "final_state": debug_result.final_state, "error": debug_result.error}
-            if not debug_result.success:
-                raise RuntimeError(debug_result.error or "tests did not pass after bounded repairs")
-            # A repair is still model output, so include newly touched files in
-            # the eventual explicit staging set.
-            repaired_files = [path for attempt in result["attempts"] for path in attempt["modifications"]]
-            touched = sorted(set(touched) | set(repaired_files))
-
+            # Attempted debugging is staged even when the loop ultimately
+            # fails, so the stage history truthfully shows repair work.
             if result["attempts"]:
                 stage("DEBUG")
                 stage("REPAIR")
                 stage("RETEST")
             else:
                 stage("RETEST")
+            if not debug_result.success:
+                raise RuntimeError(debug_result.error or "tests did not pass after bounded repairs")
+            # A repair is still model output, so include newly touched files in
+            # the eventual explicit staging set.
+            repaired_files = [path for attempt in result["attempts"] for path in attempt["modifications"]]
+            touched = sorted(set(touched) | set(repaired_files))
             stage("REVIEW")
             verification = VerificationPipeline(self.root)
             diff = git.diff() + "\n" + git.status()
