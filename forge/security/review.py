@@ -1,11 +1,12 @@
-"""Independent review gate (A32.8).
+"""Independent review gate (A32.5 / A32.8).
 
 Produces a structured ``ReviewDecision`` (APPROVE / REQUEST_CHANGES / BLOCK)
-from the changed material. HIGH and CRITICAL findings block acceptance; the
-decision is deterministic evidence, not a fabricated success. An optional
-model-driven ``ReviewerAgent`` (``forge.agents.reviewer``) can contribute
-findings through the Model Fabric, but this deterministic gate always runs and
-its blockers always apply.
+from the changed material. HIGH and CRITICAL findings always block acceptance;
+MEDIUM findings are governed by a configurable :class:`ReviewPolicy` budget
+(default: any MEDIUM finding requests changes). The decision is deterministic
+evidence, not a fabricated success. An optional model-driven ``ReviewerAgent``
+(``forge.agents.reviewer``) can contribute findings through the Model Fabric,
+but this deterministic gate always runs and its blockers always apply.
 """
 from __future__ import annotations
 
@@ -30,6 +31,22 @@ class FindingSeverity(str, Enum):
     CRITICAL = "CRITICAL"
 
 
+@dataclass(frozen=True)
+class ReviewPolicy:
+    """Acceptance thresholds for review findings.
+
+    HIGH and CRITICAL findings always block; this policy only tunes how many
+    MEDIUM findings are tolerated before the gate requests changes. The
+    default (``max_medium_allowed=0``) is strict: any MEDIUM finding requests
+    changes, and only ``APPROVE`` passes acceptance.
+    """
+
+    max_medium_allowed: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"max_medium_allowed": self.max_medium_allowed}
+
+
 @dataclass
 class ReviewFinding:
     severity: FindingSeverity
@@ -52,6 +69,7 @@ class ReviewDecision:
     findings: list[ReviewFinding] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
     reason: str = ""
+    policy: ReviewPolicy = field(default_factory=ReviewPolicy)
 
     @property
     def approved(self) -> bool:
@@ -64,6 +82,7 @@ class ReviewDecision:
             "reason": self.reason,
             "changed_files": list(self.changed_files),
             "findings": [finding.to_dict() for finding in self.findings],
+            "policy": self.policy.to_dict(),
         }
 
 
@@ -77,14 +96,19 @@ _SEVERITY_ORDER = {
 }
 
 
-def _verdict_for(findings: list[ReviewFinding]) -> ReviewVerdict:
+def _verdict_for(findings: list[ReviewFinding],
+                 policy: ReviewPolicy | None = None) -> ReviewVerdict:
+    active = policy or ReviewPolicy()
     if not findings:
         return ReviewVerdict.APPROVE
     worst = max((_SEVERITY_ORDER[f.severity] for f in findings), default=0)
     if worst >= _SEVERITY_ORDER[FindingSeverity.HIGH]:
         return ReviewVerdict.BLOCK
-    if worst >= _SEVERITY_ORDER[FindingSeverity.MEDIUM]:
+    medium = sum(1 for f in findings if f.severity == FindingSeverity.MEDIUM)
+    if medium > active.max_medium_allowed:
         return ReviewVerdict.REQUEST_CHANGES
+    if worst >= _SEVERITY_ORDER[FindingSeverity.MEDIUM]:
+        return ReviewVerdict.APPROVE
     return ReviewVerdict.APPROVE
 
 
@@ -99,8 +123,10 @@ class ReviewGate:
     TRAVERSAL = re.compile(r"(?:^|[\s\"'])(?:\.\.(?:[/\\])|os\.path\.join\([^\n]*\.\.)")
     NETWORK_ACCESS = re.compile(r"\b(?:requests\.(?:get|post|put|delete|patch)|urllib\.request\.urlopen|socket\.socket)\s*\(")
 
-    def __init__(self, root: str | Path = "."):
+    def __init__(self, root: str | Path = ".",
+                 policy: ReviewPolicy | None = None):
         self.root = Path(root).resolve()
+        self.policy = policy or ReviewPolicy()
 
     def _material(self, diff: str, changed_files: Iterable[str]) -> tuple[str, list[ReviewFinding]]:
         material = diff
@@ -159,10 +185,11 @@ class ReviewGate:
         for finding in model_findings or []:
             findings.append(finding)
 
-        verdict = _verdict_for(findings)
+        verdict = _verdict_for(findings, self.policy)
         reason = {
             ReviewVerdict.APPROVE: "no blocking review findings",
             ReviewVerdict.REQUEST_CHANGES: "review requested changes",
             ReviewVerdict.BLOCK: "review blocked acceptance",
         }[verdict]
-        return ReviewDecision(verdict=verdict, findings=findings, changed_files=changed, reason=reason)
+        return ReviewDecision(verdict=verdict, findings=findings, changed_files=changed,
+                              reason=reason, policy=self.policy)
