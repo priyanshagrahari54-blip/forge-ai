@@ -22,6 +22,10 @@ Hardening (A32 rebuild):
   operator path, never an implicit model side effect.
 - Failures are recorded as structured :class:`ChangeError` values (``code``,
   ``path``, ``message``) in addition to the legacy string list.
+- Every change passes the explicit :class:`PolicyGate
+  <forge.security.policy_gate.PolicyGate>` (ALLOW / DENY / REQUIRE_APPROVAL)
+  *before* modification. The gate sees the operation, path, tool, risk, and
+  requested capability; denials are recorded and never bypassed.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from forge.runtime.runtime import ToolRuntime
+from forge.security.policy_gate import PolicyDecision, PolicyGate
 
 #: Hard bound on a single generated file, so a runaway model cannot produce an
 #: unbounded write.
@@ -56,6 +61,8 @@ class CodeChange:
     expected_old_hash: str | None = None
     #: Optional guard: exact text the file must currently hold.
     expected_old_content: str | None = None
+    #: Caller-assessed risk (NONE/LOW/MEDIUM/HIGH/CRITICAL) for policy.
+    risk: str = "NONE"
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,8 @@ class ApplyResult:
     checkpoint: Any = None  # internal: the live Checkpoint for rollback
     error_details: list[ChangeError] = field(default_factory=list)
     fingerprint: str | None = None
+    #: Policy decision per evaluated change (see ``PolicyOutcome.to_dict``).
+    decisions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -101,6 +110,7 @@ class ApplyResult:
             "checkpoint_id": self.checkpoint_id,
             "fingerprint": self.fingerprint,
             "error_details": [detail.to_dict() for detail in self.error_details],
+            "decisions": [dict(decision) for decision in self.decisions],
         }
 
 
@@ -112,6 +122,8 @@ class DryRunResult:
     errors: list[str] = field(default_factory=list)
     error_details: list[ChangeError] = field(default_factory=list)
     fingerprint: str | None = None
+    #: Policy preview per structurally valid change (non-filtering).
+    decisions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -123,6 +135,7 @@ class DryRunResult:
             "errors": list(self.errors),
             "fingerprint": self.fingerprint,
             "error_details": [detail.to_dict() for detail in self.error_details],
+            "decisions": [dict(decision) for decision in self.decisions],
         }
 
 
@@ -144,6 +157,7 @@ def _normalize(changes: Iterable[CodeChange | dict[str, Any]]) -> list[CodeChang
                 action=action,
                 expected_old_hash=change.get("expected_old_hash"),
                 expected_old_content=change.get("expected_old_content"),
+                risk=change.get("risk", "NONE"),
             )
         )
     return normalized
@@ -153,10 +167,24 @@ class ChangeApplier:
     """Validate, checkpoint, and apply model changes through the runtime."""
 
     def __init__(self, runtime: ToolRuntime, checkpoint_manager=None,
-                 root: str | Path | None = None) -> None:
+                 root: str | Path | None = None,
+                 policy_gate: PolicyGate | None = None) -> None:
         self.runtime = runtime
         self.checkpoint_manager = checkpoint_manager
         self.root = Path(root).resolve() if root is not None else None
+        self.policy_gate = policy_gate
+
+    def _gate(self) -> PolicyGate:
+        """Policy gate sharing the runtime's permission posture by default."""
+        if self.policy_gate is not None:
+            return self.policy_gate
+        return PolicyGate(getattr(self.runtime, "permission_manager", None))
+
+    @staticmethod
+    def _operation_for(change: CodeChange) -> tuple[str, str]:
+        if change.action == "delete":
+            return "delete_file", "delete_file"
+        return "write_file", "write_file"
 
     # -- validation -------------------------------------------------------
 
@@ -296,21 +324,31 @@ class ChangeApplier:
         return hashlib.sha256("\n".join(sorted(entries)).encode("utf-8")).hexdigest()
 
     def dry_run(self, changes: Iterable[CodeChange | dict[str, Any]],
-                *, allow_delete: bool = False) -> DryRunResult:
+                *, allow_delete: bool = False, approved: bool = False,
+                capability: str = "") -> DryRunResult:
         """Validate a proposal without writing, checkpointing, or staging.
 
         Returns the paths that *would* change plus structured errors for every
         rejected entry. Only declared entries are ever considered: there is no
-        path by which an undeclared file can be touched.
+        path by which an undeclared file can be touched. ``decisions`` previews
+        the policy verdict for each structurally valid change without
+        filtering ``would_change`` (approval is evaluated for real in
+        :meth:`apply`).
         """
         normalized = _normalize(changes)
         result = DryRunResult(fingerprint=self.fingerprint(normalized))
+        gate = self._gate()
         for change in normalized:
             try:
                 self.validate(change, allow_delete=allow_delete)
             except ValueError as exc:
                 self._record(result.errors, result.error_details, exc)
                 continue
+            operation, tool = self._operation_for(change)
+            result.decisions.append(gate.evaluate(
+                operation=operation, path=change.path, tool=tool,
+                risk=change.risk, capability=capability,
+                approved=approved).to_dict())
             if change.path not in result.would_change:
                 result.would_change.append(change.path)
         return result
@@ -326,17 +364,21 @@ class ChangeApplier:
     # -- application ------------------------------------------------------
 
     def apply(self, changes: Iterable[CodeChange | dict[str, Any]], approved: bool,
-              label: str = "change", *, allow_delete: bool = False) -> ApplyResult:
-        """Checkpoint, validate, and apply a change set.
+              label: str = "change", *, allow_delete: bool = False,
+              capability: str = "") -> ApplyResult:
+        """Checkpoint, validate, authorize, and apply a change set.
 
         A checkpoint is created before the first write when a
         ``CheckpointManager`` is configured, so the pre-change state can be
-        restored exactly. Paths are recorded in application order; unrelated
-        files are never touched. Only declared entries are written: anything
-        not in ``changes`` cannot be modified through this call.
+        restored exactly. Every change is validated, then authorized by the
+        policy gate *before* modification; denied changes are recorded and
+        skipped, never bypassed. Paths are recorded in application order;
+        unrelated files are never touched. Only declared entries are written:
+        anything not in ``changes`` cannot be modified through this call.
         """
         normalized = _normalize(changes)
         result = ApplyResult(fingerprint=self.fingerprint(normalized))
+        gate = self._gate()
         if self.checkpoint_manager is not None:
             checkpoint = self.checkpoint_manager.create(label)
             result.checkpoint_id = checkpoint.id
@@ -347,6 +389,20 @@ class ChangeApplier:
                 self.validate(change, allow_delete=allow_delete)
             except ValueError as exc:
                 self._record(result.errors, result.error_details, exc)
+                continue
+            operation, tool = self._operation_for(change)
+            outcome = gate.evaluate(
+                operation=operation, path=change.path, tool=tool,
+                risk=change.risk, capability=capability, approved=approved)
+            result.decisions.append(outcome.to_dict())
+            if not outcome.allowed:
+                code = ("POLICY_DENIED"
+                        if outcome.decision == PolicyDecision.DENY
+                        else "APPROVAL_REQUIRED")
+                message = f"Change to {change.path} not permitted: {outcome.reason}"
+                result.errors.append(message)
+                result.error_details.append(
+                    ChangeError(code, change.path, message))
                 continue
             if change.action == "delete":
                 write = self.runtime.execute(
