@@ -902,3 +902,13 @@ framing controls by default (add at the edge for production).
   per-run endpoints; cross-project ids map to NOT_FOUND.
 - 5 new tests. Full suite: **1343 passed, 2 skipped** (A62 baseline:
   1338/2).
+
+## A64 — Deployment
+
+- `forge/deployment/manager.py`: validated lifecycle (created →
+  built → deployed → rolled_back) with bounded sha256-manifested
+  zip artifacts, hash-verified extraction to targets outside the
+  project, one-step rollback, ≤8 deployments/project, last 3
+  versions kept. API + audit. Local staging only — no network.
+- 5 new tests. Full suite: **1348 passed, 2 skipped** (A63 baseline:
+  1343/2).

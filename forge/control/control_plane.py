@@ -3386,6 +3386,87 @@ class ControlPlane:
 
 
 
+
+    # -- deployment (A64) ----------------------------------------------------------------------------
+
+    def _deployment_manager(self, session: Session):
+        from forge.deployment.manager import DeploymentManager
+
+        key = f"deployment:{session.project_id}"
+        if not hasattr(self, "_deployment_managers"):
+            self._deployment_managers: dict[str, Any] = {}
+        manager = self._deployment_managers.get(key)
+        if manager is None:
+            project = self.get_project(session.project_id)
+            manager = DeploymentManager(
+                self._db, session.project_id, project.root,
+                self._db.path.parent / "deployments")
+            self._deployment_managers[key] = manager
+        return manager
+
+    def deployment_create(self, session: Session, name: str,
+                          version: str) -> dict[str, Any]:
+        try:
+            record = self._deployment_manager(session).create(
+                name, version, session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "deployment", "create", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} {version}")
+        return record
+
+    def deployment_build(self, session: Session, deployment_id: str
+                         ) -> dict[str, Any]:
+        try:
+            record = self._deployment_manager(session).build(
+                deployment_id, session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "deployment", "build", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{deployment_id} files={record['files_count']}")
+        return record
+
+    def deployment_deploy(self, session: Session, deployment_id: str,
+                          target: str) -> dict[str, Any]:
+        if not target or not isinstance(target, str):
+            raise InvalidRequest("target must be a non-empty path string")
+        try:
+            record = self._deployment_manager(session).deploy(
+                deployment_id, target, session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "deployment", "deploy", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{deployment_id} target={record['target']}")
+        return record
+
+    def deployment_rollback(self, session: Session, deployment_id: str
+                            ) -> dict[str, Any]:
+        try:
+            record = self._deployment_manager(session).rollback(
+                deployment_id, session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "deployment", "rollback", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{deployment_id} -> "
+                           f"build_index={record['build_index']}")
+        return record
+
+    def deployment_list(self, session: Session) -> dict[str, Any]:
+        return {"deployments":
+                self._deployment_manager(session).list()}
+
+    def deployment_get(self, session: Session, deployment_id: str
+                       ) -> dict[str, Any]:
+        try:
+            return self._deployment_manager(session).get(deployment_id)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+
+
     # -- performance (A63) ---------------------------------------------------------------------------
 
     def performance_summary(self, session: Session, limit: int = 200

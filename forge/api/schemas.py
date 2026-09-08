@@ -283,3 +283,14 @@ class FailureRecordRequest(BaseModel):
 
 class BenchmarkRequest(BaseModel):
     models: list[str] | None = None
+
+
+# -- A64 deployment ----------------------------------------------------------------------------
+
+class DeploymentCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    version: str = Field(min_length=1, max_length=32)
+
+
+class DeploymentDeployRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=512)
