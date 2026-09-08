@@ -51,10 +51,18 @@ class TestMapper:
         source_files = self._source_files()
         test_files = self._test_files()
 
+        # Performance optimization (Bolt ⚡): Pre-index source files by stem
+        # to convert O(N*M) stem matching loops into O(1) dictionary lookups.
+        source_by_stem: dict[str, list[str]] = {}
+        for source in source_files:
+            source_stem = Path(source).stem
+            source_by_stem.setdefault(source_stem, []).append(source)
+
         for test in test_files:
             related = self._match_test_to_sources(
                 test,
                 source_files,
+                source_by_stem=source_by_stem,
             )
 
             for source in related:
@@ -104,6 +112,7 @@ class TestMapper:
         self,
         test: str,
         source_files: list[str],
+        source_by_stem: dict[str, list[str]] | None = None,
     ) -> list[str]:
         test_path = Path(test)
         test_stem = test_path.stem
@@ -114,6 +123,10 @@ class TestMapper:
             target_name = test_stem[:-5]
         else:
             target_name = test_stem
+
+        if source_by_stem is not None:
+            # O(1) lookup when pre-indexed stem map is provided
+            return list(source_by_stem.get(target_name, []))
 
         matches: list[str] = []
 
