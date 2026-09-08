@@ -233,6 +233,27 @@ screenshot-to-action pipeline that proposes but never executes.
 See `docs/A39-VISION.md` for the security model, honesty invariants,
 and test matrix. Full suite after A39: 1163 passed, 2 skipped.
 
+## Computer Use (A40)
+
+A40 combines vision with the desktop pipeline into controlled computer
+use: `screen → understand → element tree → propose → PolicyGate →
+execute` with versioned snapshots, redacted history, and hard guards.
+
+- **No real actions under SAFE/LOCKED**; confirmation dialogs on
+  screen fail closed; HIGH/CRITICAL-risk actions escalate to operator
+  approval even under autonomous profiles; a per-task action budget
+  caps executed actions.
+- **Typed-text redaction**: history/logs/memory only ever see
+  length-only placeholders — raw payloads reach only the provider.
+- **Proposals never execute**: propose/cycle are dry runs; the
+  simulated provider never changes the screen, so the loop honestly
+  refuses to repeat actions.
+- **API + cockpit**: `/api/v1/computer/*` (observe, propose, act,
+  cycle, history, approvals) and a Computer cockpit view.
+
+See `docs/A40-COMPUTER-USE.md` for the full security model and test
+matrix. Full suite after A40: 1195 passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

@@ -125,3 +125,18 @@ class OrchestrationSubmitRequest(BaseModel):
 class VisionAnalyzeRequest(BaseModel):
     image_b64: str = Field(min_length=1, max_length=7_000_000)
     approval_id: str = ""
+
+
+# -- A40 computer use -----------------------------------------------------------
+
+class ComputerActRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=64)
+    target: str = Field(default="", max_length=500)
+    params: dict = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=1000)
+    approval_id: str = Field(default="", max_length=200)
+
+
+class ComputerScreenRequest(BaseModel):
+    image_b64: str = Field(min_length=1, max_length=7_000_000)
+    goal: str = Field(default="", max_length=1000)

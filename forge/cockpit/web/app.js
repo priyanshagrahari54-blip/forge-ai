@@ -44,6 +44,7 @@ const ROUTES = {
   memory: { render: renderMemory, title: "Memory" },
   orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
   vision: { render: renderVision, title: "Vision" },
+  computer: { render: renderComputer, title: "Computer Use" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2140,6 +2141,7 @@ const PALETTE_COMMANDS = [
   ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
   ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
   ["Go to Vision", "view", () => { window.location.hash = "#/vision"; }],
+  ["Go to Computer Use", "view", () => { window.location.hash = "#/computer"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";
@@ -2564,5 +2566,194 @@ async function renderVisionApprovals() {
   } catch (err) {
     errorState(box, "Unable to load vision approvals", err,
       renderVisionApprovals);
+  }
+}
+
+/* ---------- computer use (A40) ---------- */
+
+function readComputerFile() {
+  return new Promise((resolve, reject) => {
+    const input = document.getElementById("computer-file");
+    if (!input.files || !input.files.length) {
+      reject(new Error("Choose a screenshot first."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      resolve(String(result).split(",")[1] || "");
+    };
+    reader.onerror = () => reject(new Error("Could not read the file."));
+    reader.readAsDataURL(input.files[0]);
+  });
+}
+
+function computerGoal() {
+  return (document.getElementById("computer-goal") || {}).value || "";
+}
+
+function renderComputer() {
+  document.getElementById("computer-observe").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/observe",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerTree(result);
+        renderComputerHistory();
+      } catch (err) {
+        errorState(document.getElementById("computer-tree"),
+          "Observe failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-propose").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/propose",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerProposals(result);
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Propose failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-cycle").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/cycle",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerProposals(
+          { proposals: [], note: result.note });
+        renderComputerHistory();
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Cycle failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-act").addEventListener("click",
+    async () => {
+      try {
+        const action = document.getElementById("computer-action").value;
+        const result = await api("/api/v1/computer/act",
+          { method: "POST", body: {
+              action: action,
+              target: document.getElementById("computer-target").value,
+              reason: document.getElementById("computer-reason").value } });
+        renderComputerHistory();
+        renderComputerApprovals();
+        const box = document.getElementById("computer-proposals");
+        box.innerHTML = "";
+        const row = el("div", "surface memory-entry");
+        row.appendChild(el("p", null,
+          action + " → " + result.decision + " (risk " +
+          (result.risk || "?") + "): " + (result.reason || "")));
+        box.appendChild(row);
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Action failed", err, renderComputer);
+      }
+    });
+  renderComputerHistory();
+  renderComputerApprovals();
+}
+
+function renderComputerTree(result) {
+  const box = document.getElementById("computer-tree");
+  box.innerHTML = "";
+  const tree = result.element_tree || {};
+  const walk = (node, depth) => {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      "  ".repeat(depth) + node.kind + ": " + node.label +
+      (node.confidence === 0 ? " (simulated region)" : "")));
+    box.appendChild(row);
+    for (const child of node.children || []) {
+      walk(child, depth + 1);
+    }
+  };
+  walk(tree, 0);
+}
+
+function renderComputerProposals(result) {
+  const box = document.getElementById("computer-proposals");
+  box.innerHTML = "";
+  if (result.note) {
+    box.appendChild(el("p", "muted", result.note));
+  }
+  for (const proposal of result.proposals || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      proposal.action + " → " + (proposal.target || "—") +
+      " [" + proposal.status + ", risk " + (proposal.risk || "?") + "]"));
+    row.appendChild(el("p", "muted", proposal.reason || ""));
+    box.appendChild(row);
+  }
+}
+
+async function renderComputerHistory() {
+  const box = document.getElementById("computer-history");
+  try {
+    const history = await api("/api/v1/computer/history");
+    box.innerHTML = "";
+    const snapshots = el("p", "muted");
+    snapshots.textContent = "screen snapshots: " +
+      (history.snapshots || []).map((item) => "v" + item.version).join(", ");
+    box.appendChild(snapshots);
+    for (const action of (history.actions || []).slice(-8).reverse()) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        action.action + " → " + (action.target || "—") + " [" +
+        action.decision + (action.executed ? ", executed" : "") + "]"));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load computer history", err,
+      renderComputerHistory);
+  }
+}
+
+async function renderComputerApprovals() {
+  const box = document.getElementById("computer-approvals");
+  try {
+    const payload = await api("/api/v1/computer/approvals");
+    const approvals = payload.approvals || [];
+    box.innerHTML = "";
+    if (!approvals.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending computer approvals.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const approval of approvals) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        "forge-computer wants " + approval.operation + " (" +
+        (approval.scopes || []).join(", ") + ")"));
+      const approve = el("button", null, "Approve");
+      approve.addEventListener("click", async () => {
+        await api("/api/v1/computer/approvals/" +
+          encodeURIComponent(approval.id) + "/approve",
+          { method: "POST", body: {} });
+        renderComputerApprovals();
+      });
+      const deny = el("button", "ghost", "Deny");
+      deny.addEventListener("click", async () => {
+        await api("/api/v1/computer/approvals/" +
+          encodeURIComponent(approval.id) + "/deny",
+          { method: "POST", body: {} });
+        renderComputerApprovals();
+      });
+      row.appendChild(approve);
+      row.appendChild(deny);
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load computer approvals", err,
+      renderComputerApprovals);
   }
 }

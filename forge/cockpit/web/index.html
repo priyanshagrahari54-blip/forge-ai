@@ -66,6 +66,9 @@
         <a href="#/vision" data-route="vision">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor"/></svg>
           <span>Vision</span></a>
+        <a href="#/computer" data-route="computer">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9.5" rx="1.5" fill="none" stroke="currentColor"/><path d="M5.5 15h5M8 12v3" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Computer</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -188,6 +191,58 @@
       <div id="d-security"></div>
     </div>
   </div>
+</template>
+
+<template id="tpl-computer">
+  <div class="view-head">
+    <h2>Computer Use</h2>
+    <p class="muted">Vision-driven, policy-gated computer control: screen →
+    understand → element tree → propose → gate → execute. SAFE/LOCKED
+    sessions may only observe; HIGH/CRITICAL risk escalates to operator
+    approval; confirmation dialogs fail closed; typed text is redacted in
+    history.</p>
+  </div>
+  <section class="surface">
+    <label for="computer-file">Screenshot (png / jpeg / bmp / gif)</label>
+    <input type="file" id="computer-file" accept="image/png,image/jpeg,image/bmp,image/gif">
+    <label for="computer-goal">Goal (why)</label>
+    <input type="text" id="computer-goal" placeholder="e.g. click OK in the dialog">
+    <div class="button-row">
+      <button id="computer-observe" class="primary">Observe</button>
+      <button id="computer-propose" class="ghost">Propose actions</button>
+      <button id="computer-cycle" class="ghost">Run one safe cycle</button>
+    </div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Element tree</h3></div>
+    <div id="computer-tree"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Proposals</h3></div>
+    <div id="computer-proposals"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Manual action (gated, redacted)</h3></div>
+    <div class="button-row">
+      <select id="computer-action">
+        <option>mouse_click</option><option>mouse_move</option>
+        <option>keyboard</option><option>screenshot</option>
+        <option>window_list</option><option>launch</option>
+        <option>clipboard</option><option>process_list</option>
+      </select>
+      <input type="text" id="computer-target" placeholder="target (window, app, …)">
+      <input type="text" id="computer-reason" placeholder="reason">
+      <button id="computer-act" class="primary">Execute action</button>
+    </div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>History</h3></div>
+    <div id="computer-history"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Pending approvals</h3></div>
+    <div id="computer-approvals"></div>
+  </section>
 </template>
 
 <template id="tpl-vision">

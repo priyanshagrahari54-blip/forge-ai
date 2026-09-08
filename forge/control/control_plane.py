@@ -507,6 +507,8 @@ class ControlConfig:
     # deterministic simulated provider exists in A39 (honestly labeled,
     # no OCR/model); real providers register as plugins.
     vision_provider: str = "simulated"
+    # A40 computer use: hard cap on executed actions per task.
+    computer_max_actions: int = 20
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -618,6 +620,13 @@ class ControlPlane:
         # A39 vision: provider-independent image understanding.
         from forge.vision.pipeline import build_vision_provider
         self.vision_provider = build_vision_provider(config.vision_provider)
+        # A40 computer use: the vision-driven, policy-gated control loop
+        # over the A35 desktop agent (screen -> understand -> element
+        # tree -> propose -> gate -> execute).
+        from forge.computer.engine import ComputerUseEngine
+        self.computer = ComputerUseEngine(
+            self.desktop,
+            max_actions_per_task=config.computer_max_actions)
         self._queues: dict[str, PersistentTaskQueue] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._active: dict[str, int] = {}
@@ -2272,6 +2281,142 @@ class ControlPlane:
                     f"{'approved' if approved else 'denied'}")
         return {"approval": decided.to_dict(), "token_id": token_id}
 
+
+
+
+    # -- computer use (A40) --------------------------------------------------------
+
+    def computer_observe(self, session: Session, image_b64: str, *,
+                         goal: str = "") -> dict[str, Any]:
+        """Observe a screen snapshot through the permissioned vision
+        provider and record it as a versioned snapshot."""
+        if not isinstance(goal, str) or len(goal) > 1000:
+            raise InvalidRequest("Invalid goal.")
+        analyzed = self.vision_analyze(session, image_b64)
+        if not analyzed.get("allowed"):
+            raise PolicyDenied(
+                analyzed.get("summary", "vision analyze denied"))
+        import base64
+        image = base64.b64decode(image_b64, validate=True)
+        task_id = session.active_task or session.id
+        payload = self.computer.observe(
+            session.id, task_id, image, goal=goal,
+            understanding=analyzed)
+        self._audit(session.actor, "computer", "observe", True,
+                    task_id=task_id,
+                    reason=f"snapshot {payload['snapshot_version']}")
+        return payload
+
+    def computer_propose(self, session: Session, image_b64: str, *,
+                         goal: str = "") -> dict[str, Any]:
+        """Dry-run computer-use proposals from one screen. Nothing runs."""
+        analyzed = self.vision_analyze(session, image_b64)
+        if not analyzed.get("allowed"):
+            raise PolicyDenied(
+                analyzed.get("summary", "vision analyze denied"))
+        task_id = session.active_task or session.id
+        payload = self.computer.propose(
+            session.id, task_id, goal=goal, understanding=analyzed,
+            profile=self._desktop_profile(session))
+        self._audit(session.actor, "computer", "propose", True,
+                    task_id=task_id,
+                    reason=f"{len(payload['proposals'])} proposals, "
+                           "executed=False")
+        return payload
+
+    def computer_act(self, session: Session, action: str, target: str = "",
+                     params: dict[str, Any] | None = None,
+                     reason: str = "", approval_id: str = ""
+                     ) -> dict[str, Any]:
+        """Authorize and execute ONE computer action, fully guarded.
+
+        SAFE/LOCKED sessions may only observe; HIGH/CRITICAL risk is
+        escalated to operator approval; confirmation dialogs on screen
+        fail closed; the per-task action budget is enforced.
+        """
+        from forge.desktop.actions import DesktopActionKind, DesktopRequest
+
+        try:
+            kind = DesktopActionKind(action)
+        except ValueError:
+            raise InvalidRequest(f"Unknown computer action: {action!r}") \
+                from None
+        if not isinstance(target, str) or len(target) > 500:
+            raise InvalidRequest("Invalid computer target.")
+        if not isinstance(reason, str) or len(reason) > 1000:
+            raise InvalidRequest("Invalid reason.")
+        task_id = session.active_task or session.id
+        request = DesktopRequest(
+            kind, target=target, params=dict(params or {}),
+            agent="forge-computer", task_id=task_id,
+            session_id=session.id,
+            reason=reason or "cockpit computer action")
+        payload = self.computer.act(
+            session.id, task_id, request,
+            mode=OperationMode(session.profile),
+            approval_token_id=approval_id,
+            profile=self._desktop_profile(session))
+        self._audit(session.actor, "computer", action,
+                    bool(payload.get("executed")), task_id=task_id,
+                    reason=payload.get("reason", "")[:300])
+        return payload
+
+    def computer_cycle(self, session: Session, image_b64: str, *,
+                       goal: str = "", max_cycles: int = 5) -> dict[str, Any]:
+        """One bounded observe -> propose -> act round."""
+        analyzed = self.vision_analyze(session, image_b64)
+        if not analyzed.get("allowed"):
+            raise PolicyDenied(
+                analyzed.get("summary", "vision analyze denied"))
+        import base64
+        image = base64.b64decode(image_b64, validate=True)
+        task_id = session.active_task or session.id
+        payload = self.computer.cycle(
+            session.id, task_id, image, goal=goal, understanding=analyzed,
+            mode=OperationMode(session.profile),
+            profile=self._desktop_profile(session),
+            max_cycles=max_cycles)
+        self._audit(session.actor, "computer", "cycle", True,
+                    task_id=task_id,
+                    reason=payload["note"][:200])
+        return payload
+
+    def computer_history(self, session: Session) -> dict[str, Any]:
+        """Versioned snapshots and redacted action history for the task."""
+        task_id = session.active_task or session.id
+        return self.computer.history(task_id)
+
+    def list_computer_approvals(self, session: Session) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-computer" and request.task_id in (
+                    session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_computer_approval(self, session: Session, approval_id: str,
+                                 approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-computer" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "computer",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"computer approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
 
 
     # -- vision (A39) ------------------------------------------------------------

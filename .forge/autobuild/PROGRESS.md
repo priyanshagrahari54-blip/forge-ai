@@ -609,3 +609,38 @@ framing controls by default (add at the edge for production).
   cross-session approval isolation, API boundaries, cockpit contracts.
 - Full suite: **1163 passed, 2 skipped** (A38 baseline: 1138 passed,
   2 skipped). `compileall` clean; cockpit JS `node --check` clean.
+
+## A40 — Computer Use
+
+- `forge/computer/`: vision-driven computer control over the A35
+  desktop pipeline — `observe` (versioned snapshots + honest element
+  trees), `propose` (pure dry runs), `act` (fully guarded), `cycle`
+  (one bounded observe→propose→act round), `history` (redacted).
+- Enforced guards, all real: SAFE/LOCKED sessions may only observe;
+  confirmation dialogs detected from the screen's own text fail
+  closed; HIGH/CRITICAL-risk actions are escalated to operator
+  approval even under autonomous profiles; a per-task action budget
+  caps executed actions; typed text/paths/commands/secret-bearing
+  params are redacted in history (length-only placeholders) — raw
+  payloads reach only the provider at execution time.
+- Control plane (`computer_observe/propose/act/cycle/history`,
+  approvals, `ControlConfig.computer_max_actions`) + API
+  `/api/v1/computer/*` (observe, propose, act, cycle, history,
+  approvals, approve/deny) + cockpit Computer view with all UI
+  contracts (upload → element tree → proposals → manual gated action →
+  history → approvals).
+- Verified end to end: with a task grant, an autonomous session
+  executes a LOW-risk action and the history shows it redacted; SAFE
+  sessions and on-screen dialogs refuse actuation; a
+  `process/terminate` action escalates to approval even autonomous;
+  replaying a spent token fails closed; the demo repo stays untouched
+  by proposals.
+
+## Executable proof (A40)
+
+- 32 new tests across 4 suites: `tests/test_a40_{computer,plane,api,
+  ui}.py` — snapshot bounds, redaction, dialog fail-closed, budgets,
+  escalation, approval round trips + replay, cross-session isolation,
+  API boundaries, cockpit contracts.
+- Full suite: **1195 passed, 2 skipped** (A39 baseline: 1163 passed,
+  2 skipped). `compileall` clean; cockpit JS `node --check` clean.
