@@ -213,3 +213,15 @@ class AgentOutcomeRequest(BaseModel):
 class AgentRunRequest(BaseModel):
     requirement: str = Field(min_length=1, max_length=4000)
     approval_id: str = Field(default="", max_length=200)
+
+
+# -- A52 agent teams -------------------------------------------------------------------------
+
+class TeamCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=48)
+    members: list[str] = Field(min_length=1, max_length=6)
+
+
+class TeamExecuteRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=4000)
+    approval_id: str = Field(default="", max_length=200)

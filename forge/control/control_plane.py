@@ -3008,6 +3008,163 @@ class ControlPlane:
         return {"approval": decided.to_dict(), "token_id": token_id}
 
 
+
+    # -- agent teams (A52) -----------------------------------------------------------------------
+
+    def _team_registry(self, session: Session):
+        from forge.agents.teams import TeamRegistry
+
+        if not hasattr(self, "_team_registries"):
+            self._team_registries: dict[str, Any] = {}
+        registry = self._team_registries.get(session.id)
+        if registry is None:
+            registry = TeamRegistry(session.id)
+            self._team_registries[session.id] = registry
+        return registry
+
+    def team_create(self, session: Session, name: str,
+                    members: list[str]) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        registry = self._team_registry(session)
+        try:
+            team = registry.create(
+                name, members, agent_lookup=factory.get,
+                created_by=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "teams", "create", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{team.name} members={list(team.members)}")
+        return team.to_dict()
+
+    def team_list(self, session: Session) -> dict[str, Any]:
+        return {"teams": [team.to_dict() for team in
+                          self._team_registry(session).list()]}
+
+    def team_execute(self, session: Session, team_id: str,
+                     requirement: str, *,
+                     approval_id: str = "") -> dict[str, Any]:
+        """Run a team sequentially.
+
+        Each member executes through ``agent_run`` — so every member
+        inherits the full AGENT/execute gate (DENY fail-closed,
+        approval round trips) and runs as its own real recorded run.
+        """
+        from uuid import uuid4
+
+        if not isinstance(requirement, str) or not requirement.strip() \
+                or len(requirement) > 4000:
+            raise InvalidRequest("Requirement must be 1-4000 characters.")
+        registry = self._team_registry(session)
+        team = registry.get(team_id)
+        if team is None:
+            raise InvalidRequest(f"Unknown team: {team_id}")
+        run_id = uuid4().hex[:12]
+        record = Run(
+            id=f"team-run-{run_id}", project_id=session.project_id,
+            requirement=requirement, status=RunStatus.RUNNING,
+            stage="team-run", version=1, mode=session.profile,
+            actor=session.actor, created_at=time.time(),
+            updated_at=time.time(), started_at=time.time())
+        self.runs.create(record)
+        team.status = "running"
+        if not hasattr(self, "_team_run_results"):
+            self._team_run_results: dict[tuple, dict[str, Any]] = {}
+        member_names = list(team.members)
+
+        def worker():
+            results: list[dict[str, Any]] = []
+            context = ""
+            success = True
+            try:
+                for name in member_names:
+                    requirement_with_context = requirement
+                    if context:
+                        requirement_with_context = (
+                            f"{requirement} [prior step summary: "
+                            f"{context}]")[:4000]
+                    dispatched = self.agent_run(
+                        session, name, requirement_with_context,
+                        approval_id=approval_id)
+                    if not dispatched["allowed"]:
+                        results.append({"agent": name, "success": False,
+                                        "error": dispatched.get(
+                                            "reason", "denied by policy")})
+                        success = False
+                        break
+                    deadline = time.time() + max(
+                        60.0, self.config.approval_timeout + 30.0)
+                    final = None
+                    while time.time() < deadline:
+                        state = self.agent_run_result(
+                            session, name, dispatched["run_id"])
+                        if state["status"] == "finished":
+                            final = state["run"]
+                            break
+                        if state["status"] == "failed":
+                            final = {"agent": name, "success": False,
+                                     "error": state["error"],
+                                     "output": ""}
+                            break
+                        time.sleep(0.1)
+                    if final is None:
+                        final = {"agent": name, "success": False,
+                                 "error": "member run timed out",
+                                 "output": ""}
+                    results.append(final)
+                    if not final.get("success"):
+                        success = False
+                        break
+                    context = (final.get("output") or
+                               final.get("error") or "")[:600]
+                self.runs.mutate(
+                    record.id,
+                    status=(RunStatus.SUCCEEDED if success
+                            else RunStatus.FAILED),
+                    stage="completed", finished_at=time.time(),
+                    report_json=json.dumps({"results": results}))
+                self._team_run_results[(session.id, run_id)] = {
+                    "status": "finished", "success": success,
+                    "results": results}
+                team.status = "succeeded" if success else "failed"
+                self._audit(session.actor, "teams", "execute", True,
+                            task_id=record.id,
+                            reason=f"{team.name} "
+                                   f"members={len(results)} "
+                                   f"success={success}")
+            except Exception as exc:  # bounded, audited, never silent
+                self.runs.mutate(record.id, status=RunStatus.FAILED,
+                                 stage="failed",
+                                 finished_at=time.time(),
+                                 error=str(exc)[:500])
+                self._team_run_results[(session.id, run_id)] = {
+                    "status": "failed", "error": str(exc)[:500]}
+                team.status = "failed"
+                self._audit(session.actor, "teams", "execute", False,
+                            task_id=record.id,
+                            reason=f"{team.name} "
+                                   f"error={str(exc)[:300]}")
+
+        if self._executor is not None:
+            self._executor.submit(worker)
+        else:
+            worker()
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "run_id": run_id,
+                "status": "queued", "task_id": record.id}
+
+    def team_run_result(self, session: Session, team_id: str,
+                        run_id: str) -> dict[str, Any]:
+        registry = self._team_registry(session)
+        if registry.get(team_id) is None:
+            raise InvalidRequest(f"Unknown team: {team_id}")
+        results = getattr(self, "_team_run_results", {})
+        entry = results.get((session.id, run_id))
+        if entry is None:
+            return {"status": "pending", "run_id": run_id}
+        return {"run_id": run_id, **entry}
+
+
     # -- agent creation (A49) ----------------------------------------------------------------
 
     def _agent_factory(self, session: Session):

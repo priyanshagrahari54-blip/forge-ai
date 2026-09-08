@@ -790,3 +790,14 @@ framing controls by default (add at the edge for production).
   unbound specs refused honestly.
 - API run/runs/result + approvals; 7 new tests. Full suite:
   **1283 passed, 2 skipped** (A50 baseline: 1276/2).
+
+## A52 — Agent Teams
+
+- `forge/agents/teams.py`: validated ordered team definitions (real
+  bound members only, bounded). `team_execute` dispatches members
+  sequentially through the full A51 agent_run path — each member
+  keeps its own gate and recorded run; bounded output handoffs;
+  team runs are real recorded Runs with per-member results.
+- API `/api/v1/teams*`; audited under `teams`.
+- 5 new tests. Full suite: **1288 passed, 2 skipped** (A51 baseline:
+  1283/2).
