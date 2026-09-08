@@ -49,6 +49,23 @@ class VoiceRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class VoiceProcessRequest(BaseModel):
+    text: str = Field(default="", max_length=2000)
+    # base64 of a bounded WAV; 760k chars ≈ 570 KB decoded.
+    audio_b64: str = Field(default="", max_length=760_000)
+    approval_id: str = Field(default="", max_length=128)
+    task_id: str = Field(default="", max_length=128)
+    require_wake: bool = True
+
+
+class VoiceSynthesizeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class VoiceTranscribeRequest(BaseModel):
+    audio_b64: str = Field(min_length=1, max_length=760_000)
+
+
 class DesktopCheckRequest(BaseModel):
     action: str = Field(min_length=1, max_length=64)
     target: str = Field(default="", max_length=500)

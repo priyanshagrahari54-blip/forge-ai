@@ -685,3 +685,16 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
   *, *::before, *::after { animation: none !important; transition: none !important; }
   main#view { animation: none; }
 }
+
+
+/* A36 voice view */
+.audio-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.audio-row audio {
+  max-width: 100%;
+  flex: 1;
+}

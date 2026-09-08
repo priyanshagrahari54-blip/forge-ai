@@ -446,3 +446,51 @@ framing controls by default (add at the edge for production).
   (`test_desktop_a35_simulation`): simulation status, executable
   capabilities, fake provider label — coverage preserved, contract
   advanced. No other A01–A34 test needed modification.
+
+## A36 — Voice (the permission-gated spoken loop)
+
+- Added the audio layer around the A33 voice foundation: `forge/voice/`
+  package with `audio` (bounded 16 kHz mono PCM, strict WAV read/write,
+  RMS levels), `codec` (deterministic text⇄tone transport — a data codec
+  over PCM, never a claim of real speech recognition), `transcriber` /
+  `synthesizer` / `wake` (provider protocols + simulated providers +
+  honest `Unconfigured*` stand-ins), and `session` (the full loop:
+  wake → transcribe → A33 VoiceInterface → policy/approval → action →
+  spoken reply → audit). The A33 module moved verbatim to
+  `forge/voice/base.py`; `from forge.voice import VoiceCommand,
+  VoiceInterface` and all other public names are unchanged.
+- Honesty invariants: simulation labeled everywhere (capabilities,
+  engines, results, cockpit, reply); the simulated recognizer refuses
+  arbitrary audio (`unrecognized`) instead of guessing; wake gate before
+  any processing (`no_wake_word`, explicit bypass recorded); env knobs
+  (`FORGE_VOICE_STT_PROVIDER` / `FORGE_VOICE_TTS_PROVIDER`) accept only
+  `simulated` and refuse unknown names; real providers plug in behind
+  the same protocols.
+- Control plane + API `/api/v1/voice/*`: capabilities, synthesize
+  (text→WAV base64), transcribe (garbage→400, real audio→503
+  VOICE_UNAVAILABLE), process (text or audio, approval token, wake
+  flag, full stage trace + spoken reply), session-bound approvals with
+  approve/deny + single-use tokens. Voice commands execute with agent
+  identity `forge-voice` (approver ≠ agent); intents map onto real
+  task creation (run_tests/commit/update_website/summarize/review) or
+  an informational spoken status reply; unknown intents fail closed.
+- Cockpit Voice view: stack report, text command form, audio round trip
+  (synthesize → play → send through wake+recognition), result trace
+  with playable reply, voice approval cards carrying the minted token
+  into resubmission. CSP widened by exactly one directive
+  (`media-src 'self' blob:`); all other UI contracts preserved.
+- Fixed during verification: VoiceSession transcription UnboundLocalError
+  on the audio path; reply text now uses the informational reply payload
+  for `status`; voice approvals needed the distinct-agent identity.
+
+## Executable proof (A36)
+
+- 53 new tests across 8 suites: `tests/test_a36_{audio,codec,transcriber,
+  synthesizer,wake,session,control_plane,ui}.py`. The session and
+  control-plane suites run the complete loop end to end: typed and audio
+  inputs, approval round trips with single-use tokens, wake gating,
+  real-audio refusal, cross-session isolation, and audit coverage.
+- Full suite: **1075 passed, 2 skipped** (A35 baseline: 1022 passed,
+  2 skipped). `compileall` clean over `forge/`.
+- A33 voice foundation preserved verbatim (`forge/voice/base.py`); all
+  A33/A34/A35 tests pass unmodified.

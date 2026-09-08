@@ -10,6 +10,7 @@ const state = {
   epoch: 0,
   taskId: null,
   deskToken: null,
+  voiceToken: null,
   cursor: 0,
   histMax: 0,
   seenSeq: new Set(),
@@ -38,6 +39,7 @@ const ROUTES = {
   activity: { render: renderActivity, title: "Activity" },
   approvals: { render: renderApprovals, title: "Approvals" },
   desktop: { render: renderDesktop, title: "Desktop" },
+  voice: { render: renderVoice, title: "Voice" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -1725,6 +1727,185 @@ async function renderDesktop() {
   });
 }
 
+/* ---------- voice (A36) ---------- */
+
+function playWav(b64, label) {
+  const box = el("div", "audio-row");
+  const caption = el("span", "muted", label || "audio");
+  const audio = el("audio");
+  audio.controls = true;
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  audio.src = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  box.appendChild(caption);
+  box.appendChild(audio);
+  return box;
+}
+
+function voiceResultBox(result) {
+  const box = document.getElementById("voice-result");
+  box.innerHTML = "";
+  box.classList.remove("hidden");
+  const rows = [
+    ["ok", result.ok ? "yes" : "no", result.ok ? "ok" : "bad"],
+    ["input", result.input_mode || "–"],
+    ["simulation", result.simulation ? "yes (labeled)" : "no"],
+    ["transcription", (result.transcription || {}).text || "–", true],
+    ["intent", (result.intent || {}).name || "–"],
+    ["permission", (result.permission || {}).decision || "–"],
+  ];
+  if (result.permission && result.permission.approval_required) {
+    rows.push(["approval id", result.permission.approval_request_id, true]);
+  }
+  if (result.action && result.action.kind === "task") {
+    rows.push(["task", result.action.status + " · " + result.action.task_id, true]);
+  }
+  if (result.action && result.action.kind === "reply") {
+    rows.push(["reply", result.action.text, true]);
+  }
+  rows.push(["spoken reply", result.reply_text || "–", true]);
+  if (result.error) {
+    rows.push(["error", result.error.kind + ": " + result.error.message, "bad"]);
+  }
+  box.appendChild(kvTable(rows));
+  const ra = result.response_audio;
+  if (ra && ra.audio_b64) {
+    const header = el("p", "muted", "Spoken reply (" + ra.engine + "):");
+    box.appendChild(header);
+    box.appendChild(playWav(ra.audio_b64, "reply"));
+  }
+}
+
+async function renderVoice() {
+  const snap = snapEpoch();
+  // Voice stack capabilities (honest simulation labeling).
+  try {
+    const caps = await api("/api/v1/voice/capabilities");
+    if (stale(snap)) return;
+    const box = document.getElementById("voice-capabilities");
+    box.innerHTML = "";
+    box.appendChild(kvTable([
+      ["status", caps.status || "–", true],
+      ["speech-to-text", (caps.transcriber || {}).name || "–", true],
+      ["text-to-speech", (caps.synthesizer || {}).name || "–", true],
+      ["wake word", ((caps.wake || {}).word || "–") + " (" + ((caps.wake || {}).name || "–") + ")", true],
+    ]));
+    const note = el("p", "muted");
+    note.textContent = (caps.note || "").trim();
+    box.appendChild(note);
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("voice-capabilities"),
+      "Unable to load voice capabilities", err, renderVoice);
+  }
+  // Pending voice approvals for this session.
+  try {
+    const approvals = await api("/api/v1/voice/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("voice-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending voice approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          (approval.operation || "voice") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/voice/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.voiceToken = decision.token_id;
+            }
+            renderVoice();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderVoice);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/voice/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderVoice();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderVoice);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("voice-approvals"),
+      "Unable to load voice approvals", err, renderVoice);
+  }
+  document.getElementById("voice-refresh").addEventListener("click", renderVoice);
+  // Text command through the voice loop.
+  document.getElementById("voice-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = document.getElementById("voice-text");
+    const body = { text: input.value.trim() };
+    if (!body.text) return;
+    if (state.voiceToken) body.approval_id = state.voiceToken;
+    try {
+      const result = await api("/api/v1/voice/process",
+        { method: "POST", body: body });
+      if (result.ok && result.action) state.voiceToken = null;
+      voiceResultBox(result);
+      renderVoice();
+    } catch (err) {
+      const resultBox = document.getElementById("voice-result");
+      resultBox.classList.remove("hidden");
+      errorState(resultBox, "Voice command failed", err, renderVoice);
+    }
+  });
+  // Audio round trip: synthesize, then send the audio through the loop.
+  document.getElementById("voice-synth-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = document.getElementById("voice-synth-text");
+    const text = input.value.trim();
+    const audioBox = document.getElementById("voice-audio");
+    audioBox.innerHTML = "";
+    if (!text) return;
+    try {
+      const syn = await api("/api/v1/voice/synthesize",
+        { method: "POST", body: { text: text } });
+      const header = el("p", "muted", "Simulated utterance (" + syn.engine + "):");
+      audioBox.appendChild(header);
+      audioBox.appendChild(playWav(syn.audio_b64, "utterance"));
+      const send = el("button", "btn small primary", "Send audio through the loop");
+      send.addEventListener("click", async () => {
+        try {
+          const result = await api("/api/v1/voice/process",
+            { method: "POST", body: { audio_b64: syn.audio_b64 } });
+          voiceResultBox(result);
+          renderVoice();
+        } catch (failure) {
+          errorState(audioBox, "Audio loop failed", failure, renderVoice);
+        }
+      });
+      audioBox.appendChild(send);
+    } catch (err) {
+      errorState(audioBox, "Synthesis failed", err, renderVoice);
+    }
+  });
+}
+
 /* ---------- command palette ---------- */
 
 const PALETTE_COMMANDS = [
@@ -1737,6 +1918,7 @@ const PALETTE_COMMANDS = [
   ["Go to Activity", "view", () => { window.location.hash = "#/activity"; }],
   ["View approvals", "view", () => { window.location.hash = "#/approvals"; }],
   ["Go to Desktop", "view", () => { window.location.hash = "#/desktop"; }],
+  ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";

@@ -16,7 +16,10 @@ from forge.api.schemas import (
     DesktopCheckRequest,
     DesktopGrantRequest,
     InterpretRequest,
+    VoiceProcessRequest,
     VoiceRequest,
+    VoiceSynthesizeRequest,
+    VoiceTranscribeRequest,
 )
 from forge.control.control_plane import ControlPlane
 
@@ -45,6 +48,64 @@ async def voice_interpret(body: VoiceRequest,
                           current: Authed = Depends(authed),
                           plane: ControlPlane = Depends(get_plane)):
     return plane.voice_interpret(current.session, body.text)
+
+
+# -- voice loop (A36) ---------------------------------------------------------
+
+
+@router.get("/voice/capabilities")
+async def voice_capabilities(current: Authed = Depends(authed),
+                             plane: ControlPlane = Depends(get_plane)):
+    return plane.voice_capabilities(current.session)
+
+
+@router.post("/voice/synthesize",
+             dependencies=[rate_limit("voice")])
+async def voice_synthesize(body: VoiceSynthesizeRequest,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    return plane.voice_synthesize(current.session, body.text)
+
+
+@router.post("/voice/transcribe",
+             dependencies=[rate_limit("voice")])
+async def voice_transcribe(body: VoiceTranscribeRequest,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    return plane.voice_transcribe(current.session, body.audio_b64)
+
+
+@router.post("/voice/process",
+             dependencies=[rate_limit("voice")])
+async def voice_process(body: VoiceProcessRequest,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    return plane.voice_process(
+        current.session, text=body.text, audio_b64=body.audio_b64,
+        approval_id=body.approval_id, task_id=body.task_id,
+        require_wake=body.require_wake)
+
+
+@router.get("/voice/approvals")
+async def voice_approvals(current: Authed = Depends(authed),
+                          plane: ControlPlane = Depends(get_plane)):
+    return {"approvals": plane.list_voice_approvals(current.session)}
+
+
+@router.post("/voice/approvals/{approval_id}/approve",
+             dependencies=[rate_limit("voice")])
+async def voice_approve(approval_id: str,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    return plane.decide_voice_request(current.session, approval_id, True)
+
+
+@router.post("/voice/approvals/{approval_id}/deny",
+             dependencies=[rate_limit("voice")])
+async def voice_deny(approval_id: str,
+                     current: Authed = Depends(authed_mutation),
+                     plane: ControlPlane = Depends(get_plane)):
+    return plane.decide_voice_request(current.session, approval_id, False)
 
 
 # -- desktop (A35) ---------------------------------------------------------------

@@ -123,7 +123,35 @@ DesktopRequest → identity → task scope → A33 PolicyGate → risk/invariant
   cards that carry the minted token into execution.
 
 See `docs/A35-DESKTOP-AGENT.md` for the full architecture, security model,
-and test matrix. Full suite after A35: 1011 passed, 2 skipped.
+and test matrix. Full suite after A35: 1022 passed, 2 skipped.
+
+## Voice (A36)
+
+A36 adds the audio layer around the A33 voice foundation — the complete
+permission-gated spoken loop (`forge/voice/`):
+
+```
+audio (bounded WAV) → wake gate → transcription → VoiceCommand → intent
+→ A33 policy + approval → action (task / spoken status) → spoken reply → audit
+```
+
+- **Deterministic simulated transport**: a text⇄tone codec over PCM —
+  labeled simulation everywhere. The simulated recognizer refuses real
+  audio instead of guessing; real STT/TTS/wake providers plug in behind
+  the same protocols (`FORGE_VOICE_STT_PROVIDER` /
+  `FORGE_VOICE_TTS_PROVIDER` accept only `simulated` in A36).
+- **Voice can never bypass permissions**: commands execute with agent
+  identity `forge-voice` through the A33 policy/approval system;
+  approvals are session-bound with single-use tokens; unknown intents
+  and un-woken audio fail closed.
+- **API + cockpit**: `/api/v1/voice/capabilities|synthesize|transcribe|
+  process|approvals|approve|deny`; a Voice cockpit view with the stack
+  report, text commands, an audio round trip (synthesize → play → send
+  through wake + recognition), full result traces, and playable spoken
+  replies.
+
+See `docs/A36-VOICE.md` for the architecture and honesty invariants.
+Full suite after A36: 1075 passed, 2 skipped.
 
 ## Complete Supervisor transaction
 

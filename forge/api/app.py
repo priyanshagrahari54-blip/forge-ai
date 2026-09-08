@@ -48,8 +48,8 @@ class _RequestContextMiddleware(BaseHTTPMiddleware):
         # should add framing controls at the edge.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; img-src 'self' data:; base-uri 'self'; "
-            "form-action 'self'")
+            "connect-src 'self'; img-src 'self' data:; "
+            "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
         if not request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response

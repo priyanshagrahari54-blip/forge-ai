@@ -54,6 +54,9 @@
         <a href="#/desktop" data-route="desktop">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1" fill="none" stroke="currentColor"/><path d="M5.5 13.5h5M8 11.5v2" stroke="currentColor" stroke-linecap="round"/><path d="M4 6.5h4M4 8.5h6" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Desktop</span></a>
+        <a href="#/voice" data-route="voice">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.5" width="4" height="11" rx="2" fill="none" stroke="currentColor"/><path d="M1.5 7.5v1a6.5 6.5 0 0 0 13 0v-1M7 13.5h2" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Voice</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -395,6 +398,53 @@
   <div class="surface">
     <div class="section-header"><h3>Pending desktop approvals</h3></div>
     <div id="desk-approvals"></div>
+  </div>
+</template>
+
+<template id="tpl-voice">
+  <div class="page-head">
+    <div>
+      <h2>Voice</h2>
+      <p class="muted">The spoken loop: wake &rarr; transcribe &rarr; intent
+      &rarr; A33 permission &rarr; approval &rarr; action &rarr; spoken
+      reply. Voice can never bypass permissions.</p>
+    </div>
+    <button id="voice-refresh" class="btn small">Refresh</button>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Voice stack</h3></div>
+    <div id="voice-capabilities"></div>
+  </div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Speak a command (text input)</h3></div>
+      <form id="voice-form">
+        <label for="voice-text">Command</label>
+        <input id="voice-text" type="text" maxlength="2000"
+               placeholder="e.g. run the tests" />
+        <button class="btn primary" type="submit">Process voice command</button>
+      </form>
+    </div>
+    <div class="surface">
+      <div class="section-header"><h3>Audio round trip</h3></div>
+      <p class="muted">Synthesize the simulated utterance, then send the
+      audio back through the wake + recognition loop.</p>
+      <form id="voice-synth-form">
+        <label for="voice-synth-text">Text to synthesize</label>
+        <input id="voice-synth-text" type="text" maxlength="2000"
+               placeholder="e.g. check status" />
+        <button class="btn" type="submit">Synthesize</button>
+      </form>
+      <div id="voice-audio"></div>
+    </div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Result</h3></div>
+    <div id="voice-result" class="result-box hidden" role="status"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Pending voice approvals</h3></div>
+    <div id="voice-approvals"></div>
   </div>
 </template>
 

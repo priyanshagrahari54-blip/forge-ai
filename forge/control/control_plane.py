@@ -154,6 +154,13 @@ class ModelUnavailable(ControlError):
     status = 503
 
 
+class VoiceUnavailable(ControlError):
+    """The voice stack could not serve a request (structured, honest)."""
+
+    code = "VOICE_UNAVAILABLE"
+    status = 503
+
+
 # -- runs -----------------------------------------------------------------
 
 class RunStatus(str, Enum):
@@ -477,6 +484,11 @@ class ControlConfig:
     # deterministic fake exists in A35; real providers arrive as plugins.
     desktop_provider: Any = None
     desktop_bridge_ttl: float = 3600.0
+    # A36 voice: provider names for speech-to-text / text-to-speech.
+    # Only the deterministic simulated providers exist in A36; real
+    # providers register behind the same protocols as plugins.
+    voice_stt_provider: str = "simulated"
+    voice_tts_provider: str = "simulated"
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -512,6 +524,15 @@ class ControlConfig:
             raise ValueError(
                 f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
                 "A35 supports 'fake' only")
+        for key, env_name in (("voice_stt_provider", "FORGE_VOICE_STT_PROVIDER"),
+                              ("voice_tts_provider", "FORGE_VOICE_TTS_PROVIDER")):
+            name = os.environ.get(env_name, "").strip()
+            if name:
+                if name != "simulated":
+                    raise ValueError(
+                        f"Unknown {env_name} {name!r}; A36 supports "
+                        "'simulated' only")
+                setattr(config, key, name)
         for key, value in overrides.items():
             setattr(config, key, value)
         return config
@@ -568,6 +589,9 @@ class ControlPlane:
         self.desktop_bridge = DesktopBridge(
             desktop_agent, ttl=config.desktop_bridge_ttl)
         self.desktop = desktop_agent
+        # A36 voice: the simulated speech stack (STT/TTS/wake) behind the
+        # A33 voice permission layer. Real providers register as plugins.
+        self._voice_session: Any = None
         self._queues: dict[str, PersistentTaskQueue] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._active: dict[str, int] = {}
@@ -1490,6 +1514,273 @@ class ControlPlane:
                 "permission": permission.to_dict(),
                 "interpretation": interpretation.to_dict(),
                 "executed": False}
+
+    # -- voice loop (A36) ----------------------------------------------------------
+
+    #: Voice intents that map onto real task creation (A36 execution).
+    VOICE_INTENT_REQUIREMENTS = {
+        "run_tests": "Run the full test suite and fix any failures.",
+        "commit": "Review and commit the current changes with a clear "
+                  "message.",
+        "update_website": "Update the project website per the latest "
+                          "changes.",
+        "summarize": "Summarize {target}.",
+        "review": "Review {target} and report findings.",
+    }
+
+    def _voice_stack(self) -> Any:
+        """The simulated voice loop (A36 providers only, honestly labeled)."""
+        from forge.voice import (SimulatedSpeechSynthesizer,
+                                 SimulatedSpeechToText,
+                                 SimulatedWakeWordDetector, VoiceInterface,
+                                 VoiceSession)
+
+        if self._voice_session is None:
+            if self.config.voice_stt_provider != "simulated" or \
+                    self.config.voice_tts_provider != "simulated":
+                raise ValueError(
+                    "Only the simulated voice providers exist in A36")
+            self._voice_session = VoiceSession(
+                VoiceInterface(policy=self.policy,
+                               store=self.approval_store,
+                               audit=self.audit),
+                transcriber=SimulatedSpeechToText(),
+                synthesizer=SimulatedSpeechSynthesizer(),
+                wake=SimulatedWakeWordDetector())
+        return self._voice_session
+
+    def voice_capabilities(self, session: Session) -> dict[str, Any]:
+        """Honest voice capability report for the cockpit."""
+        del session  # provider matrix is not session-specific
+        stack = self._voice_stack()
+        return {
+            "status": "simulation",
+            "note": "A36 runs the voice loop through deterministic "
+                    "simulated speech (tone codec). Real speech "
+                    "recognition/synthesis plug in as providers; the "
+                    "simulated recognizer refuses real audio.",
+            **stack.capabilities(),
+        }
+
+    def voice_synthesize(self, session: Session,
+                         text: str) -> dict[str, Any]:
+        """Synthesize bounded text into WAV (base64) for playback."""
+        from forge.voice.synthesizer import SynthesisError
+
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+            raise InvalidRequest("Voice text must be 1-2000 characters.")
+        stack = self._voice_stack()
+        try:
+            chunk = stack.speak(text.strip())
+        except SynthesisError as exc:
+            raise VoiceUnavailable(f"{exc.kind}: {exc.message}") from exc
+        payload = self._voice_audio_payload(chunk,
+                                            engine=stack.synthesizer.name,
+                                            simulation=bool(getattr(
+                                                stack.synthesizer,
+                                                "simulation", False)))
+        self._audit(session.actor, "voice", "synthesize", True,
+                    reason=f"spoke {len(text)} chars")
+        return payload
+
+    def voice_transcribe(self, session: Session,
+                         audio_b64: str) -> dict[str, Any]:
+        """Transcribe bounded WAV audio (simulation codec only)."""
+        from forge.voice import AudioError, TranscriptionError
+
+        try:
+            chunk = self._voice_audio_chunk(audio_b64)
+        except AudioError as exc:
+            raise InvalidRequest(f"Invalid audio: {exc.message}") from exc
+        stack = self._voice_stack()
+        try:
+            transcription = stack.transcriber.transcribe(chunk)
+        except TranscriptionError as exc:
+            raise VoiceUnavailable(f"{exc.kind}: {exc.message}") from exc
+        self._audit(session.actor, "voice", "transcribe", True,
+                    reason=f"recognized {len(transcription.text)} chars")
+        return {"transcription": transcription.to_dict()}
+
+    def voice_process(self, session: Session, *,
+                      text: str = "", audio_b64: str = "",
+                      approval_id: str = "", task_id: str = "",
+                      require_wake: bool = True) -> dict[str, Any]:
+        """One voice loop: wake → transcribe → A33 permission → act → reply.
+
+        Voice execution is real in A36 — but it runs through the exact
+        same policy/approval path as every other surface; a voice command
+        can never bypass permissions.
+        """
+        from forge.voice import AudioError
+
+        if text and audio_b64:
+            raise InvalidRequest("Provide either text or audio, not both.")
+        speech: Any
+        input_mode: str
+        if text:
+            if not isinstance(text, str) or not text.strip() \
+                    or len(text) > 2000:
+                raise InvalidRequest("Voice text must be 1-2000 characters.")
+            speech = text.strip()
+            input_mode = "text"
+        elif audio_b64:
+            try:
+                speech = self._voice_audio_chunk(audio_b64)
+            except AudioError as exc:
+                raise InvalidRequest(f"Invalid audio: {exc.message}") from exc
+            input_mode = "audio"
+        else:
+            raise InvalidRequest("Provide text or audio for the voice loop.")
+        if len(approval_id) > 128 or len(task_id) > 128:
+            raise InvalidRequest("Invalid voice request fields.")
+        # Approval/audit binding follows the desktop pattern: session id
+        # when no task is active, so a human can decide it in the cockpit.
+        command_task = task_id or session.active_task or session.id
+        stack = self._voice_stack()
+        # Distinct agent identity so a human session actor can approve the
+        # voice request (the A33 store enforces approver != agent).
+        result = stack.process(
+            speech, agent="forge-voice", task_id=command_task,
+            task_factory=self._voice_task_factory(session),
+            approval_token_id=approval_id,
+            require_wake=require_wake)
+        payload = result.to_dict()
+        payload["input_mode"] = input_mode
+        if result.response_audio is not None:
+            payload["response_audio"].update(self._voice_audio_payload(
+                result.response_audio, engine=result.response_engine,
+                simulation=result.response_simulation))
+        self._audit(session.actor, "voice", "process", result.ok,
+                    task_id=command_task,
+                    reason=(payload.get("intent") or {}).get("name",
+                                                             "voice loop"))
+        self._emit(command_task, session.project_id,
+                   "voice.processed" if result.ok else "voice.rejected",
+                   {"input_mode": input_mode,
+                    "intent": (payload.get("intent") or {}).get("name", ""),
+                    "executed": bool(result.ok and result.action)})
+        return redact(payload)
+
+    def list_voice_approvals(self, session: Session) -> list[dict[str, Any]]:
+        """Voice approval requests visible to this cockpit session."""
+        from forge.security.approvals import ApprovalStatus
+
+        visible: list[dict[str, Any]] = []
+        for request in self.approval_store.all_requests():
+            if request.resource != Resource.VOICE:
+                continue
+            if request.task_id not in (session.id, session.active_task):
+                continue
+            if request.status != ApprovalStatus.PENDING:
+                continue
+            visible.append({
+                "id": request.id,
+                "operation": request.operation,
+                "scopes": list(request.scopes),
+                "task_id": request.task_id,
+                "reason": request.reason,
+                "agent": request.agent,
+                "created_at": request.created_at,
+            })
+        return visible
+
+    def decide_voice_request(self, session: Session, approval_id: str,
+                             approved: bool) -> dict[str, Any]:
+        """Decide a voice approval through the same A33 store (single-use
+        tokens on approve)."""
+        from forge.security.approvals import ApprovalStatus
+
+        validate_id(approval_id, kind="approval id")
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.resource != Resource.VOICE:
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        if request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "voice",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"voice approval {approval_id} "
+                    f"{'approved' if approved else 'denied'}")
+        self._emit(session.active_task or "voice", session.project_id,
+                   "voice.approved" if approved else "voice.denied",
+                   {"approval_id": approval_id,
+                    "operation": f"{request.resource.value}:"
+                    f"{request.operation}",
+                    "decided_by": session.actor})
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
+    # -- voice internals ----------------------------------------------------------
+
+    def _voice_task_factory(self, session: Session):
+        """Map a parsed voice intent onto a real (policy-gated) action."""
+        def factory(intent: "VoiceIntent") -> dict[str, Any]:
+            name = intent.name
+            slots = dict(intent.slots)
+            if name == "status":
+                try:
+                    counts = self.dashboard(session)["tasks"]
+                    text = (f"You have {counts['running']} running, "
+                            f"{counts['waiting_approval']} waiting for "
+                            f"approval, and {counts['failed']} failed "
+                            "tasks.")
+                except Exception:
+                    text = "Status is unavailable right now."
+                return {"kind": "reply", "text": text}
+            requirement = self.VOICE_INTENT_REQUIREMENTS.get(name)
+            if requirement is None:
+                return {"kind": "unhandled", "intent": name}
+            try:
+                requirement = requirement.format(
+                    **{key: value or "the project"
+                       for key, value in slots.items()})
+                run = self.submit_task(session, requirement)
+            except ControlError as exc:
+                return {"kind": "error", "code": exc.code,
+                        "message": str(exc)}
+            return {"kind": "task", **run.to_dict()}
+        return factory
+
+    @staticmethod
+    def _voice_audio_chunk(audio_b64: str) -> Any:
+        import base64
+
+        from forge.voice import AudioError, read_wav
+
+        if not isinstance(audio_b64, str) or not audio_b64:
+            raise AudioError("empty", "no audio provided")
+        try:
+            raw = base64.b64decode(audio_b64, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise AudioError("malformed", "audio is not valid base64") \
+                from exc
+        return read_wav(raw)
+
+    @staticmethod
+    def _voice_audio_payload(chunk: Any, *, engine: str,
+                             simulation: bool) -> dict[str, Any]:
+        import base64
+
+        wav = chunk.wav()
+        return {
+            "audio_b64": base64.b64encode(wav).decode("ascii"),
+            "mime": "audio/wav",
+            "engine": engine,
+            "simulation": simulation,
+            "duration_ms": chunk.duration_ms,
+        }
 
     # -- desktop agent (A35) -----------------------------------------------------
 
