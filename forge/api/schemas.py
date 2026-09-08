@@ -200,3 +200,9 @@ class AgentUpdateRequest(BaseModel):
     role: str = Field(default="", max_length=32)
     capabilities: list[str] | None = Field(default=None, max_length=12)
     description: str | None = Field(default=None, max_length=500)
+
+
+# -- A50 agent evolution -------------------------------------------------------------------
+
+class AgentOutcomeRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=128)

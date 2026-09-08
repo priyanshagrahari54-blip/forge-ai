@@ -47,6 +47,8 @@ class AgentDefinition:
     updated_at: float = field(default_factory=time.time)
     executor: str = ""
     real: bool = False
+    generation: int = 1
+    metrics: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +61,8 @@ class AgentDefinition:
             "updated_at": self.updated_at,
             "executor": self.executor,
             "real": self.real,
+            "generation": self.generation,
+            "metrics": dict(self.metrics),
             "note": ("Backed by the registered {0} executor."
                      .format(self.executor) if self.real else
                      "A validated definition; no executor is bound "
@@ -133,7 +137,9 @@ class AgentFactory:
             created_by=existing.created_by,
             created_at=existing.created_at,
             updated_at=time.time(),
-            executor=executor, real=bool(executor))
+            executor=executor, real=bool(executor),
+            generation=existing.generation,
+            metrics=dict(existing.metrics))
         self._definitions[name] = updated
         return updated
 

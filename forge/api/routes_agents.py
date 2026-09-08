@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from forge.api.deps import (Authed, authed, authed_mutation, get_plane,
                             rate_limit)
-from forge.api.schemas import (AgentCreateRequest, AgentUpdateRequest)
+from forge.api.schemas import (AgentCreateRequest, AgentOutcomeRequest,
+                               AgentUpdateRequest)
 from forge.control.control_plane import ControlPlane, InvalidRequest
 
 router = APIRouter()
@@ -69,5 +70,27 @@ async def delete_agent(name: str,
                        plane: ControlPlane = Depends(get_plane)):
     try:
         return plane.agent_delete(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A50 agent evolution ----------------------------------------------------------------
+
+@router.post("/agents/{name}/outcomes", dependencies=[rate_limit("agents")])
+async def record_outcome(name: str, body: AgentOutcomeRequest,
+                         current: Authed = Depends(authed_mutation),
+                         plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_record_outcome(current.session, name,
+                                          body.task_id)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/evolution")
+async def agent_evolution(name: str,
+                          current: Authed = Depends(authed_mutation),
+                          plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_evolution(current.session, name)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

@@ -767,3 +767,14 @@ framing controls by default (add at the edge for production).
   `/agents/defined`; cockpit Agent Builder view.
 - 7 new tests. Full suite: **1270 passed, 2 skipped** (A48 baseline:
   1263/2).
+
+## A50 — Agent Evolution
+
+- `forge/agents/evolution.py`: evidence ledger — one real terminal
+  run recording bumps generation once and computes honest metrics
+  (success rate, attempts, elapsed); unfinished runs refused; no
+  fake learning; audited under agents/evolve.
+- `AgentDefinition.generation`/`metrics`; API outcomes/evolution
+  endpoints.
+- 6 new tests. Full suite: **1276 passed, 2 skipped** (A49 baseline:
+  1270/2).

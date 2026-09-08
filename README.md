@@ -365,6 +365,17 @@ Builder view.
 See `docs/A49-AGENT-CREATION.md`. Full suite after A49: 1270 passed,
 2 skipped.
 
+## Agent Evolution (A50)
+
+Agents evolve from real evidence: terminal run outcomes are recorded
+into per-agent ledgers that drive generation counters and honest
+metrics (success rate, attempts, elapsed). Unfinished runs are
+refused; no fake learning. API at `/api/v1/agents/{name}/outcomes`
+and `/evolution`.
+
+See `docs/A50-AGENT-EVOLUTION.md`. Full suite after A50: 1276 passed,
+2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

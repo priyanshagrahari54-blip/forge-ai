@@ -2656,6 +2656,61 @@ class ControlPlane:
 
 
 
+
+    # -- agent evolution (A50) -----------------------------------------------------------------
+
+    def _agent_evolution(self, session: Session):
+        from forge.agents.evolution import AgentEvolution
+
+        if not hasattr(self, "_agent_evolutions"):
+            self._agent_evolutions: dict[str, Any] = {}
+        evolution = self._agent_evolutions.get(session.id)
+        if evolution is None:
+            evolution = AgentEvolution(session.id)
+            self._agent_evolutions[session.id] = evolution
+        return evolution
+
+    def agent_record_outcome(self, session: Session, agent_name: str,
+                             task_id: str) -> dict[str, Any]:
+        """Incorporate one real terminal run into the agent's ledger."""
+        factory = self._agent_factory(session)
+        definition = factory.get(agent_name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {agent_name}")
+        run = self.runs.get(validate_id(task_id, kind="task id"))
+        if run is None:
+            raise InvalidRequest(f"Unknown task: {task_id}")
+        if run.status not in TERMINAL_STATUSES:
+            raise InvalidRequest(
+                f"Task {task_id} has not finished yet "
+                f"(status={run.status.value}); only real terminal "
+                "outcomes evolve an agent.")
+        evolution = self._agent_evolution(session)
+        metrics = evolution.record(definition, run)
+        self._audit(session.actor, "agents", "evolve", True,
+                    task_id=run.id,
+                    reason=f"{agent_name} generation="
+                           f"{definition.generation} "
+                           f"outcome={metrics['last_outcome']}")
+        return {"agent": agent_name,
+                "generation": definition.generation,
+                "metrics": metrics,
+                "task_id": run.id}
+
+    def agent_evolution(self, session: Session, agent_name: str
+                        ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        definition = factory.get(agent_name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {agent_name}")
+        evolution = self._agent_evolution(session)
+        return {"agent": agent_name,
+                "generation": definition.generation,
+                "metrics": evolution.snapshot(agent_name),
+                "note": "Metrics come from real recorded run outcomes; "
+                        "no outcomes recorded means no metrics."}
+
+
     # -- agent creation (A49) ----------------------------------------------------------------
 
     def _agent_factory(self, session: Session):
