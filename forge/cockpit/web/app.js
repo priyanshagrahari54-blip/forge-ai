@@ -50,6 +50,7 @@ const ROUTES = {
   settings: { render: renderSettingsView, title: "Settings" },
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
+  compute: { render: renderComputeView, title: "Compute" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2152,6 +2153,7 @@ const PALETTE_COMMANDS = [
   ["Go to Settings", "view", () => { window.location.hash = "#/settings"; }],
   ["Go to Conversation", "view", () => { window.location.hash = "#/conversation"; }],
   ["Go to Research", "view", () => { window.location.hash = "#/research"; }],
+  ["Go to Compute", "view", () => { window.location.hash = "#/compute"; }],
   ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
@@ -2940,6 +2942,72 @@ function renderResearchView() {
       } catch (err) {
         errorState(answerBox, "Research failed", err,
           renderResearchView);
+      }
+    });
+  load();
+}
+
+/* ---------- compute (A48) ---------- */
+
+function renderComputeView() {
+  const quotaBox = document.getElementById("compute-quota");
+  const resultBox = document.getElementById("compute-result");
+  const historyBox = document.getElementById("compute-history");
+  const input = document.getElementById("compute-input");
+  const renderQuota = (payload) => {
+    quotaBox.innerHTML = "";
+    quotaBox.appendChild(el("p", null,
+      payload.backend + " — cells used " + payload.quota.cells_used +
+      "/" + payload.quota.max_cells + ", seconds used " +
+      payload.quota.seconds_used + "/" + payload.quota.max_seconds));
+  };
+  const renderHistory = (payload) => {
+    historyBox.innerHTML = "";
+    for (const cell of payload.cells || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        cell.cell_id + " — " + cell.status +
+        " (" + cell.elapsed_ms + " ms)"));
+      row.appendChild(el("pre", null, cell.output || ""));
+      historyBox.appendChild(row);
+    }
+  };
+  const renderResult = (payload) => {
+    resultBox.innerHTML = "";
+    if (!payload.allowed) {
+      resultBox.appendChild(el("p", "error-text",
+        "Not allowed" +
+        (payload.approval_required
+          ? " — approval required (" + payload.approval_request_id + ")"
+          : (payload.reason ? " — " + payload.reason : ""))));
+      return;
+    }
+    resultBox.appendChild(el("pre", null,
+      payload.cell.status + " (exit " + payload.cell.return_code +
+      ", " + payload.cell.elapsed_ms + " ms)\n" + payload.cell.output));
+    renderQuota({ backend: payload.cell.backend,
+                  quota: payload.cell.quota });
+  };
+  const load = () => {
+    api("/api/v1/compute/status").then(renderQuota).catch((err) => {
+      errorState(quotaBox, "Unable to load compute status", err,
+        renderComputeView);
+    });
+    api("/api/v1/compute/history").then(renderHistory).catch((err) => {
+      errorState(historyBox, "Unable to load compute history", err,
+        renderComputeView);
+    });
+  };
+  document.getElementById("compute-run").addEventListener(
+    "click", async () => {
+      const code = input.value || "";
+      try {
+        const payload = await api("/api/v1/compute/execute",
+          { method: "POST", body: { code: code } });
+        renderResult(payload);
+      } catch (err) {
+        errorState(resultBox, "Compute failed", err,
+          renderComputeView);
       }
     });
   load();

@@ -509,6 +509,10 @@ class ControlConfig:
     vision_provider: str = "simulated"
     # A40 computer use: hard cap on executed actions per task.
     computer_max_actions: int = 20
+    # A48 compute: local execution budgets per session.
+    compute_max_cells: int = 20
+    compute_max_seconds: float = 300.0
+    compute_cell_timeout: float = 30.0
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -2648,6 +2652,134 @@ class ControlPlane:
 
 
 
+
+
+
+    # -- compute (A48) --------------------------------------------------------------------
+
+    def _compute_engine(self, session: Session):
+        from forge.compute.engine import ComputeEngine
+
+        if not hasattr(self, "_compute_engines"):
+            self._compute_engines: dict[str, Any] = {}
+        engine = self._compute_engines.get(session.id)
+        if engine is None:
+            project = self.get_project(session.project_id)
+            engine = ComputeEngine(
+                project.root, max_cells=self.config.compute_max_cells,
+                max_seconds=self.config.compute_max_seconds,
+                cell_timeout=self.config.compute_cell_timeout)
+            self._compute_engines[session.id] = engine
+        return engine
+
+    def _file_compute_approval(self, session: Session) -> dict[str, Any]:
+        from forge.security.approvals import ApprovalRequest
+
+        request = self.approval_store.submit(ApprovalRequest(
+            agent="forge-compute", resource=Resource.TERMINAL,
+            operation="execute", scopes=("python",),
+            task_id=session.active_task or session.id,
+            reason="Compute cell execution via local python",
+            consequences="The code runs in a fresh local python "
+                         "subprocess with the project directory as "
+                         "its working directory."))
+        self._audit(session.actor, "compute", "execute", False,
+                    task_id=session.active_task or session.id,
+                    reason="approval required")
+        return {"allowed": False, "approval_required": True,
+                "approval_request_id": request.id, "cell": None}
+
+    def compute_execute(self, session: Session, code: str, *,
+                        timeout: float | None = None,
+                        approval_id: str = "") -> dict[str, Any]:
+        """Run a compute cell — TERMINAL/execute policy first."""
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import (PermissionEvaluation,
+                                           PermissionRequest)
+
+        if not isinstance(code, str) or not code.strip() \
+                or len(code) > 6000 or "\x00" in code:
+            raise InvalidRequest("Code must be 1-6000 characters, "
+                                 "no nulls.")
+        permission = PermissionRequest(
+            agent="forge-compute", resource=Resource.TERMINAL,
+            operation="execute", scope="python",
+            task_id=session.active_task or session.id,
+            reason="compute cell execution",
+            details=(("args", ("-c", code.strip()[:6000])),))
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                evaluation = PermissionEvaluation(
+                    decision=PolicyDecision.ALLOW, reason=_reason,
+                    risk=permission.risk, scope=permission.scope,
+                    request_id=permission.request_id)
+            else:
+                return self._file_compute_approval(session)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            return self._file_compute_approval(session)
+        if evaluation.decision != PolicyDecision.ALLOW:
+            self._audit(session.actor, "compute", "execute", False,
+                        task_id=session.active_task or session.id,
+                        reason=evaluation.reason)
+            return {"allowed": False, "approval_required": False,
+                    "approval_request_id": "", "cell": None,
+                    "reason": evaluation.reason or "denied by policy"}
+        engine = self._compute_engine(session)
+        try:
+            cell = engine.execute(code, timeout=timeout)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "compute", "execute", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"status={cell['status']}, "
+                           f"elapsed={cell['elapsed_ms']}ms")
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "cell": cell}
+
+    def compute_status(self, session: Session) -> dict[str, Any]:
+        return self._compute_engine(session).backend_info()
+
+    def compute_history(self, session: Session) -> dict[str, Any]:
+        return {"cells": self._compute_engine(session).history()}
+
+    def list_compute_approvals(self, session: Session
+                               ) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-compute" \
+                    and request.task_id in (session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_compute_approval(self, session: Session, approval_id: str,
+                                approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-compute" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "compute",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"compute approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
 
 
     # -- research / intelligence (A47) -----------------------------------------------------

@@ -176,3 +176,11 @@ class ModelGenerateRequest(BaseModel):
 
 class ResearchQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+
+
+# -- A48 compute -------------------------------------------------------------------------
+
+class ComputeExecuteRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=6000)
+    timeout: float | None = Field(default=None, gt=0, le=120)
+    approval_id: str = Field(default="", max_length=200)

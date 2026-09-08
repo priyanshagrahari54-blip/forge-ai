@@ -743,3 +743,16 @@ framing controls by default (add at the edge for production).
   API `/api/v1/research/*`; cockpit Research view with UI contracts.
 - 8 new tests. Full suite: **1253 passed, 2 skipped** (A46 baseline:
   1245/2).
+
+## A48 — Compute / Colab
+
+- `forge/compute/`: real local execution (fresh python subprocess,
+  backend honestly labeled local-python, no remote/GPU backend),
+  status from real exit codes/timeouts, bounded output, quotas
+  (cells/seconds/timeout) enforced before execution.
+- Plane `compute_execute` gated by TERMINAL/execute (ALLOW pins
+  exact args per A33 hardening; REQUIRE_APPROVAL round trip; DENY
+  fail-closed), audited; API `/api/v1/compute/*`; cockpit Compute
+  view; ControlConfig compute budgets.
+- 10 new tests. Full suite: **1263 passed, 2 skipped** (A47 baseline:
+  1253/2).

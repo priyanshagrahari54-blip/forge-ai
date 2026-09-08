@@ -81,6 +81,9 @@
         <a href="#/research" data-route="research">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor"/><path d="M10.4 10.4L14 14" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Research</span></a>
+        <a href="#/compute" data-route="compute">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.5" width="12" height="9" rx="1" fill="none" stroke="currentColor"/><path d="M5.5 13.5h5" fill="none" stroke="currentColor"/><path d="M5 7l2 2 4-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Compute</span></a>
         <a href="#/settings" data-route="settings">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Settings</span></a>
@@ -223,6 +226,32 @@
       <input type="text" id="conversation-input" placeholder="e.g. what does this project do?">
       <button id="conversation-send" class="primary">Send</button>
     </div>
+  </section>
+</template>
+
+<template id="tpl-compute">
+  <div class="view-head">
+    <h2>Compute</h2>
+    <p class="muted">Managed local code cells. Code really executes in
+    a fresh local Python subprocess (backend local-python — there is
+    no remote or GPU backend in this build), with cell and time
+    quotas enforced before execution.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Cell</h3></div>
+    <textarea id="compute-input" rows="4" placeholder="print(sum(range(100)))"></textarea>
+    <div class="button-row">
+      <button id="compute-run" class="primary">Run</button>
+    </div>
+    <div id="compute-result"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Quota</h3></div>
+    <div id="compute-quota"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>History</h3></div>
+    <div id="compute-history"></div>
   </section>
 </template>
 

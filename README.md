@@ -341,6 +341,18 @@ and audited. API at `/api/v1/research/*`; cockpit Research view.
 See `docs/A47-RESEARCH-INTELLIGENCE.md`. Full suite after A47: 1253
 passed, 2 skipped.
 
+## Compute (A48)
+
+Managed local code cells that really execute: fresh local Python
+subprocess, real exit codes and timeouts, bounded output, quotas
+enforced before execution, and the backend honestly labeled
+local-python (no remote/GPU backend). Runs are gated by
+TERMINAL/execute policy with approval round trips and auditing. API
+at `/api/v1/compute/*`; cockpit Compute view.
+
+See `docs/A48-COMPUTE.md`. Full suite after A48: 1263 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
