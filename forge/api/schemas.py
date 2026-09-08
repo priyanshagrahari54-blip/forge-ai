@@ -148,3 +148,11 @@ class ComputerScreenRequest(BaseModel):
 
 class ConversationRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+
+
+# -- A44 AI-to-AI collaboration ----------------------------------------------------
+
+class CollaborationConsultRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    provider: str = Field(default="simulated-external", max_length=128)
+    approval_id: str = Field(default="", max_length=200)

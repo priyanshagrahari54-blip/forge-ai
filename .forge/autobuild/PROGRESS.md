@@ -691,3 +691,17 @@ framing controls by default (add at the edge for production).
   Conversation view with all UI contracts.
 - 10 new tests. Full suite: **1226 passed, 2 skipped** (A42 baseline:
   1216/2).
+
+## A44 — AI-to-AI Collaboration
+
+- `forge/collaboration/`: connector protocol + honestly labeled
+  simulated external AI (no network), fail-closed resolution, bounded
+  per-session consult log. Every response carries
+  source=external_ai, untrusted=true, explicit labels; nothing is
+  executed from external text.
+- Consultations gated as MODEL/call with the connector as provider
+  detail (DENY fail-closed; REQUIRE_APPROVAL round trip; spent tokens
+  refile a fresh approval); session-isolated approvals; API
+  `/api/v1/ai-to-ai/*` + audit.
+- 6 new tests. Full suite: **1232 passed, 2 skipped** (A43 baseline:
+  1226/2).

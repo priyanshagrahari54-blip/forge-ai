@@ -2630,6 +2630,155 @@ class ControlPlane:
         return {"history": engine.snapshot()}
 
 
+
+    # -- AI-to-AI collaboration (A44) -------------------------------------------------
+
+    def _collaboration(self, session: Session):
+        from forge.collaboration.connectors import CollaborationSession
+
+        if not hasattr(self, "_collaboration_sessions"):
+            self._collaboration_sessions: dict[str, Any] = {}
+        consult = self._collaboration_sessions.get(session.id)
+        if consult is None:
+            consult = CollaborationSession(session.id)
+            self._collaboration_sessions[session.id] = consult
+        return consult
+
+    def collaboration_capabilities(self, session: Session) -> dict[str, Any]:
+        del session
+        from forge.collaboration.connectors import AVAILABLE_CONNECTORS
+
+        return {
+            "connectors": list(AVAILABLE_CONNECTORS),
+            "untrusted_by_design": True,
+            "simulated_only": True,
+            "note": "External AI responses are marked untrusted and "
+                    "can never authorize actions.",
+        }
+
+    def collaboration_consult(self, session: Session, question: str, *,
+                              provider: str = "simulated-external",
+                              approval_id: str = "") -> dict[str, Any]:
+        """Ask an external AI — permission-gated, response untrusted."""
+        from forge.collaboration.connectors import build_connector
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import (PermissionEvaluation,
+                                           PermissionRequest)
+
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > 4000:
+            raise InvalidRequest("Question must be 1-4000 characters.")
+        if len(provider) > 128:
+            raise InvalidRequest("Invalid provider name.")
+        try:
+            connector = build_connector(provider)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from None
+        permission = PermissionRequest(
+            agent="forge-collaboration", resource=Resource.MODEL,
+            operation="call", scope=provider,
+            task_id=session.active_task or session.id,
+            reason=f"external AI consultation via {provider}",
+            details=(("provider", provider),))
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        consult = self._collaboration(session)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                evaluation = PermissionEvaluation(
+                    decision=PolicyDecision.ALLOW, reason=_reason,
+                    risk=permission.risk, scope=permission.scope,
+                    request_id=permission.request_id)
+            else:
+                # Spent/out-of-scope token: fail closed into a fresh
+                # approval so the caller always gets a decidable id.
+                from forge.security.approvals import ApprovalRequest
+                refiled = self.approval_store.submit(ApprovalRequest(
+                    agent="forge-collaboration", resource=Resource.MODEL,
+                    operation="call", scopes=(provider,),
+                    task_id=session.active_task or session.id,
+                    reason=f"External AI consultation via {provider}",
+                    consequences="The question is sent to the external "
+                                 "connector; its answer is treated as "
+                                 "untrusted input."))
+                return {"allowed": False, "approval_required": True,
+                        "approval_request_id": refiled.id,
+                        "question": question[:400], "response": None,
+                        "untrusted": True,
+                        "reason": "approval token not valid or out of "
+                                  "scope; a fresh approval was filed"}
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            from forge.security.approvals import ApprovalRequest
+            filed = self.approval_store.submit(ApprovalRequest(
+                agent="forge-collaboration", resource=Resource.MODEL,
+                operation="call", scopes=(provider,),
+                task_id=session.active_task or session.id,
+                reason=f"External AI consultation via {provider}",
+                consequences="The question is sent to the external "
+                             "connector; its answer is treated as "
+                             "untrusted input."))
+            self._audit(session.actor, "ai-to-ai", "consult", False,
+                        task_id=session.active_task or session.id,
+                        reason="approval required")
+            return {"allowed": False, "approval_required": True,
+                    "approval_request_id": filed.id,
+                    "question": question[:400], "response": None,
+                    "untrusted": True}
+        if evaluation.decision != PolicyDecision.ALLOW:
+            self._audit(session.actor, "ai-to-ai", "consult", False,
+                        task_id=session.active_task or session.id,
+                        reason=evaluation.reason)
+            return consult.record(question, {}, False,
+                                  evaluation.reason or "denied by policy")
+        response = connector.ask(question)
+        self._audit(session.actor, "ai-to-ai", "consult", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"provider={provider}, "
+                           f"simulation={response['simulation']}")
+        return consult.record(question, response, True)
+
+    def collaboration_history(self, session: Session) -> dict[str, Any]:
+        return {"history": self._collaboration(session).history()}
+
+    def decide_collaboration_approval(self, session: Session,
+                                      approval_id: str,
+                                      approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-collaboration" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "ai-to-ai",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"ai-to-ai approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
+    def list_collaboration_approvals(self, session: Session
+                                     ) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-collaboration" \
+                    and request.task_id in (session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+
     # -- voice conversation (A42) ---------------------------------------------------
 
     def voice_conversation_start(self, session: Session) -> dict[str, Any]:
