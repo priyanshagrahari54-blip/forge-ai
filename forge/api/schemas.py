@@ -232,3 +232,16 @@ class TeamExecuteRequest(BaseModel):
 class AgentMemorySetRequest(BaseModel):
     key: str = Field(min_length=1, max_length=64)
     value: str = Field(min_length=1, max_length=2000)
+
+
+# -- A54 agent skills -------------------------------------------------------------------------
+
+class SkillCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    capability: str = Field(min_length=2, max_length=64)
+    description: str = Field(default="", max_length=500)
+    version: str = Field(default="1.0.0", max_length=32)
+
+
+class SkillAttachRequest(BaseModel):
+    skill: str = Field(min_length=3, max_length=48)

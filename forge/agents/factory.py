@@ -49,6 +49,8 @@ class AgentDefinition:
     real: bool = False
     generation: int = 1
     metrics: dict = field(default_factory=dict)
+    skills: tuple[str, ...] = ()
+    base_capabilities: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +65,8 @@ class AgentDefinition:
             "real": self.real,
             "generation": self.generation,
             "metrics": dict(self.metrics),
+            "skills": list(self.skills),
+            "base_capabilities": list(self.base_capabilities),
             "note": ("Backed by the registered {0} executor."
                      .format(self.executor) if self.real else
                      "A validated definition; no executor is bound "
@@ -104,7 +108,8 @@ class AgentFactory:
         definition = AgentDefinition(
             name=name, role=role, capabilities=caps,
             description=description, created_by=created_by or "",
-            executor=executor, real=bool(executor))
+            executor=executor, real=bool(executor),
+            base_capabilities=caps)
         self._definitions[name] = definition
         return definition
 
@@ -129,6 +134,8 @@ class AgentFactory:
         if executor and role not in ROLE_EXECUTORS \
                 or executor and ROLE_EXECUTORS.get(role) != executor:
             executor = ""  # role change invalidates the binding
+        base_caps = caps if capabilities is not None \
+            else existing.base_capabilities or existing.capabilities
         updated = AgentDefinition(
             name=name, role=role, capabilities=caps,
             description=(description if description is not None
@@ -139,7 +146,10 @@ class AgentFactory:
             updated_at=time.time(),
             executor=executor, real=bool(executor),
             generation=existing.generation,
-            metrics=dict(existing.metrics))
+            metrics=dict(existing.metrics),
+            skills=tuple(existing.skills)
+            if capabilities is None else (),
+            base_capabilities=base_caps)
         self._definitions[name] = updated
         return updated
 

@@ -810,3 +810,13 @@ framing controls by default (add at the edge for production).
   audited; survives plane restarts.
 - API `/api/v1/agents/{name}/memory*`; 5 new tests. Full suite:
   **1293 passed, 2 skipped** (A52 baseline: 1288/2).
+
+## A54 — Agent Skills
+
+- `forge/agents/skills.py`: validated declarative skills (canonical
+  capability + description, bounds). Attach/detach recompute agent
+  capabilities from base_capabilities + remaining skills; skills
+  never change executors, real bindings, or policy.
+- Plane + API `/api/v1/skills*` and agent attach/detach; audited.
+- 5 new tests. Full suite: **1298 passed, 2 skipped** (A53 baseline:
+  1293/2).

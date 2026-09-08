@@ -3245,6 +3245,94 @@ class ControlPlane:
         return {"allowed": True, "deleted": deleted}
 
 
+
+    # -- agent skills (A54) ------------------------------------------------------------------------
+
+    def _skill_registry(self, session: Session):
+        from forge.agents.skills import SkillRegistry
+
+        if not hasattr(self, "_skill_registries"):
+            self._skill_registries: dict[str, Any] = {}
+        registry = self._skill_registries.get(session.id)
+        if registry is None:
+            registry = SkillRegistry(session.id)
+            self._skill_registries[session.id] = registry
+        return registry
+
+    def skill_create(self, session: Session, name: str,
+                     capability: str, *, description: str = "",
+                     version: str = "1.0.0") -> dict[str, Any]:
+        registry = self._skill_registry(session)
+        try:
+            skill = registry.create(
+                name, capability, description=description,
+                version=version, created_by=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "skills", "create", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{skill.name} capability={skill.capability}")
+        return skill.to_dict()
+
+    def skill_list(self, session: Session) -> dict[str, Any]:
+        return {"skills": [skill.to_dict() for skill in
+                           self._skill_registry(session).list()]}
+
+    def agent_attach_skill(self, session: Session, name: str,
+                           skill_name: str) -> dict[str, Any]:
+        from forge.agents.skills import MAX_ATTACHED
+
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        skill = self._skill_registry(session).get(skill_name)
+        if skill is None:
+            raise InvalidRequest(f"Unknown skill: {skill_name}")
+        if len(definition.skills) >= MAX_ATTACHED:
+            raise InvalidRequest(f"skill limit reached ({MAX_ATTACHED})")
+        if skill_name in definition.skills:
+            raise InvalidRequest(
+                f"Skill {skill_name!r} already attached to {name}")
+        base = definition.base_capabilities or definition.capabilities
+        caps = tuple(dict.fromkeys(base + (skill.capability,)))
+        updated = factory.update(
+            name, capabilities=caps,
+            description=definition.description)
+        updated.skills = tuple(sorted(definition.skills + (skill.name,)))
+        updated.base_capabilities = base
+        self._audit(session.actor, "skills", "attach", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} <- {skill.name}")
+        return updated.to_dict()
+
+    def agent_detach_skill(self, session: Session, name: str,
+                           skill_name: str) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        if skill_name not in definition.skills:
+            raise InvalidRequest(
+                f"Skill {skill_name!r} is not attached to {name}")
+        remaining = tuple(skill for skill in definition.skills
+                          if skill != skill_name)
+        registry = self._skill_registry(session)
+        base = definition.base_capabilities or definition.capabilities
+        skill_caps = tuple(dict.fromkeys(
+            registry.get(skill).capability for skill in remaining
+            if registry.get(skill) is not None))
+        caps = tuple(dict.fromkeys(base + skill_caps))
+        updated = factory.update(name, capabilities=caps,
+                                 description=definition.description)
+        updated.skills = remaining
+        updated.base_capabilities = base
+        self._audit(session.actor, "skills", "detach", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} -/ {skill_name}")
+        return updated.to_dict()
+
+
     # -- agent creation (A49) ----------------------------------------------------------------
 
     def _agent_factory(self, session: Session):
