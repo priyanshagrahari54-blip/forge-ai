@@ -56,6 +56,8 @@ class VoiceProcessRequest(BaseModel):
     approval_id: str = Field(default="", max_length=128)
     task_id: str = Field(default="", max_length=128)
     require_wake: bool = True
+    # A42 conversation: require an explicit confirmation before acting.
+    confirm: bool = True
 
 
 class VoiceSynthesizeRequest(BaseModel):

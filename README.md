@@ -269,6 +269,18 @@ layout under 760px, and the Ctrl+K command palette.
 See `docs/A41-COCKPIT.md`. Full suite after A41: 1201 passed, 2
 skipped.
 
+## Natural Voice Conversation (A42)
+
+Multi-turn voice on top of the A36 gate: deterministic context
+resolution across turns, barge-in that blocks actions and recovers,
+clarifying questions instead of guesses, confirm-before-execute (an
+extra conversation-level gate — the A33 voice gate still applies),
+and spoken results. Bounded (24 turns, 4 conversations per session),
+session-isolated, and API-accessible at `/api/v1/voice/conversations*`.
+
+See `docs/A42-VOICE-CONVERSATION.md`. Full suite after A42: 1216
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

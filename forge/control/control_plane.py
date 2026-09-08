@@ -2528,6 +2528,91 @@ class ControlPlane:
         }
 
 
+
+    # -- voice conversation (A42) ---------------------------------------------------
+
+    def voice_conversation_start(self, session: Session) -> dict[str, Any]:
+        """Open a bounded, interruptible voice conversation."""
+        from forge.voice.conversation import new_conversation
+
+        if not hasattr(self, "_voice_conversations"):
+            self._voice_conversations: dict[str, Any] = {}
+            self._voice_conversation_sessions: dict[str, list[str]] = {}
+        owned = self._voice_conversation_sessions.setdefault(
+            session.id, [])
+        if len(owned) >= 4:
+            raise Conflict("A session may hold at most 4 conversations")
+        conversation = new_conversation(self._voice_stack().voice)
+        self._voice_conversations[conversation.id] = conversation
+        owned.append(conversation.id)
+        self._audit(session.actor, "voice", "conversation_start", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"conversation {conversation.id}")
+        return {"conversation_id": conversation.id,
+                "simulation": self._voice_stack().simulation}
+
+    def _voice_conversation(self, session: Session,
+                            conversation_id: str):
+        conversations = getattr(self, "_voice_conversations", {})
+        conversation = conversations.get(conversation_id)
+        owned = getattr(self, "_voice_conversation_sessions", {}).get(
+            session.id, [])
+        if conversation is None or conversation_id not in owned:
+            raise TaskNotFound(
+                f"Unknown conversation: {conversation_id!r}")
+        return conversation
+
+    def voice_conversation_say(self, session: Session, conversation_id: str,
+                               *, text: str = "", audio_b64: str = "",
+                               approval_id: str = "",
+                               confirm: bool = True) -> dict[str, Any]:
+        """One conversational turn: context → intent → confirm → gate →
+        act, with spoken results."""
+        from forge.voice import AudioError
+
+        if text and audio_b64:
+            raise InvalidRequest("Provide either text or audio, not both.")
+        if text:
+            if not isinstance(text, str) or not text.strip() \
+                    or len(text) > 2000:
+                raise InvalidRequest("Voice text must be 1-2000 characters.")
+            speech = text.strip()
+        elif audio_b64:
+            try:
+                speech = self._voice_audio_chunk(audio_b64)
+            except AudioError as exc:
+                raise InvalidRequest(
+                    f"Invalid audio: {exc.message}") from exc
+        else:
+            raise InvalidRequest("Provide text or audio for the turn.")
+        conversation = self._voice_conversation(session, conversation_id)
+        payload = conversation.say(
+            speech, task_factory=self._voice_task_factory(session),
+            approval_token_id=approval_id, confirm=confirm)
+        self._audit(session.actor, "voice", "conversation_say", True,
+                    task_id=session.active_task or session.id,
+                    reason=(payload.get("intent")
+                            or payload.get("status") or "turn"))
+        return payload
+
+    def voice_conversation_interrupt(self, session: Session,
+                                     conversation_id: str
+                                     ) -> dict[str, Any]:
+        """Barge in: stop the active turn before any action runs."""
+        conversation = self._voice_conversation(session, conversation_id)
+        stopped = conversation.interrupt()
+        self._audit(session.actor, "voice", "conversation_interrupt",
+                    True, task_id=session.active_task or session.id,
+                    reason=f"conversation {conversation_id}")
+        return {"conversation_id": conversation_id,
+                "interrupted": stopped}
+
+    def voice_conversation_state(self, session: Session,
+                                 conversation_id: str) -> dict[str, Any]:
+        conversation = self._voice_conversation(session, conversation_id)
+        return conversation.state()
+
+
     # -- vision (A39) ------------------------------------------------------------
 
     def _vision_permission(self, session: Session, *,

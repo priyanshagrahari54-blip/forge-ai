@@ -661,3 +661,19 @@ framing controls by default (add at the edge for production).
 - 6 contract tests: `tests/test_a41_cockpit.py` — endpoints,
   catalog/gate honesty, simulation labels, view/template/palette
   contracts, theme/media CSS, renderer hygiene and endpoint scoping.
+
+## A42 — Natural Voice Conversation
+
+- `forge/voice/conversation.py`: bounded multi-turn conversations over
+  the A36 voice gate — deterministic pronoun/context resolution,
+  barge-in that blocks actions and recovers on the next utterance,
+  clarifying questions for unrecognized speech (never guessed),
+  confirm-before-execute with affirmative/negative/ambiguous handling,
+  spoken results, 24-turn and 4-conversation caps.
+- Task creation from conversation still passes the A36 VOICE/command
+  gate; interruption is enforced before execution.
+- Control plane (`voice_conversation_start/say/interrupt/state`,
+  session-scoped + audited) + API (`/api/v1/voice/conversations*`)
+  with 404 isolation, 400 validation, 409 cap.
+- 15 new tests (12 conversation/plane + 3 API). Full suite:
+  **1216 passed, 2 skipped** (A41 baseline: 1201/2).
