@@ -156,3 +156,9 @@ class CollaborationConsultRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     provider: str = Field(default="simulated-external", max_length=128)
     approval_id: str = Field(default="", max_length=200)
+
+
+# -- A45 AI council -------------------------------------------------------------------
+
+class CouncilQuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)

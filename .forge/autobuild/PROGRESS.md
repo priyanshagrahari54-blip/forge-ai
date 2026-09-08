@@ -705,3 +705,16 @@ framing controls by default (add at the edge for production).
   `/api/v1/ai-to-ai/*` + audit.
 - 6 new tests. Full suite: **1232 passed, 2 skipped** (A43 baseline:
   1226/2).
+
+## A45 — AI Council
+
+- `forge/council/`: deterministic simulated council members with
+  distinct fixed stances (labeled simulation=True), lead-reviewed
+  deliberation with confidence computed from real tallies,
+  disagreements always flagged, minorities preserved verbatim,
+  bounded inputs, empty-council refusal.
+- Advisory only: verdicts execute/write nothing and cannot authorize
+  actions. Plane `council_convene/capabilities/history` with audit;
+  API `/api/v1/council/*`.
+- 6 new tests. Full suite: **1238 passed, 2 skipped** (A44 baseline:
+  1232/2).

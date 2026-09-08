@@ -2631,6 +2631,57 @@ class ControlPlane:
 
 
 
+
+    # -- AI council (A45) ---------------------------------------------------------------
+
+    def _council_engine(self, session: Session):
+        del session
+        from forge.council.engine import AICouncilEngine
+
+        if not hasattr(self, "_council_engines"):
+            self._council_engines: dict[str, Any] = {}
+            self._council_logs: dict[str, list[dict[str, Any]]] = {}
+        if "default" not in self._council_engines:
+            self._council_engines["default"] = AICouncilEngine()
+        return self._council_engines["default"]
+
+    def council_capabilities(self, session: Session) -> dict[str, Any]:
+        del session
+        engine = self._council_engine(None)  # type: ignore[arg-type]
+        return {
+            "members": [
+                {"member": member.name, "model": member.model,
+                 "stance": member.stance, "stance_label":
+                 member.stance_label}
+                for member in engine.members],
+            "simulation": True,
+            "advisory_only": True,
+            "note": "Council verdicts are advisory input; they can "
+                    "never authorize actions.",
+        }
+
+    def council_convene(self, session: Session,
+                        question: str) -> dict[str, Any]:
+        """Run the council over a question; honest, advisory verdict."""
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > 4000:
+            raise InvalidRequest("Question must be 1-4000 characters.")
+        engine = self._council_engine(session)
+        result = engine.deliberate(question)
+        self._council_logs.setdefault(session.id, []).append(result)
+        self._council_logs[session.id] = self._council_logs[session.id][-12:]
+        self._audit(session.actor, "council", "convene", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"members={result['members']}, "
+                           f"stance={result['stance']}, "
+                           f"confidence={result['confidence']}")
+        return result
+
+    def council_history(self, session: Session) -> dict[str, Any]:
+        return {"deliberations":
+                list(self._council_logs.get(session.id, []))}
+
+
     # -- AI-to-AI collaboration (A44) -------------------------------------------------
 
     def _collaboration(self, session: Session):

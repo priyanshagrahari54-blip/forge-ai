@@ -27,6 +27,7 @@ from forge.api import (
     routes_voice_conversation,
     routes_conversation,
     routes_collaboration,
+    routes_council,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
@@ -153,6 +154,7 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_voice_conversation.router, prefix="/api/v1")
     app.include_router(routes_conversation.router, prefix="/api/v1")
     app.include_router(routes_collaboration.router, prefix="/api/v1")
+    app.include_router(routes_council.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
 
     web_dir = (Path(config.web_dir) if config.web_dir

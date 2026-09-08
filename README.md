@@ -306,6 +306,17 @@ authorize actions. API at `/api/v1/ai-to-ai/*`.
 See `docs/A44-AI-TO-AI.md`. Full suite after A44: 1232 passed, 2
 skipped.
 
+## AI Council (A45)
+
+Independent simulated model members deliberate with distinct fixed
+stances; the lead review computes honest consensus — disagreements
+are always flagged, minorities preserved, confidence equals the real
+agreeing fraction. Council verdicts are advisory only and can never
+authorize actions. API at `/api/v1/council/*`.
+
+See `docs/A45-AI-COUNCIL.md`. Full suite after A45: 1238 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
