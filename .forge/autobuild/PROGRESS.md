@@ -828,3 +828,77 @@ framing controls by default (add at the edge for production).
   teams require active members; audited; API status endpoint.
 - 5 new tests. Full suite: **1303 passed, 2 skipped** (A54 baseline:
   1298/2).
+
+## A56 — Agent Packaging
+
+- `forge/agents/packaging.py`: JSON export/import of definitions
+  (format v1) — no secrets/executors exported; imports revalidate
+  fully, always arrive unbound, drop unknown skills honestly, and
+  recompute capabilities.
+- API export/import endpoints; audited. 5 new tests. Full suite:
+  **1308 passed, 2 skipped** (A55 baseline: 1303/2).
+
+## A57 — Agent Governance
+
+- `forge/agents/governance.py`: per-agent quotas (hourly runs,
+  concurrency) enforced in `agent_run` before any work starts;
+  teams share member quotas; refusals audited; API limits
+  endpoints.
+- 5 new tests. Full suite: **1313 passed, 2 skipped** (A56 baseline:
+  1308/2).
+
+## A58 — Agent Self-Development
+
+- Failure feed: worker-level failed agent runs are recorded in the
+  bounded run log (A51 cap unchanged), giving self-development real
+  evidence.
+- `forge/agents/selfdev.py`: analyze → failure-note | none (honest
+  reasons); apply validates through the factory, appends bounded
+  [learned] notes, bumps generation, merges metrics; caps 8/session
+  and 3/agent stop learning loops. API + audit under `selfdev`.
+- 5 new tests. Full suite: **1318 passed, 2 skipped** (A57 baseline:
+  1313/2).
+
+## A59 — Failure Learning
+
+- `forge/learning/failures.py`: persistent bounded failure ledger
+  (fingerprints, counts, 500-key cap). Task failures and agent-run
+  failures recorded automatically at the existing funnels; guarded
+  so learning never breaks the pipeline. API + audit.
+- 5 new tests. Full suite: **1323 passed, 2 skipped** (A58 baseline:
+  1318/2).
+
+## A60 — Model Benchmarking
+
+- `forge/benchmark/harness.py`: 3-check suite (JSON/arithmetic/
+  marker) with code-judged results only; persistent BenchmarkStore;
+  API + audit. Failures reported honestly — no self-graded models.
+- 5 new tests. Full suite: **1328 passed, 2 skipped** (A59 baseline:
+  1323/2).
+
+## A61 — Security Hardening
+
+- `forge/security/hardening.py`: read-only audits — policy rule
+  inventory + structural findings, session hygiene (prune/count),
+  bounded secret-pattern scan of project repos (locations only,
+  never values). API + audit. Changes nothing by itself.
+- 5 new tests. Full suite: **1333 passed, 2 skipped** (A60 baseline:
+  1328/2).
+
+## A62 — Observability
+
+- `forge/observability/metrics.py`: counters + bounded duration
+  reservoirs (mean/p50/p95/max). Funnel counters for task and agent
+  runs (guarded); snapshot gauges (sessions, agents, teams, active
+  runs, failure totals). API endpoint. Aggregates only.
+- 5 new tests. Full suite: **1338 passed, 2 skipped** (A61 baseline:
+  1333/2).
+
+## A63 — Performance
+
+- `forge/performance/profiler.py`: per-run queue/execution/total
+  timings from the run record's own timestamps; bounded aggregates
+  (mean/median/p95/max, per-mode counts, slowest ≤5). API summary +
+  per-run endpoints; cross-project ids map to NOT_FOUND.
+- 5 new tests. Full suite: **1343 passed, 2 skipped** (A62 baseline:
+  1338/2).

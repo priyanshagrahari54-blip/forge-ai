@@ -795,6 +795,10 @@ class ControlPlane:
         self._emit(run.id, run.project_id, "task.queued", {})
         self._audit(session.actor, "task", "submit", True,
                     task_id=run.id, reason=f"project {project.id}")
+        try:
+            self._metrics().incr("tasks.submitted")
+        except Exception:
+            pass
         self._dispatch_event.set()
         return run
 
@@ -2865,6 +2869,13 @@ class ControlPlane:
             raise InvalidRequest(
                 f"Agent {name} is {definition.status}; only active "
                 "agents can run")
+        governor = self._agent_governor()
+        allowed, quota_reason = governor.check(name)
+        if not allowed:
+            self._audit(session.actor, "agents", "run", False,
+                        task_id=session.active_task or session.id,
+                        reason=quota_reason)
+            raise InvalidRequest(quota_reason)
         permission = PermissionRequest(
             agent="forge-agent-run", resource=Resource.AGENT,
             operation="execute", scope=name,
@@ -2940,19 +2951,50 @@ class ControlPlane:
                                    f"success={result.success} "
                                    f"elapsed={result.elapsed_ms}ms")
             except Exception as exc:  # bounded, audited, never silent
+                try:
+                    self._metrics().incr("agent_runs.failed")
+                except Exception:
+                    pass
                 self.runs.mutate(record.id, status=RunStatus.FAILED,
                                  stage="failed", finished_at=time.time(),
                                  error=str(exc)[:500])
                 self._agent_run_results[(session.id, run_id)] = {
                     "status": "failed", "error": str(exc)[:500]}
+                self._agent_run_logs.setdefault(session.id, []).append({
+                    "run_id": run_id, "agent": name,
+                    "role": definition.role, "success": False,
+                    "output": "", "error": str(exc)[:500],
+                    "elapsed_ms": 0.0, "files": [], "at": time.time()})
+                self._agent_run_logs[session.id] = \
+                    self._agent_run_logs[session.id][-20:]
+                try:
+                    self._metrics().incr("agent_runs.succeeded")
+                    self._metrics().observe(
+                        "agent_run.duration_ms",
+                        (result.elapsed_ms or 0.0) / 1000.0)
+                except Exception:
+                    pass
+                try:
+                    self._failure_ledger().record(
+                        "agent", str(exc), task_id=record.id,
+                        actor=session.actor)
+                except Exception:
+                    pass
                 self._audit(session.actor, "agents", "run", False,
                             task_id=record.id,
                             reason=f"{name} error={str(exc)[:300]}")
 
+        def tracked_worker():
+            try:
+                worker()
+            finally:
+                self._agent_governor().end(name)
+
+        governor.begin(name)
         if self._executor is not None:
-            self._executor.submit(worker)
+            self._executor.submit(tracked_worker)
         else:
-            worker()
+            tracked_worker()
         return {"allowed": True, "approval_required": False,
                 "approval_request_id": "", "run_id": run_id,
                 "status": "queued", "task_id": record.id}
@@ -3338,6 +3380,294 @@ class ControlPlane:
 
 
 
+
+
+
+
+
+
+    # -- performance (A63) ---------------------------------------------------------------------------
+
+    def performance_summary(self, session: Session, limit: int = 200
+                            ) -> dict[str, Any]:
+        from forge.performance.profiler import (MAX_SUMMARY_RUNS,
+                                                performance_summary)
+
+        if limit < 1 or limit > MAX_SUMMARY_RUNS:
+            raise InvalidRequest(f"limit must be 1-{MAX_SUMMARY_RUNS}")
+        rows, _total = self.runs.list_for_project(
+            session.project_id, limit=limit)
+        return performance_summary(rows)
+
+    def performance_run(self, session: Session, run_id: str
+                        ) -> dict[str, Any]:
+        from forge.performance.profiler import run_profile
+
+        run = self.runs.get(run_id)
+        # Cross-project ids map to NOT_FOUND: existence must not leak.
+        if run is None or run.project_id != session.project_id:
+            raise TaskNotFound(f"Unknown task: {run_id!r}")
+        return run_profile(run)
+
+
+    # -- observability (A62) -------------------------------------------------------------------------
+
+    def _metrics(self):
+        from forge.observability.metrics import MetricsRegistry
+
+        if not hasattr(self, "_metrics_registry"):
+            self._metrics_registry = MetricsRegistry()
+        return self._metrics_registry
+
+    def observability_snapshot(self, session: Session) -> dict[str, Any]:
+        """Counters, latency summaries, and gauges from real events."""
+        registry = self._metrics()
+        data = registry.snapshot()
+        try:
+            factory = self._agent_factory(session)
+            agents_defined = len(factory.list())
+        except Exception:
+            agents_defined = 0
+        try:
+            teams_defined = len(self._team_registry(session).list())
+        except Exception:
+            teams_defined = 0
+        try:
+            ledger_stats = self._failure_ledger().stats()
+        except Exception:
+            ledger_stats = {}
+        active_runs = 0
+        try:
+            for project in self.projects.values():
+                rows, _total = self.runs.list_for_project(project.id)
+                active_runs += sum(
+                    1 for row in rows if row.status not in
+                    ("SUCCEEDED", "FAILED", "CANCELLED", "ROLLED_BACK"))
+        except Exception:
+            pass
+        data["gauges"] = {
+            "active_sessions": self.sessions.count_active(),
+            "agents_defined": agents_defined,
+            "teams_defined": teams_defined,
+            "active_runs": active_runs,
+            "distinct_failures": ledger_stats.get("distinct_keys", 0),
+            "total_failure_events": ledger_stats.get("total_events", 0),
+        }
+        return data
+
+
+    # -- security hardening (A61) --------------------------------------------------------------------
+
+    def hardening_report(self, session: Session) -> dict[str, Any]:
+        """Bounded, read-only security audit of this plane."""
+        from forge.security.hardening import run_hardening_report
+
+        report = run_hardening_report(
+            self.policy if self.policy is not None else PermissionPolicy(),
+            self.sessions, self.projects)
+        self._audit(session.actor, "security", "hardening", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"overall={report['overall']}")
+        return report
+
+
+    # -- model benchmarking (A60) --------------------------------------------------------------------
+
+    def _benchmark_store(self):
+        from forge.benchmark.harness import BenchmarkStore
+
+        if not hasattr(self, "_benchmarks"):
+            self._benchmarks = BenchmarkStore(self._db)
+        return self._benchmarks
+
+    def benchmark_run(self, session: Session,
+                      models: list[str] | None = None
+                      ) -> dict[str, Any]:
+        from forge.benchmark.harness import MAX_MODELS, run_benchmark
+
+        if models is not None:
+            if not isinstance(models, list) or len(models) > MAX_MODELS:
+                raise InvalidRequest(
+                    f"models must be a list of at most {MAX_MODELS} names")
+            for name in models:
+                if not isinstance(name, str) or not name.strip():
+                    raise InvalidRequest("model names must be strings")
+        results, summary = run_benchmark(self.fabric, models or None)
+        if models and summary["unknown_models"]:
+            raise InvalidRequest(
+                f"Unknown model(s): {', '.join(summary['unknown_models'])}")
+        store = self._benchmark_store()
+        recorded = [store.record(entry, session.actor)
+                    for entry in results]
+        self._audit(session.actor, "benchmark", "run", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"models={len(recorded)} "
+                           f"passed={summary['passed']}/"
+                           f"{summary['total']}")
+        return {"benchmarks": recorded, "summary": summary}
+
+    def benchmark_history(self, session: Session, limit: int = 20
+                          ) -> dict[str, Any]:
+        if limit < 1 or limit > 100:
+            raise InvalidRequest("limit must be 1-100")
+        return {"benchmarks": self._benchmark_store().history(limit)}
+
+
+    # -- failure learning (A59) ----------------------------------------------------------------------
+
+    def _failure_ledger(self):
+        from forge.learning.failures import FailureLedger
+
+        if not hasattr(self, "_failures"):
+            self._failures = FailureLedger(self._db)
+        return self._failures
+
+    def record_failure(self, session: Session, category: str,
+                       error: str) -> dict[str, Any]:
+        try:
+            event = self._failure_ledger().record(
+                category, error, task_id=session.active_task or "",
+                actor=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "learning", "record", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{category} "
+                           f"fingerprint={event['fingerprint'][:40]}")
+        return event
+
+    def failure_lessons(self, session: Session, limit: int = 5
+                        ) -> dict[str, Any]:
+        if limit < 1 or limit > 50:
+            raise InvalidRequest("limit must be 1-50")
+        ledger = self._failure_ledger()
+        return {"lessons": ledger.lessons(limit),
+                "top": ledger.top(limit),
+                "stats": ledger.stats()}
+
+
+    # -- agent governance (A57) ----------------------------------------------------------------------
+
+    def _agent_governor(self):
+        from forge.agents.governance import AgentGovernor
+
+        if not hasattr(self, "_governor"):
+            self._governor = AgentGovernor()
+        return self._governor
+
+    def agent_set_limits(self, session: Session, name: str, *,
+                         max_runs_per_hour: int = 60,
+                         max_concurrent: int = 2) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        try:
+            limits = self._agent_governor().set_limits(
+                name, max_runs_per_hour=max_runs_per_hour,
+                max_concurrent=max_concurrent)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "limits", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} {limits}")
+        return limits
+
+    def agent_limits(self, session: Session, name: str) -> dict[str, Any]:
+        if self._agent_factory(session).get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        return self._agent_governor().limits(name)
+
+
+
+    # -- agent self-development (A58) ---------------------------------------------------------------
+
+    def _selfdev_ledger(self, session: Session):
+        from forge.agents.selfdev import SelfDevLedger
+
+        if not hasattr(self, "_selfdev_ledgers"):
+            self._selfdev_ledgers: dict[str, Any] = {}
+        ledger = self._selfdev_ledgers.get(session.id)
+        if ledger is None:
+            ledger = SelfDevLedger(session.id)
+            self._selfdev_ledgers[session.id] = ledger
+        return ledger
+
+    def selfdev_analyze(self, session: Session, name: str
+                        ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        logs = getattr(self, "_agent_run_logs", {}).get(session.id, [])
+        ledger = self._selfdev_ledger(session)
+        proposal = ledger.analyze(name, logs)
+        failures = [entry for entry in logs
+                    if entry.get("agent") == name
+                    and not entry.get("success", True)]
+        self._audit(session.actor, "selfdev", "analyze", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} kind={proposal.kind} "
+                           f"failures={len(failures)}")
+        return {"proposal": proposal.to_dict(),
+                "failures_seen": len(failures)}
+
+    def selfdev_apply(self, session: Session, name: str,
+                      proposal_id: str) -> dict[str, Any]:
+        from forge.agents.selfdev import (MAX_APPLIED_PER_AGENT,
+                                          MAX_APPLIED_PER_SESSION)
+
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        ledger = self._selfdev_ledger(session)
+        proposal = ledger.get(proposal_id)
+        if proposal is None:
+            raise InvalidRequest(f"Unknown proposal: {proposal_id}")
+        if proposal.agent != name:
+            raise InvalidRequest(
+                "That proposal belongs to a different agent")
+        if proposal.applied:
+            raise InvalidRequest("Proposal already applied")
+        if proposal.kind == "none":
+            raise InvalidRequest(
+                "This proposal is not actionable: "
+                f"{proposal.reason[:200]}")
+        if proposal.kind != "failure-note":
+            raise InvalidRequest(
+                f"Unsupported proposal kind: {proposal.kind}")
+        if ledger.applied_per_session >= MAX_APPLIED_PER_SESSION:
+            raise InvalidRequest(
+                f"Session self-development budget exhausted "
+                f"({MAX_APPLIED_PER_SESSION})")
+        if ledger.applied_count(name) >= MAX_APPLIED_PER_AGENT:
+            raise InvalidRequest(
+                f"Agent {name} self-development budget exhausted "
+                f"({MAX_APPLIED_PER_AGENT})")
+        updated = factory.update(
+            name,
+            description=(definition.description + "\n[learned] "
+                         + proposal.note).strip()[:500])
+        updated.generation += 1
+        metrics = dict(definition.metrics)
+        metrics.update(proposal.metrics)
+        updated.metrics = metrics
+        ledger.mark_applied(proposal)
+        self._audit(session.actor, "selfdev", "apply", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} <- {proposal.proposal_id} "
+                           f"kind={proposal.kind}")
+        return {"agent": updated.to_dict(),
+                "proposal": proposal.to_dict()}
+
+    def selfdev_ledger(self, session: Session, name: str
+                       ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        return {"agent": name,
+                "entries": self._selfdev_ledger(session).entries(name)}
+
+
     # -- agent lifecycle (A55) ----------------------------------------------------------------------
 
     def agent_set_status(self, session: Session, name: str,
@@ -3365,6 +3695,63 @@ class ControlPlane:
                     task_id=session.active_task or session.id,
                     reason=f"{name} -> {status}")
         return definition.to_dict()
+
+
+
+    # -- agent packaging (A56) ----------------------------------------------------------------------
+
+    def agent_export(self, session: Session, name: str
+                     ) -> dict[str, Any]:
+        from forge.agents.packaging import export_definition
+
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        payload = export_definition(definition)
+        self._audit(session.actor, "agents", "export", True,
+                    task_id=session.active_task or session.id,
+                    reason=name)
+        return payload
+
+    def agent_import(self, session: Session,
+                     payload: Any) -> dict[str, Any]:
+        from forge.agents.packaging import import_payload
+
+        factory = self._agent_factory(session)
+        registry = self._skill_registry(session)
+        try:
+            fields = import_payload(
+                payload, skill_lookup=registry.get)
+            definition = factory.create(
+                fields["name"], fields["role"],
+                fields["capabilities"],
+                description=fields["description"],
+                created_by="import:" + fields["created_by"],
+                bind=False)
+            definition.generation = fields["generation"]
+            definition.metrics = dict(fields["metrics"])
+            for skill in fields["skills"]:
+                definition.skills = tuple(sorted(
+                    definition.skills + (skill,)))
+            skill_caps = tuple(dict.fromkeys(
+                registry.get(skill).capability
+                for skill in definition.skills
+                if registry.get(skill) is not None))
+            definition.base_capabilities = \
+                tuple(fields["capabilities"])
+            definition.capabilities = tuple(dict.fromkeys(
+                tuple(fields["capabilities"]) + skill_caps))
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "import", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{fields['name']} "
+                           f"dropped={fields['dropped_skills']}")
+        return {"agent": definition.to_dict(),
+                "dropped_skills": fields["dropped_skills"],
+                "note": "Imported definitions are always unbound; "
+                        "binding an executor is local."}
 
 
     # -- agent creation (A49) ----------------------------------------------------------------
@@ -5056,13 +5443,32 @@ class ControlPlane:
             updates.update(status=RunStatus.CANCELLED, stage="cancelled",
                            error="Cancelled by operator.")
         else:
-            updates.update(
-                status=RunStatus.FAILED, stage="failed",
-                error=str(outcome.get("error", "Run failed."))[:2000])
+            error_text = str(outcome.get("error", "Run failed."))[:2000]
+            updates.update(status=RunStatus.FAILED, stage="failed",
+                           error=error_text)
+        if updates.get("status") == RunStatus.FAILED:
+            try:  # learning must never break the pipeline
+                self._failure_ledger().record(
+                    "task", updates.get("error") or "Run failed.",
+                    task_id=run_id,
+                    actor=getattr(run, "actor", "") or "")
+            except Exception:
+                pass
         self.runs.mutate(run_id, **updates)
         finished = self.runs.get(run_id)
         if finished is None:
             return
+        try:
+            if finished.status == RunStatus.SUCCEEDED:
+                self._metrics().incr("runs.succeeded")
+            elif finished.status == RunStatus.FAILED:
+                self._metrics().incr("runs.failed")
+            if run.started_at and finished.finished_at:
+                self._metrics().observe(
+                    "run.duration_ms",
+                    finished.finished_at - run.started_at)
+        except Exception:
+            pass
         if finished.status == RunStatus.SUCCEEDED:
             self._mirror_complete(finished)
             self._emit(run_id, finished.project_id, "task.completed",
@@ -5118,9 +5524,27 @@ class ControlPlane:
         run = self.runs.get(run_id)
         if run is None or run.status in TERMINAL_STATUSES:
             return
+        finished_at = time.time()
         self.runs.mutate(run.id, status=status,
                          stage=status.value.lower(),
-                         error=error[:2000], finished_at=time.time())
+                         error=error[:2000], finished_at=finished_at)
+        try:
+            if status == RunStatus.SUCCEEDED:
+                self._metrics().incr("runs.succeeded")
+            elif status == RunStatus.FAILED:
+                self._metrics().incr("runs.failed")
+            if run.started_at:
+                self._metrics().observe("run.duration_ms",
+                                        finished_at - run.started_at)
+        except Exception:
+            pass
+        if status == RunStatus.FAILED and error:
+            try:  # learning must never break the pipeline
+                self._failure_ledger().record(
+                    "task", error, task_id=run.id,
+                    actor=getattr(run, "actor", "") or "")
+            except Exception:
+                pass
         if status == RunStatus.SUCCEEDED:
             self._mirror_complete(run)
         else:

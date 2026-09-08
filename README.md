@@ -430,6 +430,84 @@ restrict further. API at `/api/v1/agents/{name}/status`.
 See `docs/A55-AGENT-LIFECYCLE.md`. Full suite after A55: 1303 passed,
 2 skipped.
 
+## Agent Packaging (A56)
+
+Agent definitions export to plain JSON specifications (never
+secrets or executors) and import through the full factory
+validation — always unbound, with unknown skills dropped honestly.
+API at `/api/v1/agents/{name}/export` and `/api/v1/agents/import`.
+
+See `docs/A56-AGENT-PACKAGING.md`. Full suite after A56: 1308 passed,
+2 skipped.
+
+## Agent Governance (A57)
+
+Per-agent runtime quotas (hourly runs, concurrency) enforced before
+any work starts — teams share member quotas, refusals are audited.
+API at `/api/v1/agents/{name}/limits`.
+
+See `docs/A57-AGENT-GOVERNANCE.md`. Full suite after A57: 1313
+passed, 2 skipped.
+
+## Agent Self-Development (A58)
+
+Agents learn from their own recorded failures: analysis proposes
+only validated, bounded edits (journal notes + metrics + generation
+bump) or honestly reports "not self-fixable"; budgets cap learning
+loops; executors, bindings, and policy are never touched. API at
+`/api/v1/agents/{name}/selfdev*`.
+
+See `docs/A58-SELF-DEVELOPMENT.md`. Full suite after A58: 1318
+passed, 2 skipped.
+
+## Failure Learning (A59)
+
+Every task and agent failure is fingerprinted into a persistent,
+bounded ledger that survives restarts; lessons are honest summaries
+of real recorded errors. API at `/api/v1/learning/failures` and
+`/api/v1/learning/lessons`.
+
+See `docs/A59-FAILURE-LEARNING.md`. Full suite after A59: 1323
+passed, 2 skipped.
+
+## Model Benchmarking (A60)
+
+A bounded benchmark suite sends real prompts through the fabric and
+judges every answer with code — models never grade themselves, and
+results persist in history. API at `/api/v1/benchmarks`.
+
+See `docs/A60-MODEL-BENCHMARKING.md`. Full suite after A60: 1328
+passed, 2 skipped.
+
+## Security Hardening (A61)
+
+Read-only audit reports: policy rule inventory with structural
+findings, session hygiene, and bounded secret-pattern scans that
+report locations but never values. API at
+`/api/v1/hardening/report`.
+
+See `docs/A61-HARDENING.md`. Full suite after A61: 1333 passed, 2
+skipped.
+
+## Observability (A62)
+
+Real counters and bounded latency reservoirs recorded at the
+pipeline funnels, plus live gauges — aggregates only, never user
+data. API at `/api/v1/observability/metrics`.
+
+See `docs/A62-OBSERVABILITY.md`. Full suite after A62: 1338 passed,
+2 skipped.
+
+## Performance (A63)
+
+Per-run queue/execution/total timings computed from the run
+record's own timestamps, plus bounded aggregate statistics over the
+most recent runs. API at `/api/v1/performance/summary` and
+`/api/v1/performance/runs/{run_id}`.
+
+See `docs/A63-PERFORMANCE.md`. Full suite after A63: 1343 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

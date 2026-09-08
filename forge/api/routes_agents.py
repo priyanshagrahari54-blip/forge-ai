@@ -10,9 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from forge.api.deps import (Authed, authed, authed_mutation, get_plane,
                             rate_limit)
-from forge.api.schemas import (AgentCreateRequest, AgentMemorySetRequest,
+from forge.api.schemas import (AgentCreateRequest, AgentImportRequest,
+                               AgentLimitsRequest,
+                               AgentMemorySetRequest,
                                AgentOutcomeRequest, AgentRunRequest,
-                               AgentStatusRequest, AgentUpdateRequest)
+                               AgentStatusRequest, AgentUpdateRequest,
+                               SelfDevApplyRequest)
 from forge.control.control_plane import (ApprovalConflictError,
                                          ApprovalNotFoundError,
                                          ControlPlane, InvalidRequest,
@@ -214,5 +217,84 @@ async def set_agent_status(name: str, body: AgentStatusRequest,
                            plane: ControlPlane = Depends(get_plane)):
     try:
         return plane.agent_set_status(current.session, name, body.status)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A56 agent packaging ----------------------------------------------------------------
+
+@router.get("/agents/{name}/export")
+async def export_agent(name: str,
+                       current: Authed = Depends(authed_mutation),
+                       plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_export(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.post("/agents/import", dependencies=[rate_limit("agents")])
+async def import_agent(body: AgentImportRequest,
+                       current: Authed = Depends(authed_mutation),
+                       plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_import(current.session, body.payload)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A57 agent governance ----------------------------------------------------------------
+
+@router.put("/agents/{name}/limits", dependencies=[rate_limit("agents")])
+async def set_agent_limits(name: str, body: AgentLimitsRequest,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_set_limits(
+            current.session, name,
+            max_runs_per_hour=body.max_runs_per_hour,
+            max_concurrent=body.max_concurrent)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/limits")
+async def get_agent_limits(name: str,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_limits(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A58 agent self-development ----------------------------------------------------------
+
+@router.post("/agents/{name}/selfdev/analyze",
+             dependencies=[rate_limit("agents")])
+async def selfdev_analyze(name: str,
+                          current: Authed = Depends(authed_mutation),
+                          plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.selfdev_analyze(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.post("/agents/{name}/selfdev/apply",
+             dependencies=[rate_limit("agents")])
+async def selfdev_apply(name: str, body: SelfDevApplyRequest,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.selfdev_apply(current.session, name,
+                                   body.proposal_id)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/selfdev")
+async def selfdev_ledger(name: str,
+                         current: Authed = Depends(authed_mutation),
+                         plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.selfdev_ledger(current.session, name)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

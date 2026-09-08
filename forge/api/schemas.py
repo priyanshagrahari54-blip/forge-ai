@@ -251,3 +251,35 @@ class SkillAttachRequest(BaseModel):
 
 class AgentStatusRequest(BaseModel):
     status: str = Field(min_length=2, max_length=16)
+
+
+# -- A56 agent packaging -----------------------------------------------------------------------
+
+class AgentImportRequest(BaseModel):
+    payload: dict
+
+
+# -- A57 agent governance -----------------------------------------------------------------------
+
+class AgentLimitsRequest(BaseModel):
+    max_runs_per_hour: int = Field(default=60, ge=1, le=1000)
+    max_concurrent: int = Field(default=2, ge=1, le=20)
+
+
+# -- A58 agent self-development -----------------------------------------------------------------
+
+class SelfDevApplyRequest(BaseModel):
+    proposal_id: str = Field(min_length=6, max_length=32)
+
+
+# -- A59 failure learning ----------------------------------------------------------------------
+
+class FailureRecordRequest(BaseModel):
+    category: str = Field(min_length=2, max_length=16)
+    error: str = Field(min_length=1, max_length=500)
+
+
+# -- A60 model benchmarking ---------------------------------------------------------------------
+
+class BenchmarkRequest(BaseModel):
+    models: list[str] | None = None

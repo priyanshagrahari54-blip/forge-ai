@@ -61,7 +61,11 @@ def test_unbound_agent_refuses_to_run(tmp_path):
                                            result["run_id"])
         assert state["status"] == "failed"
         assert "without a bound executor" in state["error"]
-        assert plane.agent_runs(session, "spec-only")["runs"] == []
+        # Failures are recorded honestly in the bounded run log.
+        runs = plane.agent_runs(session, "spec-only")["runs"]
+        assert len(runs) == 1
+        assert runs[0]["success"] is False
+        assert "without a bound executor" in runs[0]["error"]
 
 
 def test_research_agent_reports_real_counts(tmp_path):
