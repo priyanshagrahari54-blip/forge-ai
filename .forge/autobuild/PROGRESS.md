@@ -718,3 +718,16 @@ framing controls by default (add at the edge for production).
   API `/api/v1/council/*`.
 - 6 new tests. Full suite: **1238 passed, 2 skipped** (A44 baseline:
   1232/2).
+
+## A46 — Model Fabric (controlled bridge)
+
+- The fabric core (routing/registry/failover/health/telemetry) was
+  delivered in A31; A46 adds the governed plane path: `FabricBridge`
+  with honest routing metadata (model/provider/kind/simulated),
+  `plane.model_generate()` behind MODEL/call policy with approval
+  round trips and spent-token refiling, session-isolated model
+  approvals, audited calls.
+- API `/api/v1/models/*`; conversation answers model/registry
+  questions from real fabric data (naming the no-op honestly).
+- 7 new tests. Full suite: **1245 passed, 2 skipped** (A45 baseline:
+  1238/2).

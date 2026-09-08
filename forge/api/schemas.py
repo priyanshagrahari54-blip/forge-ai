@@ -162,3 +162,11 @@ class CollaborationConsultRequest(BaseModel):
 
 class CouncilQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
+
+
+# -- A46 model fabric bridge ----------------------------------------------------------
+
+class ModelGenerateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    capability: str = Field(default="coding", max_length=64)
+    approval_id: str = Field(default="", max_length=200)

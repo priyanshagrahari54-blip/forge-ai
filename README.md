@@ -317,6 +317,19 @@ authorize actions. API at `/api/v1/council/*`.
 See `docs/A45-AI-COUNCIL.md`. Full suite after A45: 1238 passed, 2
 skipped.
 
+## Model Fabric (A46)
+
+The fabric (A31: routing, registry, failover, health, telemetry)
+gains a governed plane path: `FabricBridge` returns honest routing
+metadata (model/provider/kind/simulated — the built-in local no-op
+is always labeled), and `model_generate` runs behind MODEL/call
+policy with approval round trips and auditing. API at
+`/api/v1/models/*`; the conversation engine answers model questions
+from the real registry.
+
+See `docs/A46-MODEL-FABRIC.md`. Full suite after A46: 1245 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

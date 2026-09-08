@@ -2578,6 +2578,23 @@ class ControlPlane:
             except Exception as exc:
                 return f"I couldn't analyze the repository: {exc}"
         if any(marker in lowered for marker in (
+                "what models", "which models", "available models",
+                "model fabric", "what providers", "which providers")):
+            try:
+                state = self.get_model_state()
+                names = ", ".join(
+                    item.get("name", "?") for item in state["models"][:5]
+                ) or "none registered"
+                providers = ", ".join(
+                    item.get("name", "?") for item in state["providers"][:5]
+                ) or "none registered"
+                return (f"I have {len(state['models'])} model(s) "
+                        f"registered: {names}. Providers: {providers}. "
+                        "The built-in local provider is a deterministic "
+                        "no-op; real providers need configuration.")
+            except Exception:
+                return "Model registry status is unavailable right now."
+        if any(marker in lowered for marker in (
                 "how many tasks", "task status", "status of tasks",
                 "what is running")):
             try:
@@ -2680,6 +2697,123 @@ class ControlPlane:
     def council_history(self, session: Session) -> dict[str, Any]:
         return {"deliberations":
                 list(self._council_logs.get(session.id, []))}
+
+
+
+    # -- model fabric bridge (A46) ----------------------------------------------------------
+
+    def _file_model_approval(self, session: Session, capability: str
+                             ) -> dict[str, Any]:
+        from forge.security.approvals import ApprovalRequest
+
+        request = self.approval_store.submit(ApprovalRequest(
+            agent="forge-model", resource=Resource.MODEL,
+            operation="call", scopes=(capability,),
+            task_id=session.active_task or session.id,
+            reason=f"Model generation via fabric "
+                   f"(capability={capability})",
+            consequences="The prompt is routed through the model "
+                         "fabric; the response is model output and is "
+                         "treated as untrusted input."))
+        self._audit(session.actor, "model", "generate", False,
+                    task_id=session.active_task or session.id,
+                    reason="approval required")
+        return {"allowed": False, "approval_required": True,
+                "approval_request_id": request.id,
+                "prompt_hint": "",
+                "response": None}
+
+    def model_generate(self, session: Session, prompt: str, *,
+                       capability: str = "coding",
+                       approval_id: str = "") -> dict[str, Any]:
+        """Gated fabric generation: MODEL/call policy first, then route."""
+        from forge.models.bridge import FabricBridge
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import (PermissionEvaluation,
+                                           PermissionRequest)
+
+        if not isinstance(prompt, str) or not prompt.strip() \
+                or len(prompt) > 4000:
+            raise InvalidRequest("Prompt must be 1-4000 characters.")
+        if not isinstance(capability, str) or not capability.strip() \
+                or len(capability) > 64:
+            raise InvalidRequest("Invalid capability.")
+        capability = capability.strip().lower()
+        permission = PermissionRequest(
+            agent="forge-model", resource=Resource.MODEL,
+            operation="call", scope=capability,
+            task_id=session.active_task or session.id,
+            reason=f"fabric generation (capability={capability})",
+            details=(("capability", capability),))
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                evaluation = PermissionEvaluation(
+                    decision=PolicyDecision.ALLOW, reason=_reason,
+                    risk=permission.risk, scope=permission.scope,
+                    request_id=permission.request_id)
+            else:
+                return self._file_model_approval(session, capability)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            return self._file_model_approval(session, capability)
+        if evaluation.decision != PolicyDecision.ALLOW:
+            self._audit(session.actor, "model", "generate", False,
+                        task_id=session.active_task or session.id,
+                        reason=evaluation.reason)
+            return {"allowed": False, "approval_required": False,
+                    "approval_request_id": "",
+                    "response": None,
+                    "reason": evaluation.reason or "denied by policy"}
+        bridge = FabricBridge(self.fabric)
+        try:
+            response = bridge.generate(prompt, capability=capability)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "model", "generate", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"provider={response['provider']}, "
+                           f"model={response['model']}, "
+                           f"simulated={response['simulated']}")
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "response": response}
+
+    def list_model_approvals(self, session: Session
+                             ) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-model" \
+                    and request.task_id in (session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_model_approval(self, session: Session, approval_id: str,
+                              approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-model" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "model",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"model approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
 
 
     # -- AI-to-AI collaboration (A44) -------------------------------------------------
