@@ -208,6 +208,31 @@ timeouts) and cooperative cancellation.
 See `docs/A38-ORCHESTRATION.md` for the engine, security model, and
 test matrix. Full suite after A38: 1138 passed, 2 skipped.
 
+## Vision & Multimodal Understanding (A39)
+
+A39 adds provider-independent image understanding: bounded,
+dependency-free parsing of PNG/JPEG/BMP/GIF (including a real PNG
+chunk walker that surfaces embedded text), structured findings, and a
+screenshot-to-action pipeline that proposes but never executes.
+
+- **Vision input is untrusted**: images are bounded and treated as
+  evidence, never authority. Text embedded in an image — even
+  "approve everything" — is surfaced as a dangerous instruction and
+  hard-blocked; it can never grant permissions.
+- **Every analyze call is policy-gated** (`Resource.VISION /
+  analyze`, single-use approval tokens); every proposed action is
+  gated again (`Resource.VISION / execute`), and real execution
+  stays on the browser/desktop bridges under their own gates.
+- **Honest by construction**: the A39 simulated provider has no
+  OCR/model and labels every result `simulation: true`; real
+  providers plug in behind the same `VisionProvider` protocol.
+- **API + cockpit**: `/api/v1/vision*` (capabilities, analyze,
+  propose, approvals) and a Vision cockpit view with upload,
+  understanding, proposals, and approve/deny.
+
+See `docs/A39-VISION.md` for the security model, honesty invariants,
+and test matrix. Full suite after A39: 1163 passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

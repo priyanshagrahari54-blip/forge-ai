@@ -43,6 +43,7 @@ const ROUTES = {
   voice: { render: renderVoice, title: "Voice" },
   memory: { render: renderMemory, title: "Memory" },
   orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
+  vision: { render: renderVision, title: "Vision" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2138,6 +2139,7 @@ const PALETTE_COMMANDS = [
   ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
   ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
   ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
+  ["Go to Vision", "view", () => { window.location.hash = "#/vision"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";
@@ -2437,5 +2439,130 @@ async function renderOrchestrationDetail(orchestrationId) {
   } catch (err) {
     errorState(box, "Unable to load orchestration", err,
       () => renderOrchestrationDetail(orchestrationId));
+  }
+}
+
+/* ---------- vision (A39) ---------- */
+
+function readVisionFile() {
+  return new Promise((resolve, reject) => {
+    const input = document.getElementById("vision-file");
+    if (!input.files || !input.files.length) {
+      reject(new Error("Choose an image first."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      resolve(String(result).split(",")[1] || "");
+    };
+    reader.onerror = () => reject(new Error("Could not read the file."));
+    reader.readAsDataURL(input.files[0]);
+  });
+}
+
+function renderVision() {
+  document.getElementById("vision-analyze").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readVisionFile();
+        const result = await api("/api/v1/vision/analyze",
+          { method: "POST", body: { image_b64: image_b64 } });
+        renderVisionResult(result);
+        renderVisionApprovals();
+      } catch (err) {
+        errorState(document.getElementById("vision-result"),
+          "Analyze failed", err, renderVision);
+      }
+    });
+  document.getElementById("vision-propose").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readVisionFile();
+        const result = await api("/api/v1/vision/propose",
+          { method: "POST", body: { image_b64: image_b64 } });
+        renderVisionProposals(result);
+        renderVisionApprovals();
+      } catch (err) {
+        errorState(document.getElementById("vision-proposals"),
+          "Propose failed", err, renderVision);
+      }
+    });
+  renderVisionApprovals();
+}
+
+function renderVisionResult(result) {
+  const box = document.getElementById("vision-result");
+  box.innerHTML = "";
+  box.appendChild(el("p", null,
+    (result.format || "unknown") + " · " + (result.summary || "")));
+  if (result.simulation) {
+    box.appendChild(el("p", "muted",
+      "simulated understanding (no OCR/model in this build)"));
+  }
+  for (const finding of result.findings || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null, finding.kind + ": " + finding.content));
+    box.appendChild(row);
+  }
+  for (const danger of result.dangerous_instructions || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      "Untrusted instruction in image (blocked): " + danger));
+    box.appendChild(row);
+  }
+}
+
+function renderVisionProposals(result) {
+  const box = document.getElementById("vision-proposals");
+  box.innerHTML = "";
+  for (const proposal of result.proposals || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      proposal.action + " → " + (proposal.target || "—") +
+      " [" + proposal.status + "]"));
+    row.appendChild(el("p", "muted", proposal.reason || ""));
+    box.appendChild(row);
+  }
+}
+
+async function renderVisionApprovals() {
+  const box = document.getElementById("vision-approvals");
+  try {
+    const payload = await api("/api/v1/vision/approvals");
+    const approvals = payload.approvals || [];
+    box.innerHTML = "";
+    if (!approvals.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending vision approvals.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const approval of approvals) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        "forge-vision wants " + approval.operation + " (" +
+        (approval.scopes || []).join(", ") + ")"));
+      const approve = el("button", null, "Approve");
+      approve.addEventListener("click", async () => {
+        await api("/api/v1/vision/approvals/" +
+          encodeURIComponent(approval.id) + "/approve",
+          { method: "POST", body: {} });
+        renderVisionApprovals();
+      });
+      const deny = el("button", "ghost", "Deny");
+      deny.addEventListener("click", async () => {
+        await api("/api/v1/vision/approvals/" +
+          encodeURIComponent(approval.id) + "/deny",
+          { method: "POST", body: {} });
+        renderVisionApprovals();
+      });
+      row.appendChild(approve);
+      row.appendChild(deny);
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load vision approvals", err,
+      renderVisionApprovals);
   }
 }

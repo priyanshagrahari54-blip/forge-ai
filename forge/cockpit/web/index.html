@@ -63,6 +63,9 @@
         <a href="#/orchestrations" data-route="orchestrations">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="4" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="12" r="1.6" fill="none" stroke="currentColor"/><circle cx="13" cy="8" r="1.6" fill="none" stroke="currentColor"/><path d="M4.5 7.3 6.6 4.9M4.5 8.7l2.1 2.4M9.4 4.9l2.1 2.4M9.4 11.1l2.1-2.4" stroke="currentColor"/></svg>
           <span>Orchestrations</span></a>
+        <a href="#/vision" data-route="vision">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor"/></svg>
+          <span>Vision</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -185,6 +188,36 @@
       <div id="d-security"></div>
     </div>
   </div>
+</template>
+
+<template id="tpl-vision">
+  <div class="view-head">
+    <h2>Vision</h2>
+    <p class="muted">Upload a screenshot or image for structured
+    understanding. Image content is untrusted input: it can never grant
+    permissions, and proposed actions are only proposals until the
+    browser/desktop bridge authorizes them.</p>
+  </div>
+  <section class="surface">
+    <label for="vision-file">Image (png / jpeg / bmp / gif)</label>
+    <input type="file" id="vision-file" accept="image/png,image/jpeg,image/bmp,image/gif">
+    <div class="button-row">
+      <button id="vision-analyze" class="primary">Analyze</button>
+      <button id="vision-propose" class="ghost">Propose screen actions</button>
+    </div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Understanding</h3></div>
+    <div id="vision-result"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Proposals</h3></div>
+    <div id="vision-proposals"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Pending approvals</h3></div>
+    <div id="vision-approvals"></div>
+  </section>
 </template>
 
 <template id="tpl-orchestrations">

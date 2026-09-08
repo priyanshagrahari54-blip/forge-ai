@@ -503,6 +503,10 @@ class ControlConfig:
     orchestration_max_workers: int = 3
     orchestration_max_attempts: int = 2
     orchestration_step_timeout: float | None = 120.0
+    # A39 vision: provider behind the Vision interface. Only the
+    # deterministic simulated provider exists in A39 (honestly labeled,
+    # no OCR/model); real providers register as plugins.
+    vision_provider: str = "simulated"
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -611,6 +615,9 @@ class ControlPlane:
         # knowledge stores (lazily built over each project root).
         self.session_memory = SessionMemoryStore(self._db)
         self._memory_stores: dict[str, Any] = {}
+        # A39 vision: provider-independent image understanding.
+        from forge.vision.pipeline import build_vision_provider
+        self.vision_provider = build_vision_provider(config.vision_provider)
         self._queues: dict[str, PersistentTaskQueue] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._active: dict[str, int] = {}
@@ -2264,6 +2271,256 @@ class ControlPlane:
                     reason=f"memory approval {approval_id} "
                     f"{'approved' if approved else 'denied'}")
         return {"approval": decided.to_dict(), "token_id": token_id}
+
+
+
+    # -- vision (A39) ------------------------------------------------------------
+
+    def _vision_permission(self, session: Session, *,
+                           approval_id: str = "",
+                           file_approval: bool = True) -> dict[str, Any]:
+        """Evaluate one Resource.VISION / analyze through the A33 gate."""
+        from forge.security.approvals import (ApprovalRequest,
+                                              enforce_with_token)
+        from forge.security.policy import PermissionRequest
+
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        permission = PermissionRequest(
+            agent="forge-vision", resource=Resource.VISION,
+            operation="analyze", scope="image",
+            task_id=session.active_task or session.id,
+            reason="vision analyze image")
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                return {"allowed": True, "decision": "ALLOW",
+                        "approval_required": False,
+                        "approval_request_id": approval_id}
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            request_id = ""
+            if file_approval:
+                filed = self.approval_store.submit(ApprovalRequest(
+                    agent="forge-vision", resource=Resource.VISION,
+                    operation="analyze", scopes=("image",),
+                    task_id=session.active_task or session.id,
+                    reason="Vision analyze an uploaded image",
+                    consequences="The image bytes are sent to the "
+                                 "configured vision provider."))
+                request_id = filed.id
+            return {"allowed": False, "decision": "REQUIRE_APPROVAL",
+                    "approval_required": True,
+                    "approval_request_id": request_id,
+                    "reason": evaluation.reason}
+        if evaluation.decision == PolicyDecision.ALLOW:
+            return {"allowed": True, "decision": "ALLOW",
+                    "approval_required": False,
+                    "approval_request_id": ""}
+        raise PolicyDeniedError(
+            evaluation.reason or "Vision analyze denied by policy")
+
+    def _vision_understand(self, session: Session,
+                           image_b64: str) -> tuple[dict[str, Any], Any]:
+        """Decode + permission-gate + analyze one image (shared path)."""
+        from forge.vision.base import ImageFormatError
+        from forge.vision.image_io import MAX_IMAGE_BYTES
+
+        if not isinstance(image_b64, str) or not image_b64.strip():
+            raise InvalidRequest("image_b64 must be a non-empty string.")
+        if len(image_b64) > MAX_IMAGE_BYTES * 4 // 3 + 8:
+            raise InvalidRequest("Image is too large.")
+        import base64
+        import binascii
+        try:
+            image = base64.b64decode(image_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise InvalidRequest(f"Malformed base64 image: {exc}") from None
+        permission = self._vision_permission(session)
+        if not permission["allowed"]:
+            return {"allowed": False, "simulation": True,
+                    "approval_required": permission["approval_required"],
+                    "approval_request_id":
+                        permission.get("approval_request_id", ""),
+                    "findings": [], "dangerous_instructions": [],
+                    "summary": permission.get("reason", "")}, None
+        try:
+            result = self.vision_provider.analyze(image)
+        except ImageFormatError as exc:
+            raise InvalidRequest(str(exc)) from None
+        except Exception as exc:
+            from forge.vision.base import VisionUnavailable
+            raise VisionUnavailable(str(exc)) from exc
+        if result.error:
+            raise InvalidRequest(result.error)
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": ""}, result
+
+    def vision_analyze(self, session: Session, image_b64: str, *,
+                       approval_id: str = "") -> dict[str, Any]:
+        """Analyze one image (base64) through the permissioned provider."""
+        import base64
+
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import PermissionRequest
+
+        if approval_id:
+            permission = PermissionRequest(
+                agent="forge-vision", resource=Resource.VISION,
+                operation="analyze", scope="image",
+                task_id=session.active_task or session.id,
+                reason="vision analyze image")
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if not allowed:
+                return {"allowed": False, "simulation": True,
+                        "approval_required": True,
+                        "approval_request_id": approval_id,
+                        "findings": [], "dangerous_instructions": [],
+                        "summary": "approval token not valid"}
+            head, result = self._vision_understand_ungated(session,
+                                                           image_b64)
+        else:
+            head, result = self._vision_understand(session, image_b64)
+        if not head["allowed"]:
+            return head
+        payload = result.to_dict()
+        payload.update(head)
+        self._audit(session.actor, "vision", "analyze", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"format {result.format}, "
+                           f"{len(base64.b64decode(image_b64))} bytes, "
+                           f"simulation={result.simulation}")
+        return payload
+
+    def _vision_understand_ungated(self, session: Session,
+                                   image_b64: str) -> tuple[dict[str, Any],
+                                                             Any]:
+        """Decode + analyze without a fresh policy evaluation (token
+        redemption path only)."""
+        import base64
+        from forge.vision.base import ImageFormatError
+        from forge.vision.image_io import MAX_IMAGE_BYTES
+
+        if not isinstance(image_b64, str) or not image_b64.strip():
+            raise InvalidRequest("image_b64 must be a non-empty string.")
+        if len(image_b64) > MAX_IMAGE_BYTES * 4 // 3 + 8:
+            raise InvalidRequest("Image is too large.")
+        image = base64.b64decode(image_b64, validate=True)
+        try:
+            result = self.vision_provider.analyze(image)
+        except ImageFormatError as exc:
+            raise InvalidRequest(str(exc)) from None
+        except Exception as exc:
+            from forge.vision.base import VisionUnavailable
+            raise VisionUnavailable(str(exc)) from exc
+        if result.error:
+            raise InvalidRequest(result.error)
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": ""}, result
+
+    def vision_propose(self, session: Session,
+                       image_b64: str) -> dict[str, Any]:
+        """Analyze a screenshot and return policy-filtered proposals.
+
+        Proposals are never executed here. Each action proposal is
+        evaluated against Resource.VISION / execute: ALLOW → proposed,
+        DENY → blocked, REQUIRE_APPROVAL → approval_required (filed,
+        session-bound). Dangerous image text is always blocked. Any
+        real execution later re-authorizes at the browser/desktop
+        bridge under its own resource.
+        """
+        from forge.vision.pipeline import propose_actions
+
+        head, result = self._vision_understand(session, image_b64)
+        if not head["allowed"]:
+            return {"allowed": False,
+                    "approval_required": head["approval_required"],
+                    "approval_request_id":
+                        head.get("approval_request_id", ""),
+                    "proposals": [],
+                    "understanding": {"format": "",
+                                      "summary": head.get("summary", "")}}
+        proposals = propose_actions(result)
+        from forge.security.approvals import ApprovalRequest
+        from forge.security.policy import PermissionRequest
+
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        for proposal in proposals:
+            if proposal["status"] == "blocked":
+                continue
+            if proposal["action"] == "observe":
+                proposal["status"] = "proposed"
+                continue
+            permission = PermissionRequest(
+                agent="forge-vision", resource=Resource.VISION,
+                operation="execute", scope=proposal["target"],
+                task_id=session.active_task or session.id,
+                reason="screenshot-derived action proposal")
+            evaluation = policy.evaluate(permission)
+            self.audit.record_evaluation(permission, evaluation)
+            if evaluation.decision == PolicyDecision.ALLOW:
+                proposal["status"] = "proposed"
+            elif evaluation.decision == PolicyDecision.DENY:
+                proposal["status"] = "blocked"
+                proposal["reason"] = (evaluation.reason
+                                      or "blocked by policy")
+            else:
+                filed = self.approval_store.submit(ApprovalRequest(
+                    agent="forge-vision", resource=Resource.VISION,
+                    operation="execute", scopes=(proposal["target"],),
+                    task_id=session.active_task or session.id,
+                    reason="screenshot-derived action proposal",
+                    consequences="Executing the proposed action still "
+                                 "requires redeeming this approval "
+                                 "through the target bridge."))
+                proposal["status"] = "approval_required"
+                proposal["approval_id"] = filed.id
+                proposal["reason"] = (
+                    "Operator approval required before this proposal "
+                    "may be acted on.")
+        self._audit(session.actor, "vision", "propose", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{len(proposals)} proposals, "
+                           f"format {result.format}")
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "proposals": proposals,
+                "understanding": result.to_dict()}
+
+    def list_vision_approvals(self, session: Session) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-vision" and request.task_id in (
+                    session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_vision_approval(self, session: Session, approval_id: str,
+                               approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-vision" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "vision",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"vision approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
 
     # -- multi-agent orchestration (A38) ------------------------------------------
 

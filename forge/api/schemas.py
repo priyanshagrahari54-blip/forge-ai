@@ -118,3 +118,10 @@ class Pagination(BaseModel):
 class OrchestrationSubmitRequest(BaseModel):
     requirement: str = Field(min_length=1, max_length=8000)
     chain: bool = False
+
+
+# -- A39 vision ---------------------------------------------------------------
+
+class VisionAnalyzeRequest(BaseModel):
+    image_b64: str = Field(min_length=1, max_length=7_000_000)
+    approval_id: str = ""
