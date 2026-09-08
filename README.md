@@ -399,6 +399,17 @@ real outcome. API at `/api/v1/teams*`.
 See `docs/A52-AGENT-TEAMS.md`. Full suite after A52: 1288 passed, 2
 skipped.
 
+## Agent Memory (A53)
+
+Runtime-defined agents get durable per-agent memory: bounded
+key/value facts stored in the plane database, every access gated by
+MEMORY policy (read/write/delete as separate decisions, DENY
+fail-closed), audited, and surviving restarts. API at
+`/api/v1/agents/{name}/memory*`.
+
+See `docs/A53-AGENT-MEMORY.md`. Full suite after A53: 1293 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

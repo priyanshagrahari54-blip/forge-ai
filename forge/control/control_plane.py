@@ -3165,6 +3165,86 @@ class ControlPlane:
         return {"run_id": run_id, **entry}
 
 
+
+    # -- agent memory (A53) ----------------------------------------------------------------------
+
+    def _agent_memory_store(self):
+        from forge.agents.memory import AgentMemoryStore
+
+        if getattr(self, "_agent_memories", None) is None:
+            self._agent_memories = AgentMemoryStore(self._db)
+        return self._agent_memories
+
+    def _agent_memory_gate(self, session: Session, name: str,
+                           operation: str) -> bool:
+        from forge.security.policy import PermissionRequest
+
+        permission = PermissionRequest(
+            agent="forge-agent-memory", resource=Resource.MEMORY,
+            operation=operation, scope=f"agent:{name}",
+            task_id=session.active_task or session.id,
+            reason=f"agent memory {operation} for {name}",
+            details=(("agent", name),))
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        return evaluation.decision == PolicyDecision.ALLOW
+
+    def agent_memory_set(self, session: Session, name: str, key: str,
+                         value: str) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        if not self._agent_memory_gate(session, name, "write"):
+            return {"allowed": False,
+                    "reason": "denied by memory policy"}
+        try:
+            entry = self._agent_memory_store().set(name, key, value)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "memory_set", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} key={entry['key']}")
+        return {"allowed": True, "entry": entry}
+
+    def agent_memory_get(self, session: Session, name: str,
+                         key: str) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        if not self._agent_memory_gate(session, name, "read"):
+            return {"allowed": False,
+                    "reason": "denied by memory policy"}
+        entry = self._agent_memory_store().get(name, key)
+        return {"allowed": True, "entry": entry}
+
+    def agent_memory_list(self, session: Session, name: str
+                          ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        if not self._agent_memory_gate(session, name, "read"):
+            return {"allowed": False,
+                    "reason": "denied by memory policy"}
+        return {"allowed": True,
+                "entries": self._agent_memory_store().list(name)}
+
+    def agent_memory_delete(self, session: Session, name: str,
+                            key: str) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        if not self._agent_memory_gate(session, name, "delete"):
+            return {"allowed": False,
+                    "reason": "denied by memory policy"}
+        deleted = self._agent_memory_store().delete(name, key)
+        if deleted:
+            self._audit(session.actor, "agents", "memory_delete", True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{name} key={key}")
+        return {"allowed": True, "deleted": deleted}
+
+
     # -- agent creation (A49) ----------------------------------------------------------------
 
     def _agent_factory(self, session: Session):

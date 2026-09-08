@@ -225,3 +225,10 @@ class TeamCreateRequest(BaseModel):
 class TeamExecuteRequest(BaseModel):
     requirement: str = Field(min_length=1, max_length=4000)
     approval_id: str = Field(default="", max_length=200)
+
+
+# -- A53 agent memory -------------------------------------------------------------------------
+
+class AgentMemorySetRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=2000)

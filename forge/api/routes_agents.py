@@ -10,8 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from forge.api.deps import (Authed, authed, authed_mutation, get_plane,
                             rate_limit)
-from forge.api.schemas import (AgentCreateRequest, AgentOutcomeRequest,
-                               AgentRunRequest, AgentUpdateRequest)
+from forge.api.schemas import (AgentCreateRequest, AgentMemorySetRequest,
+                               AgentOutcomeRequest, AgentRunRequest,
+                               AgentUpdateRequest)
 from forge.control.control_plane import (ApprovalConflictError,
                                          ApprovalNotFoundError,
                                          ControlPlane, InvalidRequest,
@@ -159,5 +160,48 @@ async def agent_run_result(name: str, run_id: str,
                            plane: ControlPlane = Depends(get_plane)):
     try:
         return plane.agent_run_result(current.session, name, run_id)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A53 agent memory -------------------------------------------------------------------
+
+@router.post("/agents/{name}/memory", dependencies=[rate_limit("agents")])
+async def set_agent_memory(name: str, body: AgentMemorySetRequest,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_memory_set(current.session, name, body.key,
+                                      body.value)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/memory")
+async def list_agent_memory(name: str,
+                            current: Authed = Depends(authed_mutation),
+                            plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_memory_list(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/memory/{key}")
+async def get_agent_memory(name: str, key: str,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_memory_get(current.session, name, key)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.delete("/agents/{name}/memory/{key}",
+               dependencies=[rate_limit("agents")])
+async def delete_agent_memory(name: str, key: str,
+                              current: Authed = Depends(authed_mutation),
+                              plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_memory_delete(current.session, name, key)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

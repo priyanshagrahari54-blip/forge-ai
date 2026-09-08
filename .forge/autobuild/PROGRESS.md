@@ -801,3 +801,12 @@ framing controls by default (add at the edge for production).
 - API `/api/v1/teams*`; audited under `teams`.
 - 5 new tests. Full suite: **1288 passed, 2 skipped** (A51 baseline:
   1283/2).
+
+## A53 — Agent Memory
+
+- `forge/agents/memory.py`: durable SQLite per-agent key/value
+  memory with bounds (64/2000/200). Plane get/set/list/delete gated
+  by MEMORY policy with scope agent:{name}; DENY fail-closed;
+  audited; survives plane restarts.
+- API `/api/v1/agents/{name}/memory*`; 5 new tests. Full suite:
+  **1293 passed, 2 skipped** (A52 baseline: 1288/2).
