@@ -358,7 +358,6 @@ pause/cancel cooperative at stage boundaries; voice transcription and
 desktop control are foundations only; `CUSTOM` profiles rejected; no
 framing controls by default (add at the edge for production).
 
-No A35 work was started.
 
 ## A34 UI upgrade — premium browser cockpit (same branch, no backend change)
 
@@ -388,4 +387,62 @@ No A35 work was started.
   blocked); layout was verified by executed-DOM inspection, markup dumps,
   and CSS review at desktop/tablet/mobile breakpoints.
 
-No A35 work was started.
+
+## A35 — Desktop Agent (controlled execution architecture)
+
+- Built `forge/desktop/` on the A33 desktop permission foundation: `actions`
+  (structured 15-kind vocabulary with bounded validation as the *first*
+  gate), `provider` (backend-agnostic `DesktopProvider` protocol, 16
+  methods, `DesktopProviderError(kind, message)` contract, deterministic
+  scriptable `FakeDesktopProvider` with fault injection), `risk` (NONE→
+  CRITICAL classification, fail-safe MEDIUM on ambiguity, five always-deny
+  invariant families incl. kill-utilities-against-security-software and
+  sudo-in-typed-text), `profiles` (SAFE/ASSISTED/AUTONOMOUS/CUSTOM,
+  tighten-only overrides, autonomous ceiling never above LOW), `agent`
+  (identity → scope → A33 PolicyGate → risk/invariants → profile →
+  approval → provider → audit; fail closed at every step), `bridge`
+  (authenticated session boundary, actor re-identification, snapshot
+  redaction, simulate-only-on-fake).
+- Control plane: desktop sessions attach to cockpit sessions
+  (`cockpit:{session.id}`); `desktop_capabilities` reports an honest matrix
+  (`status: "simulation"`, provider label, per-action risk/profile/
+  executable/observation); `desktop_check` evaluates without executing;
+  `desktop_act` runs the complete pipeline with `agent="forge-desktop"`
+  (distinct-approver invariant) and session-bound approvals; `desktop_grants`
+  validates scope tokens; `decide_desktop_request` reuses the A33 store and
+  mints single-use tokens on approve.
+- API `/api/v1/desktop/*`: capabilities, state, check, act, grants,
+  approvals list, approve/deny. Rate-limited mutations; schema bounds
+  (action ≤64, target/reason ≤500, task/approval ids ≤128); CSRF on
+  mutations; unauthenticated access 401.
+- Cockpit Desktop view: session/profile, provider health + simulation
+  label, live observation state, capability matrix (repo-standard
+  `table.data-table`), WHAT/WHY action composer, approval cards that carry
+  the minted single-use token into the resubmitted action and consume it
+  on execution. All A34 UI contracts preserved (same-origin fetch only, no
+  storage, CSP-clean, navigation-only palette with "Go to Desktop").
+- Hard security invariants verified by tests: invariants beat policy
+  ALLOW + approval tokens + AUTONOMOUS profiles; CUSTOM cannot loosen;
+  tokens single-use/scope-bound/expiring with failed redemptions failing
+  closed into fresh approvals; task grants explicit and TTL-bounded;
+  observations redacted; provider errors structured, internals-free, and
+  specific (`disconnected`/`unavailable`/`timeout` recoverable).
+- Fixed during verification: validator `_VALIDATORS` ordering, uniform
+  `(params, target)` validator signatures with `file_access` target-path
+  fallback; cockpit provider-nesting bug (`provider.provider.simulation`);
+  approval-token flow in the cockpit form.
+
+## Executable proof (A35)
+
+- 9 new suites, 137 tests: `tests/test_a35_{actions,provider,risk,profiles,
+  agent,security,ui,e2e,control_plane}.py`. E2E covers observe → plan →
+  approve → act → verify loops against the deterministic fake desktop,
+  denial-leaves-state-untouched, and disconnect/reconnect recovery; the
+  control-plane suite covers the API approval round-trip, single-use
+  tokens, cross-session isolation, task grants, and 401/400 boundaries.
+- Full suite: **1022 passed, 2 skipped** (A34 baseline: 885 passed,
+  2 skipped). `compileall` clean over `forge/`.
+- The A34 desktop pin test was deliberately updated to the A35 contract
+  (`test_desktop_a35_simulation`): simulation status, executable
+  capabilities, fake provider label — coverage preserved, contract
+  advanced. No other A01–A34 test needed modification.

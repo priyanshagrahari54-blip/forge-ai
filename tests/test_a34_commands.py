@@ -103,16 +103,19 @@ def test_voice_foundation_is_advisory(tmp_path):
         assert unknown["executed"] is False
 
 
-def test_desktop_foundation_only(tmp_path):
+def test_desktop_a35_simulation(tmp_path):
+    """A35 upgraded the desktop foundation into a controlled execution
+    architecture over the fake desktop provider (honestly labeled)."""
     plane, client = _setup(tmp_path)
     with client:
         _, _, headers = login(client)
         capabilities = client.get("/api/v1/desktop/capabilities",
                                   headers=headers).json()
-        assert capabilities["status"] == "foundation-only"
+        assert capabilities["status"] == "simulation"
         assert capabilities["capabilities"]
-        assert all(item["executable"] is False
+        assert any(item["executable"] is True
                    for item in capabilities["capabilities"])
+        assert "fake" in capabilities["provider"].lower()
         checked = client.post("/api/v1/desktop/check", headers=headers,
                               json={"action": "mouse_click",
                                     "target": "screen"}).json()

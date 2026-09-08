@@ -81,8 +81,9 @@ RESOURCE_OPERATIONS: dict[Resource, frozenset[str]] = {
     Resource.NETWORK: frozenset({"request"}),
     Resource.MODEL: frozenset({"call"}),
     Resource.DESKTOP: frozenset({
-        "read_screen", "mouse_move", "mouse_click", "keyboard", "launch",
-        "window", "clipboard", "file_access",
+        "read_screen", "screenshot", "mouse_move", "mouse_click",
+        "keyboard", "launch", "window", "clipboard", "file_access",
+        "process", "system_info",
     }),
     Resource.VOICE: frozenset({"command"}),
 }

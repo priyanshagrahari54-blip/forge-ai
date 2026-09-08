@@ -88,6 +88,43 @@ Auth is local-development sessions (no passwords). See
 `docs/A34-BROWSER-COCKPIT.md` for the architecture, full API reference,
 event catalog, security model, configuration, and honest limitations.
 
+## Desktop Agent (A35)
+
+A35 is controlled desktop execution. The agent (`forge/desktop/`) can
+observe and act on a desktop, but every action — including observations —
+passes the A33 permission system, deterministic risk classification, hard
+security invariants, a permission profile, and (for actuation) the A33
+approval store:
+
+```
+DesktopRequest → identity → task scope → A33 PolicyGate → risk/invariants
+→ profile → approval (single-use token) → provider execution → audit
+```
+
+- **Structured vocabulary**: 15 action kinds with bounded validation as
+  the first gate (target/keyboard/clipboard/args/coordinates limits,
+  shell-metacharacter rejection, relative paths only).
+- **Profiles**: SAFE (observe only), ASSISTED (actuation needs approval),
+  AUTONOMOUS (LOW-risk actuation inside granted task scope), CUSTOM
+  (tighten-only overrides). Hard invariants can never be overridden:
+  credential extraction, security-software disabling, privilege
+  escalation, persistence, remote control.
+- **Approvals**: the same A33 store, single-use scope-bound tokens,
+  distinct approver; stale/spent/out-of-scope tokens fail closed into a
+  fresh request.
+- **Provider protocol + fake desktop**: 16-method `DesktopProvider`
+  protocol; deterministic scriptable `FakeDesktopProvider` (windows,
+  processes, clipboard, input log, fault injection) for tests/dev. The
+  cockpit labels the simulation as a simulation; A35 ships no real-OS
+  provider — the protocol is the plugin point.
+- **API + cockpit**: `/api/v1/desktop/capabilities|state|check|act|grants|
+  approvals|approve|deny`, rate-limited, session-bound; a Desktop cockpit
+  view with state, capability matrix, WHAT/WHY action form, and approval
+  cards that carry the minted token into execution.
+
+See `docs/A35-DESKTOP-AGENT.md` for the full architecture, security model,
+and test matrix. Full suite after A35: 1011 passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

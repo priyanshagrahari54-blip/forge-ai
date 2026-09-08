@@ -115,7 +115,8 @@ def make_plane(tmp_path: Path, provider=None, *,
                project_id: str = "demo",
                extra_projects: dict[str, str] | None = None,
                approval_timeout: float = 60.0,
-               start: bool = True) -> ControlPlane:
+               start: bool = True, policy=None,
+               desktop_provider=None) -> ControlPlane:
     root = tmp_path / project_id
     root.mkdir(parents=True, exist_ok=True)
     projects = {project_id: str(root)}
@@ -128,6 +129,8 @@ def make_plane(tmp_path: Path, provider=None, *,
         fabric=make_fabric(provider or ScriptedProvider()),
         approval_timeout=approval_timeout,
         approval_token_ttl=60.0,
+        policy=policy,
+        desktop_provider=desktop_provider,
     )
     plane = ControlPlane(config)
     if start:

@@ -21,6 +21,9 @@ API. It owns:
   subsystems;
 - append-oriented audit via the EXISTING
   :class:`AuditLog <forge.security.audit.AuditLog>` with a JSONL sink.
+- an A35 Desktop Bridge + Desktop Agent (``forge.desktop``): controlled
+  desktop execution through the existing A33 policy/approval/audit
+  systems, backed by the deterministic fake desktop provider.
 
 The control plane implements NO policy of its own: every authorization
 decision is delegated to A33. Unknown ids, cross-project access, and
@@ -70,7 +73,7 @@ from forge.security.approvals import (
 )
 from forge.security.audit import AuditLog
 from forge.security.permissions import OperationMode, PermissionManager
-from forge.security.policy import PermissionPolicy
+from forge.security.policy import PermissionPolicy, Resource
 from forge.security.policy_gate import PolicyDecision, PolicyGate
 
 
@@ -470,6 +473,10 @@ class ControlConfig:
     fabric: Any = None
     checkpoint_retention: int = 10
     local_dev_mode: bool = True
+    # A35 desktop: the provider behind the Desktop Bridge. Only the
+    # deterministic fake exists in A35; real providers arrive as plugins.
+    desktop_provider: Any = None
+    desktop_bridge_ttl: float = 3600.0
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -497,7 +504,14 @@ class ControlConfig:
             session_ttl=env_float("FORGE_SESSION_TTL", 12 * 3600),
             local_dev_mode=os.environ.get("FORGE_AUTH_MODE",
                                            "local-dev") != "production",
+            desktop_bridge_ttl=env_float("FORGE_DESKTOP_TTL", 3600.0),
         )
+        provider_name = os.environ.get("FORGE_DESKTOP_PROVIDER", "").strip()
+        if provider_name and provider_name != "fake":
+            # A35 ships exactly one provider; refuse unknown names honestly.
+            raise ValueError(
+                f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
+                "A35 supports 'fake' only")
         for key, value in overrides.items():
             setattr(config, key, value)
         return config
@@ -534,6 +548,26 @@ class ControlPlane:
             from forge.models.fabric import ModelFabric
             self.fabric = ModelFabric.from_defaults()
         self.policy = config.policy
+        # A35 Desktop Agent: controlled execution through the existing A33
+        # policy/approval/audit systems. Provider defaults to the
+        # deterministic fake (dev/tests); real providers arrive as plugins.
+        from forge.desktop.agent import DesktopAgent, GrantScopeChecker
+        from forge.desktop.bridge import DesktopBridge
+        from forge.desktop.profiles import DesktopProfile
+        from forge.desktop.provider import FakeDesktopProvider
+
+        desktop_provider = (config.desktop_provider
+                            if config.desktop_provider is not None
+                            else FakeDesktopProvider())
+        desktop_agent = DesktopAgent(
+            desktop_provider, policy=self.policy,
+            store=self.approval_store, audit=self.audit,
+            profile=DesktopProfile(mode="assisted"),
+            scope_checker=GrantScopeChecker(
+                ttl=config.desktop_bridge_ttl))
+        self.desktop_bridge = DesktopBridge(
+            desktop_agent, ttl=config.desktop_bridge_ttl)
+        self.desktop = desktop_agent
         self._queues: dict[str, PersistentTaskQueue] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._active: dict[str, int] = {}
@@ -1457,50 +1491,245 @@ class ControlPlane:
                 "interpretation": interpretation.to_dict(),
                 "executed": False}
 
-    def desktop_capabilities(self) -> dict[str, Any]:
-        from forge.tools.desktop import DesktopAction
+    # -- desktop agent (A35) -----------------------------------------------------
 
+    def _desktop_profile(self, session: Session):
+        from forge.desktop.profiles import profile_from_session
+
+        return profile_from_session(session.profile)
+
+    def _desktop_session(self, session: Session):
+        """Get (or create) the bridge session for a cockpit session."""
+        bridge_id = f"cockpit:{session.id}"
+        try:
+            return self.desktop_bridge.session(bridge_id)
+        except Exception:
+            return self.desktop_bridge.open_session(
+                session.actor, session.project_id, bridge_id=bridge_id)
+
+    def desktop_capabilities(self, session: Session) -> dict[str, Any]:
+        """A35: honest capability matrix for the session's profile."""
+        from forge.desktop.profiles import PROFILE_LABELS
+
+        profile = self._desktop_profile(session)
+        capabilities = self.desktop.available_actions(profile=profile)
         return {
-            "status": "foundation-only",
-            "note": "A34 exposes desktop capabilities for discovery and "
-                    "permission evaluation only. No screen, mouse, keyboard, "
-                    "window, or process control exists.",
-            "capabilities": [
-                {"action": action.value, "executable": False}
-                for action in DesktopAction
-            ],
+            "status": "simulation",
+            "note": "A35 controls the deterministic fake desktop through "
+                    "the A33 permission system. No real OS resources are "
+                    "touched; real providers arrive as plugins.",
+            "provider": self.desktop_bridge.provider_kind(),
+            "profile": profile.mode,
+            "profile_label": PROFILE_LABELS.get(profile.mode, profile.mode),
+            "capabilities": capabilities,
         }
 
     def desktop_check(self, session: Session, action: str,
-                      target: str = "") -> dict[str, Any]:
-        from forge.tools.desktop import (
-            DesktopAction,
-            DesktopActionRequest,
-            DesktopResource,
-        )
+                      target: str = "", params: dict[str, Any] | None = None,
+                      task_id: str = "") -> dict[str, Any]:
+        """Evaluate a desktop request through the A35 pipeline without
+        executing anything."""
+        from forge.desktop.actions import DesktopActionKind, DesktopRequest
 
         try:
-            requested = DesktopAction(action)
+            kind = DesktopActionKind(action)
         except ValueError:
             raise InvalidRequest(
                 f"Unknown desktop action: {action!r}") from None
         if not isinstance(target, str) or len(target) > 500:
             raise InvalidRequest("Invalid desktop target.")
-        request = DesktopActionRequest(
-            action=requested,
-            resource=DesktopResource(kind="screen", target=target),
-            agent=session.actor, task_id=session.active_task,
+        request = DesktopRequest(
+            kind, target=target, params=dict(params or {}),
+            agent=session.actor, task_id=task_id or session.active_task,
             reason="cockpit desktop permission preview")
-        permission = request.to_permission_request()
-        policy = self.policy if self.policy is not None else PermissionPolicy()
-        evaluation = policy.evaluate(permission)
-        self._audit(session.actor, "desktop", action,
-                    evaluation.decision == PolicyDecision.ALLOW,
-                    reason=f"preview only: {evaluation.reason}")
-        return {"action": requested.value, "target": target,
-                "decision": evaluation.decision.value,
-                "reason": evaluation.reason,
-                "executed": False}
+        authorization = self.desktop.authorize(
+            request, profile=self._desktop_profile(session))
+        self._audit(session.actor, "desktop", request.policy_operation(),
+                    authorization.allowed,
+                    reason=f"preview only: {authorization.reason}",
+                    task_id=request.task_id)
+        payload = authorization.to_dict()
+        payload.update({"action": kind.value, "target": target,
+                        "executed": False})
+        return payload
+
+    def desktop_state(self, session: Session) -> dict[str, Any]:
+        """Observation snapshot of the desktop through the full pipeline."""
+        from forge.desktop.actions import DesktopRequest
+
+        profile = self._desktop_profile(session)
+        observations: dict[str, Any] = {}
+        probes = (
+            ("screenshot", DesktopRequest("screenshot", agent="forge-desktop",
+                                          task_id=session.active_task)),
+            ("active_window", DesktopRequest("read_screen",
+                                             agent="forge-desktop",
+                                             task_id=session.active_task)),
+            ("windows", DesktopRequest("window_list", agent="forge-desktop",
+                                       task_id=session.active_task)),
+            ("processes", DesktopRequest("process_list",
+                                         agent="forge-desktop",
+                                         task_id=session.active_task)),
+            ("system", DesktopRequest("system_info", agent="forge-desktop",
+                                      task_id=session.active_task)),
+        )
+        for name, probe in probes:
+            result = self.desktop.observe(probe, profile=profile)
+            observations[name] = result.to_dict()
+        bridge_payload = self.desktop_bridge.snapshot(
+            self._desktop_session(session).bridge_id)
+        return {"session_profile": session.profile,
+                "profile": profile.mode,
+                "observations": redact(observations),
+                "provider": redact(bridge_payload)}
+
+    def desktop_act(self, session: Session, action: str, *,
+                    target: str = "", params: dict[str, Any] | None = None,
+                    reason: str = "", task_id: str = "",
+                    approval_id: str = "") -> dict[str, Any]:
+        """Execute a desktop action through the complete A35 pipeline."""
+        from forge.desktop.actions import DesktopActionKind, DesktopRequest
+
+        try:
+            kind = DesktopActionKind(action)
+        except ValueError:
+            raise InvalidRequest(
+                f"Unknown desktop action: {action!r}") from None
+        if not isinstance(target, str) or len(target) > 500:
+            raise InvalidRequest("Invalid desktop target.")
+        if len(reason) > 500:
+            raise InvalidRequest("Invalid reason.")
+        request = DesktopRequest(
+            kind, target=target, params=dict(params or {}),
+            agent="forge-desktop", task_id=task_id or session.active_task,
+            session_id=session.id,
+            reason=reason or f"cockpit desktop {kind.value}")
+        result = self.desktop.act(
+            request, approval_token_id=approval_id,
+            profile=self._desktop_profile(session))
+        payload = result.to_dict()
+        payload.update({"session_profile": session.profile})
+        self._audit(
+            session.actor, "desktop", request.policy_operation(),
+            result.allowed, task_id=request.task_id,
+            reason=(request.reason if result.executed
+                    else f"refused: {result.decision}"))
+        self._emit(session.active_task or task_id or "desktop",
+                   session.project_id, "desktop.action",
+                   {"action": kind.value, "target": target,
+                    "decision": result.decision,
+                    "executed": result.executed,
+                    "risk": result.risk,
+                    "approval_required": result.approval_required})
+        return payload
+
+    def desktop_grant(self, session: Session, task_id: str,
+                      scopes: tuple[str, ...] | list[str]) -> dict[str, Any]:
+        """Grant a bounded desktop scope to a task.
+
+        A grant only defines what may be *attempted*; every action still
+        passes policy, risk invariants, profile, and approval gates.
+        """
+        from forge.desktop.agent import GrantScopeChecker
+        from forge.desktop.actions import DesktopActionKind
+
+        if not isinstance(task_id, str) or not task_id.strip() \
+                or len(task_id) > 128:
+            raise InvalidRequest("task_id is required.")
+        scope_list = [str(item) for item in scopes]
+        if not scope_list or len(scope_list) > 32:
+            raise InvalidRequest("scopes must be a non-empty list (<=32).")
+        allowed_tokens = {"*", "screen", "windows", "input", "clipboard",
+                          "files", "processes", "system",
+                          "app:*", "window:*", "process:*"}
+        for scope in scope_list:
+            if not isinstance(scope, str) or len(scope) > 300:
+                raise InvalidRequest("Invalid scope entry.")
+            if not any(scope == token or scope.startswith(
+                    ("app:", "window:", "file:", "process:"))
+                    for token in allowed_tokens) \
+                    and scope not in allowed_tokens:
+                raise InvalidRequest(f"Unknown desktop scope: {scope!r}")
+        checker = self.desktop.scope_checker
+        if not isinstance(checker, GrantScopeChecker):
+            raise InvalidRequest(
+                "Desktop task grants need a GrantScopeChecker")
+        checker.grant(task_id, tuple(scope_list),
+                      ttl=self.config.desktop_bridge_ttl)
+        self._audit(session.actor, "desktop", "grant_task", True,
+                    task_id=task_id,
+                    reason=f"scopes={sorted(scope_list)!r}")
+        self._emit(task_id, session.project_id, "desktop.grant",
+                   {"task_id": task_id, "scopes": sorted(scope_list)})
+        return {"task_id": task_id, "scopes": sorted(scope_list),
+                "ttl_seconds": self.config.desktop_bridge_ttl,
+                "note": "The grant only scopes attempts; policy, risk "
+                        "invariants, profile, and approvals still gate "
+                        "every action."}
+
+    def list_desktop_approvals(self, session: Session) -> list[dict[str, Any]]:
+        """Desktop approval requests visible to this cockpit session.
+
+        Desktop requests are bound to the session (or its active task),
+        so visibility is exact — cross-session desktop approvals are
+        simply not listed (never 403).
+        """
+        from forge.security.approvals import ApprovalStatus
+
+        visible: list[dict[str, Any]] = []
+        for request in self.approval_store.all_requests():
+            if request.resource != Resource.DESKTOP:
+                continue
+            if request.status != ApprovalStatus.PENDING:
+                continue
+            if request.task_id not in (session.id, session.active_task):
+                continue
+            visible.append(request.to_dict())
+        return visible
+
+    def decide_desktop_request(self, session: Session, approval_id: str,
+                               approved: bool) -> dict[str, Any]:
+        """Decide a desktop approval through the same A33 store.
+
+        This is a cockpit surface for desktop requests (which are
+        session-bound, not run-bound); authority remains entirely in the
+        A33 :class:`ApprovalStore` — distinct approver, single
+        transition, scoped single-use tokens.
+        """
+        from forge.security.approvals import ApprovalStatus
+
+        validate_id(approval_id, kind="approval id")
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.resource != Resource.DESKTOP:
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        if request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "desktop",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"desktop approval {approval_id} "
+                    f"{'approved' if approved else 'denied'}")
+        self._emit(session.active_task or "desktop",
+                   session.project_id,
+                   "desktop.approved" if approved else "desktop.denied",
+                   {"approval_id": approval_id,
+                    "operation": f"{request.resource.value}:"
+                    f"{request.operation}",
+                    "decided_by": session.actor})
+        return {"approval": decided.to_dict(), "token_id": token_id}
 
     # -- health -------------------------------------------------------------------
 

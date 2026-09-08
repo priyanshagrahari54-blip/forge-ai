@@ -9,6 +9,7 @@ const state = {
   route: "dashboard",
   epoch: 0,
   taskId: null,
+  deskToken: null,
   cursor: 0,
   histMax: 0,
   seenSeq: new Set(),
@@ -36,6 +37,7 @@ const ROUTES = {
   git: { render: renderGit, title: "Git" },
   activity: { render: renderActivity, title: "Activity" },
   approvals: { render: renderApprovals, title: "Approvals" },
+  desktop: { render: renderDesktop, title: "Desktop" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -1517,6 +1519,212 @@ async function renderSystem() {
   renderSecurityPosture(document.getElementById("sys-security"), false);
 }
 
+/* ---------- desktop (A35) ---------- */
+
+const DESK_RESULT_TONES = { ALLOW: "ok", DENY: "bad", REQUIRE_APPROVAL: "warn" };
+
+function deskResultBox(result) {
+  const box = document.getElementById("desk-result");
+  box.innerHTML = "";
+  box.classList.remove("hidden");
+  const tone = DESK_RESULT_TONES[result.decision] || "";
+  const rows = [
+    ["decision", result.decision, tone],
+    ["executed", result.executed ? "yes" : "no"],
+    ["risk", result.risk || "–"],
+    ["approval required", result.approval_required ? "yes" : "no"],
+  ];
+  if (result.approval_request_id) {
+    rows.push(["approval id", result.approval_request_id, true]);
+  }
+  if (result.error) {
+    rows.push(["error", result.error.kind + ": " + result.error.message, "bad"]);
+  }
+  box.appendChild(kvTable(rows));
+  const note = el("p", "muted");
+  note.textContent = result.executed
+    ? "Action executed on the simulated desktop."
+    : "Nothing was executed on the desktop.";
+  box.appendChild(note);
+}
+
+async function renderDesktop() {
+  const snap = snapEpoch();
+  // Provider + profile header.
+  try {
+    const caps = await api("/api/v1/desktop/capabilities");
+    if (stale(snap)) return;
+    const profileBox = document.getElementById("desk-profile");
+    profileBox.innerHTML = "";
+    profileBox.appendChild(kvTable([
+      ["session profile", state.session ? state.session.profile : "–"],
+      ["desktop profile", caps.profile || "–"],
+    ]));
+    const providerBox = document.getElementById("desk-provider");
+    providerBox.innerHTML = "";
+    providerBox.appendChild(kvTable([
+      ["provider", caps.provider || "–", true],
+      ["status", caps.status || "–"],
+    ]));
+    const note = el("p", "muted");
+    note.textContent = (caps.note || "").trim();
+    providerBox.appendChild(note);
+    // Capability matrix.
+    const list = document.getElementById("desk-capabilities");
+    list.innerHTML = "";
+    const table = el("table", "data-table");
+    const head = el("tr");
+    for (const label of ["action", "risk", "profile", "executable"]) {
+      head.appendChild(el("th", null, label));
+    }
+    table.appendChild(head);
+    const select = document.getElementById("desk-action");
+    select.innerHTML = "";
+    for (const item of caps.capabilities || []) {
+      const row = el("tr");
+      row.appendChild(el("td", null, item.action));
+      row.appendChild(el("td", null, item.risk || "–"));
+      row.appendChild(el("td", null, item.profile || "–"));
+      row.appendChild(el("td", null, item.executable ? "yes" : "no"));
+      table.appendChild(row);
+      const option = el("option", null, item.action);
+      option.value = item.action;
+      select.appendChild(option);
+    }
+    list.appendChild(table);
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-capabilities"),
+      "Unable to load desktop capabilities", err, renderDesktop);
+  }
+  // Observation state.
+  try {
+    const statePayload = await api("/api/v1/desktop/state");
+    if (stale(snap)) return;
+    const box = document.getElementById("desk-state");
+    box.innerHTML = "";
+    const provider = (statePayload.provider || {});
+    const providerPayload = provider.provider || {};
+    const rows = [
+      ["provider healthy", provider.healthy ? "yes" : "no"],
+      ["simulation", providerPayload.simulation ? "yes" : "no"],
+    ];
+    const obs = statePayload.observations || {};
+    const focus = obs.active_window && obs.active_window.observation;
+    if (focus && focus.title) {
+      rows.push(["active window", focus.title + " (" + focus.app + ")", true]);
+    }
+    const windows = obs.windows && obs.windows.observation;
+    if (windows && windows.windows) {
+      rows.push(["windows", windows.windows.length]);
+    }
+    const proc = obs.processes && obs.processes.observation;
+    if (proc && proc.processes) {
+      rows.push(["processes", proc.processes.length]);
+    }
+    box.appendChild(kvTable(rows));
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-state"),
+      "Unable to load desktop state", err, renderDesktop);
+  }
+  // Pending desktop approvals for this session.
+  try {
+    const approvals = await api("/api/v1/desktop/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("desk-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending desktop approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          (approval.operation || "desktop") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        card.appendChild(el("p", "muted",
+          "risk: " + (approval.risk || "–") + " · approver must not be the requesting agent"));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/desktop/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.deskToken = decision.token_id;
+            }
+            renderDesktop();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderDesktop);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/desktop/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderDesktop();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderDesktop);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-approvals"),
+      "Unable to load desktop approvals", err, renderDesktop);
+  }
+  // Action form (re-bound every render; the template is re-cloned each time).
+  document.getElementById("desk-refresh").addEventListener("click", renderDesktop);
+  document.getElementById("desk-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const resultBox = document.getElementById("desk-result");
+    resultBox.innerHTML = "";
+    resultBox.classList.add("hidden");
+    let params = {};
+    const paramsText = document.getElementById("desk-params").value.trim();
+    if (paramsText) {
+      try {
+        params = JSON.parse(paramsText);
+      } catch (err) {
+        resultBox.classList.remove("hidden");
+        resultBox.appendChild(el("p", "error", "Parameters must be valid JSON."));
+        return;
+      }
+    }
+    const body = {
+      action: document.getElementById("desk-action").value,
+      target: document.getElementById("desk-target").value.trim(),
+      params: params,
+      reason: document.getElementById("desk-reason").value.trim(),
+    };
+    if (state.deskToken) body.approval_id = state.deskToken;
+    try {
+      const result = await api("/api/v1/desktop/act",
+        { method: "POST", body: body });
+      if (result.executed) state.deskToken = null;
+      deskResultBox(result);
+      renderDesktop();
+    } catch (err) {
+      resultBox.classList.remove("hidden");
+      errorState(resultBox, "Desktop action failed", err, renderDesktop);
+    }
+  });
+}
+
 /* ---------- command palette ---------- */
 
 const PALETTE_COMMANDS = [
@@ -1528,6 +1736,7 @@ const PALETTE_COMMANDS = [
   ["Go to Git", "view", () => { window.location.hash = "#/git"; }],
   ["Go to Activity", "view", () => { window.location.hash = "#/activity"; }],
   ["View approvals", "view", () => { window.location.hash = "#/approvals"; }],
+  ["Go to Desktop", "view", () => { window.location.hash = "#/desktop"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";

@@ -51,6 +51,9 @@
         <a href="#/approvals" data-route="approvals">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor"/><path d="M5.5 8.2 7.3 10 10.7 6.4" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Approvals</span><span id="nav-appr-count" class="nav-badge hidden"></span></a>
+        <a href="#/desktop" data-route="desktop">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1" fill="none" stroke="currentColor"/><path d="M5.5 13.5h5M8 11.5v2" stroke="currentColor" stroke-linecap="round"/><path d="M4 6.5h4M4 8.5h6" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Desktop</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -340,6 +343,59 @@
     </div>
   </div>
   <div id="ap-list" class="appr-grid"></div>
+</template>
+
+<template id="tpl-desktop">
+  <div class="page-head">
+    <div>
+      <h2>Desktop</h2>
+      <p class="muted">Controlled desktop execution. Every action passes the A33
+      permission system, risk invariants, your profile, and approval.</p>
+    </div>
+    <button id="desk-refresh" class="btn small">Refresh</button>
+  </div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Session &amp; provider</h3></div>
+      <div id="desk-profile"></div>
+      <div id="desk-provider"></div>
+    </div>
+    <div class="surface">
+      <div class="section-header"><h3>Desktop state (observation)</h3></div>
+      <div id="desk-state"></div>
+    </div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Capabilities under this profile</h3></div>
+    <div id="desk-capabilities"></div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Action</h3></div>
+    <form id="desk-form">
+      <div class="form-grid">
+        <div>
+          <label for="desk-action">Action</label>
+          <select id="desk-action"></select>
+        </div>
+        <div>
+          <label for="desk-target">Target</label>
+          <input id="desk-target" type="text" maxlength="300"
+                 placeholder="window/app/path (empty for global)" />
+        </div>
+      </div>
+      <label for="desk-params">Parameters (JSON object)</label>
+      <textarea id="desk-params" rows="3" placeholder='{"op": "focus"} or {}'></textarea>
+      <label for="desk-reason">Why (shown on approvals)</label>
+      <input id="desk-reason" type="text" maxlength="500"
+             placeholder="e.g. inspect the active window" />
+      <button class="btn primary" type="submit">Request action</button>
+      <div id="desk-result" class="result-box" role="status"></div>
+    </form>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Pending desktop approvals</h3></div>
+    <div id="desk-approvals"></div>
+  </div>
 </template>
 
 <template id="tpl-system">

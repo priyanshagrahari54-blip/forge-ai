@@ -52,6 +52,26 @@ class VoiceRequest(BaseModel):
 class DesktopCheckRequest(BaseModel):
     action: str = Field(min_length=1, max_length=64)
     target: str = Field(default="", max_length=500)
+    params: dict = Field(default_factory=dict)
+    task_id: str = Field(default="", max_length=128)
+
+
+class DesktopActRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=64)
+    target: str = Field(default="", max_length=500)
+    params: dict = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=500)
+    task_id: str = Field(default="", max_length=128)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class DesktopGrantRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=128)
+    scopes: list[str] = Field(min_length=1, max_length=32)
+
+
+class DesktopDecisionRequest(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=128)
 
 
 class Pagination(BaseModel):
