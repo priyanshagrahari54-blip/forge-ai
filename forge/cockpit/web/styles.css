@@ -725,3 +725,57 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
 .orch-step button {
   margin-right: 8px;
 }
+
+/* ---------- themes (A41) ---------- */
+
+[data-theme="light"] {
+  --bg0: #f2f4f8;
+  --bg1: #ffffff;
+  --bg2: #f7f9fc;
+  --bg3: #eef2f7;
+  --line: #d8dfe9;
+  --line-soft: #e6ebf2;
+  --text: #17202c;
+  --muted: #52617a;
+  --faint: #7b8aa1;
+  --accent: #c2590f;
+  --accent-soft: rgba(194, 89, 15, 0.12);
+  --accent-ink: #ffffff;
+  --link: #2f5fc4;
+  --ok: #1d8a48;
+  --ok-soft: rgba(29, 138, 72, 0.12);
+  --warn: #a36b09;
+  --warn-soft: rgba(163, 107, 9, 0.12);
+  --bad: #c02f27;
+  --bad-soft: rgba(192, 47, 39, 0.12);
+  --info: #2f6fc2;
+  --info-soft: rgba(47, 111, 194, 0.12);
+  --shadow: 0 8px 24px rgba(23, 32, 44, 0.12);
+}
+
+/* ---------- responsive layout (A41) ---------- */
+
+@media (max-width: 760px) {
+  .sidebar {
+    position: relative;
+    width: 100%;
+    height: auto;
+  }
+  #nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .nav-group a {
+    width: 100%;
+  }
+  .view-head h2 {
+    font-size: 1.25rem;
+  }
+  .button-row {
+    flex-wrap: wrap;
+  }
+  .surface {
+    padding: 12px;
+  }
+}

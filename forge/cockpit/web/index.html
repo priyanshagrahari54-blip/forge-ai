@@ -69,6 +69,15 @@
         <a href="#/computer" data-route="computer">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9.5" rx="1.5" fill="none" stroke="currentColor"/><path d="M5.5 15h5M8 12v3" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Computer</span></a>
+        <a href="#/agents" data-route="agents">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="2.2" fill="none" stroke="currentColor"/><rect x="9" y="5.5" width="5.5" height="5" rx="2" fill="none" stroke="currentColor"/></svg>
+          <span>Agents</span></a>
+        <a href="#/security" data-route="security">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l5 2.2v4.1c0 3.4-2.1 5.9-5 6.7-2.9-.8-5-3.3-5-6.7V3.7z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M5.7 8l1.7 1.7 2.9-3" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Security</span></a>
+        <a href="#/settings" data-route="settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Settings</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -191,6 +200,59 @@
       <div id="d-security"></div>
     </div>
   </div>
+</template>
+
+<template id="tpl-agents">
+  <div class="view-head">
+    <h2>Agents</h2>
+    <p class="muted">The documented agent inventory: what each agent
+    serves, and the A33 resource that gates its actions. Simulated
+    providers are labeled honestly.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Catalog</h3></div>
+    <div id="agents-list"></div>
+  </section>
+</template>
+
+<template id="tpl-security">
+  <div class="view-head">
+    <h2>Security</h2>
+    <p class="muted">Security posture: mode, policy defaults, and the
+    hard invariants that can never be loosened by configuration.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Posture</h3></div>
+    <div id="security-posture"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Hard invariants</h3></div>
+    <div id="security-invariants"></div>
+  </section>
+</template>
+
+<template id="tpl-settings">
+  <div class="view-head">
+    <h2>Settings</h2>
+    <p class="muted">Session profile, theme, and cockpit shortcuts.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Session</h3></div>
+    <div id="settings-session"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Appearance</h3></div>
+    <div class="button-row">
+      <button id="settings-theme" class="ghost">Switch to light theme</button>
+    </div>
+    <p class="muted" id="settings-theme-note">Theme starts dark each
+    session; no storage is used.</p>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Shortcuts</h3></div>
+    <p class="muted">Ctrl+K (or Cmd+K) opens the command palette.
+    Esc closes it.</p>
+  </section>
 </template>
 
 <template id="tpl-computer">

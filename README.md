@@ -254,6 +254,21 @@ execute` with versioned snapshots, redacted history, and hard guards.
 See `docs/A40-COMPUTER-USE.md` for the full security model and test
 matrix. Full suite after A40: 1195 passed, 2 skipped.
 
+## Premium Cockpit (A41)
+
+The cockpit now covers the full surface — Overview, Tasks, Projects,
+Models, Permissions, Approvals, Activity, Git, Desktop, Voice, Memory,
+Orchestrations, Vision, Computer Use — plus three new live views:
+**Agents** (documented inventory with each agent's real A33 gate and
+honest simulation labels), **Security** (posture, hard invariants,
+recorded evaluations — non-sensitive by construction), and
+**Settings** (session profile, theme, shortcuts). Dark-first theme
+with a complete light variant and a per-session toggle, responsive
+layout under 760px, and the Ctrl+K command palette.
+
+See `docs/A41-COCKPIT.md`. Full suite after A41: 1201 passed, 2
+skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

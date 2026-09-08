@@ -45,6 +45,9 @@ const ROUTES = {
   orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
   vision: { render: renderVision, title: "Vision" },
   computer: { render: renderComputer, title: "Computer Use" },
+  agents: { render: renderAgentsView, title: "Agents" },
+  security: { render: renderSecurityView, title: "Security" },
+  settings: { render: renderSettingsView, title: "Settings" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2142,6 +2145,10 @@ const PALETTE_COMMANDS = [
   ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
   ["Go to Vision", "view", () => { window.location.hash = "#/vision"; }],
   ["Go to Computer Use", "view", () => { window.location.hash = "#/computer"; }],
+  ["Go to Agents", "view", () => { window.location.hash = "#/agents"; }],
+  ["Go to Security", "view", () => { window.location.hash = "#/security"; }],
+  ["Go to Settings", "view", () => { window.location.hash = "#/settings"; }],
+  ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";
@@ -2756,4 +2763,89 @@ async function renderComputerApprovals() {
     errorState(box, "Unable to load computer approvals", err,
       renderComputerApprovals);
   }
+}
+
+/* ---------- cockpit catalog surfaces (A41) ---------- */
+
+function renderAgentsView() {
+  const box = document.getElementById("agents-list");
+  api("/api/v1/agents").then((payload) => {
+    box.innerHTML = "";
+    for (const agent of payload.agents || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        agent.name + " · " + agent.role +
+        (agent.simulated ? " · simulated provider (labeled)" : "")));
+      row.appendChild(el("p", "muted",
+        "capabilities: " + (agent.capabilities || []).join(", ") +
+        " · gate: " + (agent.gate || "")));
+      if (agent.notes) {
+        row.appendChild(el("p", "muted", agent.notes));
+      }
+      box.appendChild(row);
+    }
+  }).catch((err) => {
+    errorState(box, "Unable to load the agent catalog", err, renderAgentsView);
+  });
+}
+
+function renderSecurityView() {
+  api("/api/v1/security").then((payload) => {
+    const posture = document.getElementById("security-posture");
+    posture.innerHTML = "";
+    posture.appendChild(el("p", null,
+      "Mode: " + payload.mode + " · policy default: " +
+      payload.policy_default + " · rules indexed: " +
+      payload.policy_rules + " · recorded permission evaluations: " +
+      payload.audit_evaluations_recorded));
+    posture.appendChild(el("p", "muted",
+      "Desktop provider: " + (payload.desktop_provider || "") +
+      (payload.vision_simulation ? " · vision: simulated (labeled)"
+                                 : "") +
+      (payload.voice_simulation ? " · voice: simulated (labeled)" : "")));
+    const invariants = document.getElementById("security-invariants");
+    invariants.innerHTML = "";
+    for (const invariant of payload.hard_invariants || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null, invariant));
+      invariants.appendChild(row);
+    }
+  }).catch((err) => {
+    errorState(document.getElementById("security-posture"),
+      "Unable to load the security posture", err, renderSecurityView);
+  });
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light"
+    ? "light" : "dark";
+}
+
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  const button = document.getElementById("settings-theme");
+  if (button) {
+    button.textContent = next === "light"
+      ? "Switch to dark theme" : "Switch to light theme";
+  }
+}
+
+function renderSettingsView() {
+  api("/api/v1/sessions/me").then((payload) => {
+    const session = payload.session || {};
+    const box = document.getElementById("settings-session");
+    box.innerHTML = "";
+    box.appendChild(el("p", null,
+      "Actor: " + (session.actor || "") + " · project: " +
+      (session.project_id || "") + " · profile: " +
+      (session.profile || "")));
+    const button = document.getElementById("settings-theme");
+    button.textContent = currentTheme() === "light"
+      ? "Switch to dark theme" : "Switch to light theme";
+    button.addEventListener("click", toggleTheme);
+  }).catch((err) => {
+    errorState(document.getElementById("settings-session"),
+      "Unable to load session", err, renderSettingsView);
+  });
 }

@@ -2419,6 +2419,115 @@ class ControlPlane:
         return {"approval": decided.to_dict(), "token_id": token_id}
 
 
+
+    # -- cockpit catalog surfaces (A41) ----------------------------------------------
+
+    def agent_catalog(self) -> list[dict[str, Any]]:
+        """The documented agent inventory with its real security gating.
+
+        Catalog rows describe which agents exist in this build, what
+        capabilities they serve, and which A33 resource gates their
+        actions. This is architecture metadata — never a capability
+        claim beyond what the gates and executors actually enforce.
+        """
+        return [
+            {"name": "planner", "role": "planning",
+             "capabilities": ["planning"],
+             "gate": "read-only; deterministic requirement analysis",
+             "real": True,
+             "notes": "CapabilityAgentPlanner over the agent registry."},
+            {"name": "coder", "role": "coding",
+             "capabilities": ["coding"],
+             "gate": "FILESYSTEM write via change sets; operator approval "
+                     "under ASSISTED",
+             "real": True,
+             "notes": "Proposes change sets; never writes ungated."},
+            {"name": "debugger", "role": "debugging",
+             "capabilities": ["debugging"],
+             "gate": "FILESYSTEM write via change sets; TERMINAL execute "
+                     "for tests",
+             "real": True,
+             "notes": "Test/Debug loop with bounded retries."},
+            {"name": "tester", "role": "testing",
+             "capabilities": ["testing"],
+             "gate": "TERMINAL execute gated per command",
+             "real": True,
+             "notes": "Runs the project test suite; reports real counts."},
+            {"name": "reviewer", "role": "reviewing",
+             "capabilities": ["review"],
+             "gate": "read-only",
+             "real": True,
+             "notes": "Independent review pass over the change set."},
+            {"name": "security", "role": "security",
+             "capabilities": ["security"],
+             "gate": "read-only",
+             "real": True,
+             "notes": "VerificationPipeline: secrets, dangerous patterns, "
+                      "dependencies."},
+            {"name": "researcher", "role": "research",
+             "capabilities": ["research"],
+             "gate": "read-only; RepositoryIntelligence",
+             "real": True,
+             "notes": "Repository structure, module and insight analysis."},
+            {"name": "forge-orchestrator", "role": "orchestration",
+             "capabilities": ["multi-agent"],
+             "gate": "AGENT/execute per dispatched agent",
+             "real": True,
+             "notes": "A38 team runtime; every dispatch policy-gated."},
+            {"name": "forge-voice", "role": "voice",
+             "capabilities": ["speech"],
+             "gate": "VOICE/command",
+             "real": True, "simulated": True,
+             "notes": "A36 simulated speech stack, honestly labeled."},
+            {"name": "forge-vision", "role": "vision",
+             "capabilities": ["image_understanding"],
+             "gate": "VISION/analyze + VISION/execute",
+             "real": True, "simulated": True,
+             "notes": "A39 simulated provider; no OCR/model in this build."},
+            {"name": "forge-computer", "role": "computer_use",
+             "capabilities": ["screen_control"],
+             "gate": "DESKTOP actions + VISION/analyze; SAFE mode "
+                     "observation only",
+             "real": True, "simulated": True,
+             "notes": "A40 loop over the A35 desktop pipeline."},
+            {"name": "forge-desktop", "role": "desktop",
+             "capabilities": ["desktop_control"],
+             "gate": "DESKTOP actions; hard risk invariants always win",
+             "real": True, "simulated": True,
+             "notes": "A35 bridge + deterministic fake provider in dev."},
+        ]
+
+    def security_overview(self, session: Session) -> dict[str, Any]:
+        """Non-sensitive security posture for the cockpit Security view."""
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        audit = getattr(self, "audit", None)
+        evaluations = len(audit.events) if audit is not None else 0
+        return {
+            "mode": session.profile,
+            "policy_default": policy.default.value,
+            "policy_rules": len(getattr(policy, "_index", {})),
+            "policy_version": policy.version,
+            "hard_invariants": [
+                "credential extraction is always denied",
+                "security-control disabling is always denied",
+                "privilege escalation is always denied",
+                "unauthorized persistence is always denied",
+                "unauthorized remote control is always denied",
+                "workspace escape is always denied",
+                "agents can never approve their own requests",
+                "approval tokens are single-use and scope-bound",
+                "image/voice/screen content is untrusted input, never "
+                "authority",
+                "no policy means no authority (fail closed)",
+            ],
+            "audit_evaluations_recorded": evaluations,
+            "task_scopes": "grants expire; tokens non-transferable",
+            "vision_simulation": True,
+            "voice_simulation": True,
+            "desktop_provider": self.desktop_bridge.provider_kind(),
+        }
+
+
     # -- vision (A39) ------------------------------------------------------------
 
     def _vision_permission(self, session: Session, *,

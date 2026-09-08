@@ -644,3 +644,20 @@ framing controls by default (add at the edge for production).
   API boundaries, cockpit contracts.
 - Full suite: **1195 passed, 2 skipped** (A39 baseline: 1163 passed,
   2 skipped). `compileall` clean; cockpit JS `node --check` clean.
+
+## A41 — Premium Browser Cockpit
+
+- New cockpit surfaces over real endpoints: Agents (`GET /api/v1/
+  agents` — documented inventory with each agent's real A33 gate,
+  simulated providers labeled), Security (`GET /api/v1/security` —
+  mode, policy default, hard invariants, recorded permission
+  evaluations; non-sensitive by construction), Settings (session
+  profile + theme + shortcuts).
+- Theme support: dark-first with a full `[data-theme="light"]`
+  variable set and a per-session toggle (no browser storage, by
+  design); responsive `@media (max-width: 760px)` layout; palette
+  entries + nav links for all three views. Ctrl+K palette (A34) is
+  unchanged.
+- 6 contract tests: `tests/test_a41_cockpit.py` — endpoints,
+  catalog/gate honesty, simulation labels, view/template/palette
+  contracts, theme/media CSS, renderer hygiene and endpoint scoping.
