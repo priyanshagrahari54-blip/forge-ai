@@ -61,6 +61,8 @@ from forge.control.db import Database
 from forge.control.events import EventStore
 from forge.control.memory import VALID_KINDS as VALID_MEMORY_KINDS
 from forge.control.memory import SessionMemoryStore
+from forge.control.orchestrations import (OrchestrationStatus,
+                                          OrchestrationStore)
 from forge.control.sessions import Session, SessionStore
 from forge.core.report import redact
 from forge.core.run_control import SupervisorControl
@@ -494,6 +496,13 @@ class ControlConfig:
     # A37 memory: record bounded run-outcome summaries into durable
     # project memory when runs finish (system observability, no secrets).
     memory_record_runs: bool = True
+    # A38 multi-agent orchestration: team execution budgets. Independent
+    # steps run in parallel (bounded by workers); steps are capped by
+    # attempts and an optional per-step timeout, and any dispatch is
+    # gated by the A33 policy (Resource.AGENT / execute).
+    orchestration_max_workers: int = 3
+    orchestration_max_attempts: int = 2
+    orchestration_step_timeout: float | None = 120.0
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -555,6 +564,7 @@ class ControlPlane:
         self.events = EventStore(
             self._db, max_events_per_task=self.config.max_events_per_task)
         self.runs = RunStore(self._db)
+        self.orchestrations = OrchestrationStore(self._db)
         self._init_checkpoints_table()
         sink = (Path(self.config.audit_sink) if self.config.audit_sink
                 else Path(self.config.db_path).parent / "audit.jsonl")
@@ -607,6 +617,9 @@ class ControlPlane:
         self._active_lock = threading.Lock()
         self._controls: dict[str, SupervisorControl] = {}
         self._controls_lock = threading.Lock()
+        self._orch_lock = threading.Lock()
+        self._orch_controls: dict[str, SupervisorControl] = {}
+        self._orch_events: dict[str, threading.Event] = {}
         self._checkpoints: dict[str, Any] = {}
         self._checkpoints_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
@@ -1714,9 +1727,12 @@ class ControlPlane:
             raise ApprovalConflictError(str(exc)) from exc
         token_id = ""
         if approved:
+            uses = len(request.files) if request.files \
+                else len(request.scopes)
             token = self.approval_store.issue(
                 approval_id, decided_by=session.actor,
-                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+                ttl_seconds=self.config.approval_token_ttl,
+                max_uses=max(1, uses))
             token_id = token.id
         self._audit(session.actor, "voice",
                     "approve" if approved else "deny", True,
@@ -2248,6 +2264,536 @@ class ControlPlane:
                     reason=f"memory approval {approval_id} "
                     f"{'approved' if approved else 'denied'}")
         return {"approval": decided.to_dict(), "token_id": token_id}
+
+    # -- multi-agent orchestration (A38) ------------------------------------------
+
+    def _orchestration_team(self, project: Project,
+                            orchestration_id: str):
+        """Build the default coordinated team for one orchestration.
+
+        Every executor performs its real job over the project root:
+        planner (capability planning), architect (deterministic
+        structure proposal), researcher (bounded repository inventory),
+        coder/debugger (model-driven change sets through the permissioned
+        runtime), tester (bounded real test collection), reviewer
+        (deterministic findings), security (bounded secret-pattern
+        scan), performance (measured import timings), documentation
+        (docs inventory), and git (real repository status).
+        """
+        import json as _json
+        import importlib.util
+        import os
+        import subprocess
+        import sys as _sys
+        import time as _time
+
+        from forge.agents.coder import CoderAgent
+        from forge.agents.debugger import DebuggerAgent
+        from forge.agents.execution import CallableAgentExecutor
+        from forge.agents.planner import CapabilityAgentPlanner
+        from forge.agents.registry import AgentRegistration, AgentRegistry
+        from forge.intelligence.repository import RepositoryIntelligence
+        from forge.runtime.defaults import create_default_runtime
+        from forge.tools.git import GitTool
+
+        root = str(project.root)
+        intelligence = RepositoryIntelligence.build(root)
+        permissions = PermissionManager(
+            mode=OperationMode.ASSISTED, policy=self.policy,
+            store=self.approval_store, agent="forge-orchestrator",
+            audit=self.audit)
+        runtime = create_default_runtime(permissions, root)
+        approval_callback = self._orchestration_approval_callback(
+            orchestration_id)
+        registry = AgentRegistry()
+
+        def bounded_files(suffixes, limit=200):
+            found = []
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [name for name in dirnames
+                               if name not in (".git", ".forge",
+                                               "__pycache__", ".venv",
+                                               "node_modules", ".arena")]
+                for name in sorted(filenames):
+                    if any(name.endswith(suffix) for suffix in suffixes):
+                        found.append(os.path.relpath(
+                            os.path.join(dirpath, name), root))
+                        if len(found) >= limit:
+                            return found
+            return found
+
+        def planner_worker(request):
+            team_plan = CapabilityAgentPlanner(registry).plan(
+                request.task.description)
+            return _json.dumps({"capabilities": list(team_plan.capabilities),
+                                "agents": list(team_plan.names)})
+
+        def architect_worker(request):
+            requirement = request.task.description.lower()
+            proposals = []
+            if "api" in requirement:
+                proposals.append(
+                    "one endpoint per concern, shared validation layer")
+            if "export" in requirement or "csv" in requirement:
+                proposals.append(
+                    "separate writer module, used by the entry point")
+            if "test" in requirement:
+                proposals.append("tests live beside each new module")
+            if not proposals:
+                proposals.append("keep the change minimal and local")
+            return _json.dumps(
+                {"requirement": request.task.description[:400],
+                 "proposal": proposals})
+
+        def researcher_worker(request):
+            del request
+            python_files = bounded_files((".py",))
+            test_files = [path for path in python_files if "test" in path]
+            return _json.dumps({"python_files": len(python_files),
+                                "test_files": len(test_files),
+                                "sample": python_files[:20]})
+
+        def coder_worker(request):
+            agent = CoderAgent(
+                runtime=runtime, root=root, fabric=self.fabric,
+                approval_store=self.approval_store,
+                approval_callback=approval_callback)
+            response = agent.execute(request)
+            if not response.success:
+                raise RuntimeError(response.error or "coding step failed")
+            return response.output
+
+        def tester_worker(request):
+            del request
+            try:
+                proc = subprocess.run(
+                    [_sys.executable, "-m", "pytest", "--collect-only",
+                     "-q"],
+                    cwd=root, capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("test collection exceeded 30s") from exc
+            if proc.returncode == 5:
+                return "No tests found in the project."
+            output = (proc.stdout or "") + (proc.stderr or "")
+            return f"Test collection: exit={proc.returncode}\n{output[:3000]}"
+
+        def debugger_worker(request):
+            agent = DebuggerAgent(
+                root=root, runtime=runtime, fabric=self.fabric,
+                approval_store=self.approval_store,
+                approval_callback=approval_callback)
+            response = agent.execute(request)
+            if not response.success:
+                raise RuntimeError(response.error or "debugging step failed")
+            return response.output
+
+        def reviewer_worker(request):
+            python_files = bounded_files((".py",))
+            findings = [
+                f"repository exposes {len(python_files)} python files"]
+            if not any("test" in name for name in python_files):
+                findings.append("no test files found")
+            requirement = request.task.description.lower()
+            for capability in ("coding", "testing", "security"):
+                if capability in requirement:
+                    findings.append(
+                        f"requirement mentions {capability}")
+            return _json.dumps({"findings": findings})
+
+        _SECRET_RE = re.compile(
+            r"(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*"
+            r"['\"][^'\"]{8,}['\"]")
+
+        def security_worker(request):
+            del request
+            findings = []
+            for path in bounded_files(
+                    (".py", ".json", ".toml", ".yaml", ".yml", ".env"),
+                    limit=150):
+                try:
+                    content = Path(root, path).read_text(
+                        encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for match in _SECRET_RE.finditer(content):
+                    findings.append({
+                        "file": path,
+                        "line": content[:match.start()].count("\n") + 1,
+                        "pattern": match.group(1)})
+            return _json.dumps({"secrets_found": len(findings),
+                                "findings": findings[:50]})
+
+        def performance_worker(request):
+            del request
+            measurements = []
+            for path in bounded_files((".py",), limit=30):
+                if "test" in path:
+                    continue
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        f"forge_perf_probe_{len(measurements)}",
+                        Path(root, path))
+                    module = importlib.util.module_from_spec(spec)
+                    started = _time.perf_counter()
+                    spec.loader.exec_module(module)
+                    measurements.append({
+                        "module": path,
+                        "import_ms": round(
+                            (_time.perf_counter() - started) * 1000, 3)})
+                except Exception as exc:
+                    measurements.append({
+                        "module": path,
+                        "import_error": str(exc)[:200]})
+            return _json.dumps({"measurements": measurements})
+
+        def documentation_worker(request):
+            del request
+            markdown = bounded_files((".md", ".rst"), limit=50)
+            return _json.dumps({"docs_files": markdown,
+                                "readme": "README.md" in markdown})
+
+        def git_worker(request):
+            del request
+            git = GitTool(root)
+            return _json.dumps({"status": git.status(),
+                                "last_commit": git.run(
+                                    "log", "-1", "--oneline").stdout.strip()})
+
+        registry.register(AgentRegistration(
+            "planner", "planning",
+            CallableAgentExecutor("planner", planner_worker),
+            ("planning",)))
+        registry.register(AgentRegistration(
+            "architect", "architecture",
+            CallableAgentExecutor("architect", architect_worker),
+            ("architecture",)))
+        registry.register(AgentRegistration(
+            "researcher", "research",
+            CallableAgentExecutor("researcher", researcher_worker),
+            ("research",)))
+        registry.register(AgentRegistration(
+            "coder", "coding",
+            CallableAgentExecutor("coder", coder_worker), ("coding",)))
+        registry.register(AgentRegistration(
+            "tester", "testing",
+            CallableAgentExecutor("tester", tester_worker), ("testing",)))
+        registry.register(AgentRegistration(
+            "debugger", "debugging",
+            CallableAgentExecutor("debugger", debugger_worker),
+            ("debugging",)))
+        registry.register(AgentRegistration(
+            "reviewer", "reviewing",
+            CallableAgentExecutor("reviewer", reviewer_worker),
+            ("review",)))
+        registry.register(AgentRegistration(
+            "security", "security",
+            CallableAgentExecutor("security", security_worker),
+            ("security",)))
+        registry.register(AgentRegistration(
+            "performance", "performance",
+            CallableAgentExecutor("performance", performance_worker),
+            ("performance",)))
+        registry.register(AgentRegistration(
+            "documentation", "documentation",
+            CallableAgentExecutor("documentation", documentation_worker),
+            ("documentation",)))
+        registry.register(AgentRegistration(
+            "git", "git", CallableAgentExecutor("git", git_worker),
+            ("git",)))
+        return registry
+
+    def submit_orchestration(self, session: Session, requirement: str, *,
+                             chain: bool = False):
+        """Queue one multi-agent orchestration for the session's project."""
+        if not isinstance(requirement, str) or not requirement.strip():
+            raise InvalidRequest("Requirement must be a non-empty string.")
+        requirement = requirement.strip()
+        if len(requirement) > MAX_REQUIREMENT_CHARS:
+            raise InvalidRequest("Requirement is too long.")
+        project = self.get_project(session.project_id)
+        record = self.orchestrations.create(
+            session_id=session.id, project_id=project.id,
+            requirement=requirement, actor=session.actor)
+        self._emit(record.id, record.project_id, "orchestration.created",
+                   {"chain": bool(chain), "actor": session.actor,
+                    "requirement_chars": len(requirement)})
+        self._audit(session.actor, "orchestration", "submit", True,
+                    task_id=record.id,
+                    reason=f"project {project.id}, chain={bool(chain)}")
+        if self._executor is not None:
+            self._executor.submit(
+                self._execute_orchestration, record.id, bool(chain))
+        return record
+
+    def get_orchestration(self, session: Session, orchestration_id: str,
+                          *, include_report: bool = True):
+        validate_id(orchestration_id, kind="orchestration id")
+        record = self.orchestrations.get(orchestration_id)
+        # Session-scoped: cross-session ids map to NOT_FOUND.
+        if record is None or record.session_id != session.id:
+            raise TaskNotFound(
+                f"Unknown orchestration: {orchestration_id!r}")
+        return record
+
+    def list_orchestrations(self, session: Session):
+        return self.orchestrations.list_for_session(session.id)
+
+    def cancel_orchestration(self, session: Session, orchestration_id: str):
+        from forge.control.orchestrations import TERMINAL as ORCH_TERMINAL
+
+        record = self.get_orchestration(session, orchestration_id)
+        if record.status in ORCH_TERMINAL:
+            raise InvalidRequest("Orchestration already finished.")
+        control = self._orch_control(record.id)
+        if control is None:
+            raise InvalidRequest("Orchestration is not running yet.")
+        control.request_cancel()
+        self._audit(session.actor, "orchestration", "cancel", True,
+                    task_id=record.id)
+        return self.orchestrations.get(record.id) or record
+
+    def list_orchestration_approvals(self, session: Session,
+                                     orchestration_id: str):
+        record = self.get_orchestration(session, orchestration_id)
+        visible = []
+        for request in self.approval_store.pending():
+            # Scoped by the orchestration's own task id; the requesting
+            # agent (coder, debugger, forge-orchestrator) is reported
+            # but never decides.
+            if request.task_id == record.id:
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_orchestration_approval(self, session: Session,
+                                      orchestration_id: str,
+                                      approval_id: str,
+                                      approved: bool) -> dict[str, Any]:
+        record = self.get_orchestration(session, orchestration_id)
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.task_id != record.id:
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        with self._orch_lock:
+            event = self._orch_events.get(approval_id)
+        if event is not None:
+            event.set()
+        self._audit(session.actor, "orchestration",
+                    "approve" if approved else "deny", True,
+                    task_id=record.id,
+                    reason=f"orchestration approval {approval_id} "
+                    f"{'approved' if approved else 'denied'}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
+    # -- orchestration internals --------------------------------------------------
+
+    def _orch_control(self, orchestration_id: str):
+        with self._orch_lock:
+            return self._orch_controls.get(orchestration_id)
+
+    def _wait_approval_token(self, request, orchestration_id: str,
+                             control: SupervisorControl, timeout: float):
+        """Block until the operator decides one approval; mint a token.
+
+        Returns ``""`` when denied/expired/timed out (fail closed) and
+        raises ``TaskCancelled`` when the orchestration is cancelled.
+        """
+        from forge.core.run_control import TaskCancelled
+        from forge.security.approvals import ApprovalStatus
+
+        event = threading.Event()
+        with self._orch_lock:
+            self._orch_events[request.id] = event
+        deadline = time.time() + max(1.0, timeout)
+        try:
+            while True:
+                if control.cancel_requested:
+                    raise TaskCancelled(
+                        "cancelled while awaiting approval")
+                if event.wait(timeout=0.1) or time.time() >= deadline:
+                    break
+                if request.status != ApprovalStatus.PENDING:
+                    break
+            if request.status != ApprovalStatus.APPROVED:
+                return ""
+            # One redeem per covered path: a multi-file change set must
+            # not fail closed on its second write.
+            uses = len(request.files) if request.files \
+                else len(request.scopes)
+            token = self.approval_store.issue(
+                request.id, request.decided_by,
+                ttl_seconds=self.config.approval_token_ttl,
+                max_uses=max(1, uses))
+            return token.id
+        finally:
+            with self._orch_lock:
+                self._orch_events.pop(request.id, None)
+
+    def _orchestration_approval_callback(
+            self, orchestration_id: str) -> Callable[[Any], str]:
+        """Operator hook consulted for agent dispatches and change sets.
+
+        Dispatch queries file ``Resource.AGENT / execute`` requests;
+        coder/debugger change-set queries file translated filesystem
+        requests through the A33 service. Every wait is bounded by the
+        approval timeout and honours cancellation.
+        """
+        from forge.control.orchestrations import TERMINAL as ORCH_TERMINAL
+        from forge.core.orchestrator import DispatchQuery
+        from forge.core.run_control import TaskCancelled
+        from forge.security.approvals import ApprovalRequest
+
+        def callback(query: Any) -> str:
+            record = self.orchestrations.get(orchestration_id)
+            if record is None or record.status in ORCH_TERMINAL:
+                return ""
+            control = self._orch_control(orchestration_id)
+            if control is not None and control.cancel_requested:
+                raise TaskCancelled("cancelled before approval")
+            if isinstance(query, DispatchQuery):
+                request = ApprovalRequest(
+                    agent="forge-orchestrator", resource=Resource.AGENT,
+                    operation="execute", scopes=(query.agent,),
+                    task_id=orchestration_id,
+                    reason=query.reason[:1000],
+                    consequences=(
+                        f"Agent {query.agent} runs one step of the "
+                        f"orchestration."),
+                    expires_at=time.time() + self.config.approval_timeout)
+                self.approval_store.submit(request)
+                self.orchestrations.mutate(
+                    orchestration_id,
+                    status=OrchestrationStatus.WAITING_APPROVAL,
+                    stage=f"approval:{query.agent}")
+                self._emit(orchestration_id, record.project_id,
+                           "approval.required",
+                           {"approval_id": request.id,
+                            "agent": "forge-orchestrator",
+                            "task_id": orchestration_id,
+                            "tool": "agent.dispatch",
+                            "operation": "agent:execute",
+                            "scope": [query.agent],
+                            "reason": request.reason,
+                            "label": query.label})
+                token = self._wait_approval_token(
+                    request, orchestration_id, control,
+                    self.config.approval_timeout)
+                if token:
+                    self.orchestrations.mutate(
+                        orchestration_id,
+                        status=OrchestrationStatus.RUNNING, stage="running")
+                return token
+            # Change-set query (coder/debugger writes): translate through
+            # the A33 approval service and wait on the filed requests.
+            adapter = type("ApprovalRun", (), {
+                "id": orchestration_id,
+                "project_id": record.project_id})()
+            try:
+                filed = self.approvals.file_query(
+                    query, adapter, model="", provider="")
+            except ApprovalError:
+                return ""
+            tokens = [
+                self._wait_approval_token(request, orchestration_id,
+                                         control,
+                                         self.config.approval_timeout)
+                for request in filed]
+            return tokens[0] if len(tokens) == 1 else ""
+        return callback
+
+    def _orchestration_sink(self, orchestration_id: str) -> Callable[
+            [str, dict[str, Any]], None]:
+        record = self.orchestrations.get(orchestration_id)
+        project_id = record.project_id if record is not None else ""
+
+        def sink(name: str, details: dict[str, Any]) -> None:
+            self._emit(orchestration_id, project_id,
+                       f"orchestration.{name}", details)
+        return sink
+
+    def _execute_orchestration(self, orchestration_id: str,
+                               chain: bool = False) -> None:
+        from forge.control.orchestrations import TERMINAL as ORCH_TERMINAL
+        from forge.core.orchestrator import (MultiAgentOrchestrator,
+                                             ReportStatus)
+
+        record = self.orchestrations.get(orchestration_id)
+        if record is None:
+            return
+        project_id = record.project_id
+        try:
+            if record.status != OrchestrationStatus.QUEUED:
+                return
+            updated = self.orchestrations.compare_and_set(
+                record.id, record.version,
+                status=OrchestrationStatus.RUNNING, stage="planning",
+                started_at=time.time())
+            if updated is None:
+                return
+            record = updated
+            project = self.get_project(project_id)
+            self._emit(record.id, project_id, "orchestration.started",
+                       {"chain": bool(chain)})
+            control = SupervisorControl()
+            with self._orch_lock:
+                self._orch_controls[record.id] = control
+            registry = self._orchestration_team(project, record.id)
+            orchestrator = MultiAgentOrchestrator(
+                registry,
+                max_workers=self.config.orchestration_max_workers,
+                max_attempts=self.config.orchestration_max_attempts,
+                step_timeout=self.config.orchestration_step_timeout,
+                policy=self.policy,
+                approval_store=self.approval_store,
+                approval_callback=self._orchestration_approval_callback(
+                    record.id),
+                on_event=self._orchestration_sink(record.id),
+                control=control,
+                task_id=record.id)
+            plan = orchestrator.build_plan(record.requirement, chain=chain)
+            self.orchestrations.mutate(
+                record.id, stage="running",
+                plan_json=json.dumps(plan.to_dict(), default=str))
+            report = orchestrator.execute(plan)
+            status_map = {
+                ReportStatus.SUCCEEDED: OrchestrationStatus.SUCCEEDED,
+                ReportStatus.FAILED: OrchestrationStatus.FAILED,
+                ReportStatus.CANCELLED: OrchestrationStatus.CANCELLED,
+                ReportStatus.PLAN_REJECTED: OrchestrationStatus.FAILED,
+            }
+            status = status_map[report.status]
+            error = "" if status == OrchestrationStatus.SUCCEEDED \
+                else report.summary
+            self.orchestrations.mutate(
+                record.id, status=status, stage="finished",
+                report_json=json.dumps(report.to_dict(), default=str),
+                finished_at=time.time(), error=error)
+            self._emit(record.id, project_id, "orchestration.finished",
+                       {"status": status.value,
+                        "accepted": report.accepted,
+                        "summary": report.summary})
+        except Exception as exc:  # pragma: no cover - defensive
+            try:
+                self.orchestrations.mutate(
+                    orchestration_id, status=OrchestrationStatus.FAILED,
+                    stage="failed", error=f"Worker error: {exc}",
+                    finished_at=time.time())
+            except Exception:
+                pass
+        finally:
+            with self._orch_lock:
+                self._orch_controls.pop(orchestration_id, None)
+
 
     # -- health -------------------------------------------------------------------
 

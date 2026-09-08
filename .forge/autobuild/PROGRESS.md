@@ -531,3 +531,44 @@ framing controls by default (add at the edge for production).
   boundaries, cockpit contracts.
 - Full suite: **1105 passed, 2 skipped** (A36 baseline: 1075 passed,
   2 skipped). `compileall` clean over `forge/`.
+
+## A38 — Multi-Agent Orchestration
+
+- Added the coordinated team runtime (`forge/core/orchestrator.py`):
+  deterministic capability-matched plans (never fabricates agents —
+  empty matches report PLAN_REJECTED), validated dependency DAGs,
+  parallel execution where safe with a sequential chain mode, bounded
+  workers/attempts/step-timeouts, cooperative cancellation, structured
+  AgentMessage records (sender/receiver/task/type/content/evidence/
+  confidence/timestamp), and a full per-step report.
+- Every dispatch passes the A33 gate with the new `Resource.AGENT`
+  (execute/message) vocabulary and identity `forge-orchestrator`
+  (approver != agent): DENY fails closed, REQUIRE_APPROVAL files
+  session-bound requests that wait on the operator; stale/spent/
+  mis-scoped tokens are rejected. Coder/debugger writes flow through
+  the existing ChangeSet + approval path unchanged (ASSISTED writes
+  still require operator decisions).
+- Control plane: durable session-scoped orchestration records
+  (SQLite), submit/list/get/cancel, worker execution on the run pool,
+  default 11-agent team with real executors (planner, architect,
+  researcher, coder, tester, debugger, reviewer, security,
+  performance, documentation, git) plus budgets in `ControlConfig`.
+- API `/api/v1/orchestrations*` (submit/list/get/cancel + per-
+  orchestration approvals) and a cockpit Orchestrations view with live
+  status, the plan, per-step outcomes, and approve/deny.
+- Verified end to end: an orchestrated "Add CSV export functionality"
+  requirement plans the team, the coder's change set files a real
+  approval, the operator approves, and the change is applied with a
+  SUCCEEDED report (DENY paths leave the repo untouched).
+
+## Executable proof (A38)
+
+- 33 new tests across 4 suites: `tests/test_a38_{orchestrator,
+  plane,api,ui}.py` — deterministic planning and validation, proven
+  parallel execution, dependency order/failure-skip, attempt budgets,
+  step timeouts, DENY fail-closed, approval round trips and stale-token
+  rejection, structured messages, events, cancellation, restart
+  persistence, cross-session isolation, API boundaries, cockpit
+  contracts, the AGENT policy vocabulary.
+- Full suite: **1138 passed, 2 skipped** (A37 baseline: 1105 passed,
+  2 skipped). `compileall` clean; cockpit JS `node --check` clean.

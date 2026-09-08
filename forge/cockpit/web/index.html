@@ -60,6 +60,9 @@
         <a href="#/memory" data-route="memory">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v9l-5.5-3-5.5 3z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
           <span>Memory</span></a>
+        <a href="#/orchestrations" data-route="orchestrations">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="4" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="12" r="1.6" fill="none" stroke="currentColor"/><circle cx="13" cy="8" r="1.6" fill="none" stroke="currentColor"/><path d="M4.5 7.3 6.6 4.9M4.5 8.7l2.1 2.4M9.4 4.9l2.1 2.4M9.4 11.1l2.1-2.4" stroke="currentColor"/></svg>
+          <span>Orchestrations</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -182,6 +185,33 @@
       <div id="d-security"></div>
     </div>
   </div>
+</template>
+
+<template id="tpl-orchestrations">
+  <div class="view-head">
+    <h2>Multi-Agent Orchestrations</h2>
+    <p class="muted">One requirement becomes a coordinated agent team. Every
+    dispatch passes the A33 policy gate; file-changing steps wait for your
+    approval.</p>
+  </div>
+  <section class="surface">
+    <form id="orch-form">
+      <label for="orch-requirement">Requirement</label>
+      <textarea id="orch-requirement" rows="2"
+        placeholder="e.g. Add CSV export functionality to this project"></textarea>
+      <label class="checkline"><input type="checkbox" id="orch-chain" checked>
+        Run the team as a sequential chain (planner → coder → tester → …)</label>
+      <button type="submit" class="primary">Orchestrate</button>
+    </form>
+  </section>
+  <section class="surface">
+    <div class="section-header">
+      <h3>Orchestrations</h3>
+      <button id="orch-refresh" class="ghost">Refresh</button>
+    </div>
+    <div id="orch-list"></div>
+  </section>
+  <section class="surface hidden" id="orch-detail"></section>
 </template>
 
 <template id="tpl-tasks">

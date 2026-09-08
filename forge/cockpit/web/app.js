@@ -42,6 +42,7 @@ const ROUTES = {
   desktop: { render: renderDesktop, title: "Desktop" },
   voice: { render: renderVoice, title: "Voice" },
   memory: { render: renderMemory, title: "Memory" },
+  orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2136,6 +2137,7 @@ const PALETTE_COMMANDS = [
   ["Go to Desktop", "view", () => { window.location.hash = "#/desktop"; }],
   ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
   ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
+  ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";
@@ -2308,3 +2310,132 @@ function enter() {
 }
 
 document.addEventListener("DOMContentLoaded", bootstrap);
+
+/* ---------- orchestrations (A38) ---------- */
+
+function renderOrchestrations() {
+  document.getElementById("orch-refresh").addEventListener("click",
+    renderOrchestrations);
+  document.getElementById("orch-form").addEventListener("submit",
+    async (ev) => {
+      ev.preventDefault();
+      const body = {
+        requirement: document.getElementById("orch-requirement").value.trim(),
+        chain: document.getElementById("orch-chain").checked,
+      };
+      if (!body.requirement) return;
+      try {
+        await api("/api/v1/orchestrations", { method: "POST", body: body });
+        document.getElementById("orch-requirement").value = "";
+        renderOrchestrations();
+      } catch (err) {
+        errorState(document.getElementById("orch-list"),
+          "Submit failed", err, renderOrchestrations);
+      }
+    });
+  loadOrchestrations();
+  const detail = document.getElementById("orch-detail");
+  detail.innerHTML = "";
+  detail.classList.add("hidden");
+}
+
+async function loadOrchestrations() {
+  const box = document.getElementById("orch-list");
+  try {
+    const payload = await api("/api/v1/orchestrations");
+    const items = payload.orchestrations || [];
+    box.innerHTML = "";
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No orchestrations yet.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = el("div", "surface orch-step");
+      row.appendChild(el("h4", null,
+        (item.requirement || "").slice(0, 80)));
+      row.appendChild(el("p", "muted",
+        item.status + " · stage " + (item.stage || "") + " · " +
+        new Date((item.created_at || 0) * 1000).toLocaleString()));
+      if (item.error) row.appendChild(el("p", null, item.error));
+      row.addEventListener("click",
+        () => renderOrchestrationDetail(item.orchestration_id));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load orchestrations", err,
+      renderOrchestrations);
+  }
+}
+
+async function renderOrchestrationDetail(orchestrationId) {
+  const box = document.getElementById("orch-detail");
+  box.classList.remove("hidden");
+  try {
+    const record = await api("/api/v1/orchestrations/" +
+      encodeURIComponent(orchestrationId));
+    box.innerHTML = "";
+    const head = el("div", "section-header");
+    head.appendChild(el("h3", null,
+      "Orchestration " + record.orchestration_id.slice(0, 8)));
+    box.appendChild(head);
+    box.appendChild(el("p", "muted",
+      record.status + " · " + (record.error || "running or finished")));
+    const steps = (record.plan || {}).steps || [];
+    if (steps.length) {
+      box.appendChild(el("p", null, "Plan: " + steps.map(
+        (step) => step.agent).join(" → ")));
+    }
+    const outcomes = (record.report || {}).steps || [];
+    for (const outcome of outcomes) {
+      const card = el("div", "surface orch-step");
+      card.appendChild(el("h4", null,
+        outcome.agent + " — " + outcome.status +
+        (outcome.attempts > 1 ? " (" + outcome.attempts + " attempts)" : "")));
+      if (outcome.output) {
+        card.appendChild(el("p", "muted",
+          String(outcome.output).slice(0, 300)));
+      }
+      if (outcome.error) card.appendChild(el("p", null, outcome.error));
+      box.appendChild(card);
+    }
+    const approvals = await api("/api/v1/orchestrations/" +
+      encodeURIComponent(orchestrationId) + "/approvals");
+    const pending = approvals.approvals || [];
+    if (pending.length) {
+      box.appendChild(el("p", null, "Pending approvals:"));
+      for (const approval of pending) {
+        const row = el("div", "surface orch-step");
+        row.appendChild(el("p", null,
+          approval.agent + " wants " + approval.operation + " on " +
+          approval.resource + " (" +
+          (approval.scopes || []).join(", ") + ")"));
+        row.appendChild(el("p", "muted",
+          approval.reason || approval.consequences || ""));
+        const approve = el("button", null, "Approve");
+        approve.addEventListener("click", async () => {
+          await api("/api/v1/orchestrations/" +
+            encodeURIComponent(orchestrationId) + "/approvals/" +
+            encodeURIComponent(approval.id) + "/approve",
+            { method: "POST", body: {} });
+          renderOrchestrationDetail(orchestrationId);
+        });
+        const deny = el("button", "ghost", "Deny");
+        deny.addEventListener("click", async () => {
+          await api("/api/v1/orchestrations/" +
+            encodeURIComponent(orchestrationId) + "/approvals/" +
+            encodeURIComponent(approval.id) + "/deny",
+            { method: "POST", body: {} });
+          renderOrchestrationDetail(orchestrationId);
+        });
+        row.appendChild(approve);
+        row.appendChild(deny);
+        box.appendChild(row);
+      }
+    }
+  } catch (err) {
+    errorState(box, "Unable to load orchestration", err,
+      () => renderOrchestrationDetail(orchestrationId));
+  }
+}

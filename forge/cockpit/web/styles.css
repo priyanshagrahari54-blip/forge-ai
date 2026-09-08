@@ -712,3 +712,16 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
   padding: 6px 2px;
   border-bottom: 1px solid var(--border, #2a2f3a);
 }
+
+/* A38 orchestrations view */
+.orch-step {
+  margin: 8px 0;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.orch-step h4 {
+  margin: 0 0 4px 0;
+}
+.orch-step button {
+  margin-right: 8px;
+}

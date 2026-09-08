@@ -111,3 +111,10 @@ class DesktopDecisionRequest(BaseModel):
 class Pagination(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0, le=100000)
+
+
+# -- A38 orchestration ---------------------------------------------------------
+
+class OrchestrationSubmitRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=8000)
+    chain: bool = False

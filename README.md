@@ -180,6 +180,34 @@ database (sessions, tokens, active-task bindings, run records), it adds:
 See `docs/A37-PERSISTENT-SESSIONS-MEMORY.md` for the model, gating, and
 test matrix. Full suite after A37: 1105 passed, 2 skipped.
 
+## Multi-Agent Orchestration (A38)
+
+A38 turns the agents into one coordinated team. A single requirement
+becomes a deterministic, capability-matched plan that executes as a
+dependency-ordered DAG: parallel where safe, sequential where
+requested, with real budgets (bounded workers, per-step attempts and
+timeouts) and cooperative cancellation.
+
+- **The team is real**: planner, architect, researcher, coder, tester,
+  debugger, reviewer, security, performance, documentation, and git
+  executors each do their actual job over the project root. Planning
+  never invents agents — unmatched requirements report `PLAN_REJECTED`.
+- **Dispatch is permission-gated**: every step evaluates the A33
+  `Resource.AGENT / execute` vocabulary with identity
+  `forge-orchestrator`; `DENY` fails closed and `REQUIRE_APPROVAL`
+  waits on the operator. Coder/debugger writes keep flowing through
+  the existing ChangeSet + approval path.
+- **Structured communication**: agent results travel as
+  `AgentMessage` records with evidence and confidence — never
+  uncontrolled free text for critical decisions.
+- **API + cockpit**: `/api/v1/orchestrations*` (submit, list, get,
+  cancel, per-orchestration approvals) and an Orchestrations cockpit
+  view with live status, the plan, per-step outcomes, and
+  approve/deny. Records are session-scoped and survive restarts.
+
+See `docs/A38-ORCHESTRATION.md` for the engine, security model, and
+test matrix. Full suite after A38: 1138 passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
