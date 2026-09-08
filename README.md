@@ -353,6 +353,18 @@ at `/api/v1/compute/*`; cockpit Compute view.
 See `docs/A48-COMPUTE.md`. Full suite after A48: 1263 passed, 2
 skipped.
 
+## Agent Creation (A49)
+
+Define agents at runtime: validated name/role/capabilities from the
+canonical vocabulary, with an honest `real` flag — true only when a
+matching registered executor is bound. Definitions grant no
+capabilities and never enter the built-in catalog. API at
+`/api/v1/agents` (POST/PATCH/DELETE + `/defined`); cockpit Agent
+Builder view.
+
+See `docs/A49-AGENT-CREATION.md`. Full suite after A49: 1270 passed,
+2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

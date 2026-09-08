@@ -51,6 +51,8 @@ const ROUTES = {
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
   compute: { render: renderComputeView, title: "Compute" },
+  agentbuilder: { render: renderAgentBuilderView,
+                     title: "Agent Builder" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2154,6 +2156,7 @@ const PALETTE_COMMANDS = [
   ["Go to Conversation", "view", () => { window.location.hash = "#/conversation"; }],
   ["Go to Research", "view", () => { window.location.hash = "#/research"; }],
   ["Go to Compute", "view", () => { window.location.hash = "#/compute"; }],
+  ["Go to Agent Builder", "view", () => { window.location.hash = "#/agentbuilder"; }],
   ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
@@ -3008,6 +3011,53 @@ function renderComputeView() {
       } catch (err) {
         errorState(resultBox, "Compute failed", err,
           renderComputeView);
+      }
+    });
+  load();
+}
+
+/* ---------- agent builder (A49) ---------- */
+
+function renderAgentBuilderView() {
+  const list = document.getElementById("agent-definitions");
+  const result = document.getElementById("agent-create-result");
+  const render = (payload) => {
+    list.innerHTML = "";
+    for (const agent of payload.agents || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        agent.name + " — role " + agent.role + " — " +
+        agent.capabilities.join(", ")));
+      row.appendChild(el("p", "muted", agent.note));
+      list.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/agents/defined").then(render).catch((err) => {
+      errorState(list, "Unable to load defined agents", err,
+        renderAgentBuilderView);
+    });
+  };
+  document.getElementById("agent-create").addEventListener(
+    "click", async () => {
+      const name = document.getElementById("agent-name").value || "";
+      const role = document.getElementById("agent-role").value || "";
+      const caps = document.getElementById("agent-caps").value || "";
+      try {
+        const payload = await api("/api/v1/agents",
+          { method: "POST",
+            body: { name: name, role: role,
+                    capabilities: caps.split(",")
+                      .map((item) => item.trim())
+                      .filter((item) => item.length > 0),
+                    description: "", bind: false } });
+        result.innerHTML = "";
+        result.appendChild(el("p", null,
+          "Created " + payload.name + " — " + payload.note));
+        load();
+      } catch (err) {
+        errorState(result, "Agent creation failed", err,
+          renderAgentBuilderView);
       }
     });
   load();

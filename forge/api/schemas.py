@@ -184,3 +184,19 @@ class ComputeExecuteRequest(BaseModel):
     code: str = Field(min_length=1, max_length=6000)
     timeout: float | None = Field(default=None, gt=0, le=120)
     approval_id: str = Field(default="", max_length=200)
+
+
+# -- A49 agent creation -------------------------------------------------------------------
+
+class AgentCreateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    role: str = Field(min_length=2, max_length=32)
+    capabilities: list[str] = Field(min_length=1, max_length=12)
+    description: str = Field(default="", max_length=500)
+    bind: bool = Field(default=False)
+
+
+class AgentUpdateRequest(BaseModel):
+    role: str = Field(default="", max_length=32)
+    capabilities: list[str] | None = Field(default=None, max_length=12)
+    description: str | None = Field(default=None, max_length=500)

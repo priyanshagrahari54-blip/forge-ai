@@ -756,3 +756,14 @@ framing controls by default (add at the edge for production).
   view; ControlConfig compute budgets.
 - 10 new tests. Full suite: **1263 passed, 2 skipped** (A47 baseline:
   1253/2).
+
+## A49 — Agent Creation
+
+- `forge/agents/factory.py`: validated runtime agent definitions
+  (canonical capability vocabulary, name/role regexes, bounds),
+  honest `real` flag only when a registered executor is bound,
+  binding invalidation on role change, creation grants no power.
+- Plane CRUD + audit; API `/api/v1/agents` POST/PATCH/DELETE and
+  `/agents/defined`; cockpit Agent Builder view.
+- 7 new tests. Full suite: **1270 passed, 2 skipped** (A48 baseline:
+  1263/2).

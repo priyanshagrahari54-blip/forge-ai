@@ -2655,6 +2655,75 @@ class ControlPlane:
 
 
 
+
+    # -- agent creation (A49) ----------------------------------------------------------------
+
+    def _agent_factory(self, session: Session):
+        from forge.agents.factory import AgentFactory
+
+        if not hasattr(self, "_agent_factories"):
+            self._agent_factories: dict[str, Any] = {}
+        factory = self._agent_factories.get(session.id)
+        if factory is None:
+            factory = AgentFactory(session.id)
+            self._agent_factories[session.id] = factory
+        return factory
+
+    def agent_create(self, session: Session, name: str, role: str,
+                     capabilities: list[str] | tuple[str, ...], *,
+                     description: str = "", bind: bool = False
+                     ) -> dict[str, Any]:
+        """Define a new agent; capabilities never grant power."""
+        factory = self._agent_factory(session)
+        try:
+            definition = factory.create(
+                name, role, tuple(capabilities), description=description,
+                created_by=session.actor, bind=bind)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "create", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} role={role} "
+                           f"real={definition.real}")
+        return definition.to_dict()
+
+    def agent_update(self, session: Session, name: str, *,
+                     role: str = "",
+                     capabilities: list[str] | None = None,
+                     description: str | None = None
+                     ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        try:
+            definition = factory.update(
+                name, role=role,
+                capabilities=tuple(capabilities)
+                if capabilities is not None else None,
+                description=description)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "update", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} real={definition.real}")
+        return definition.to_dict()
+
+    def agent_delete(self, session: Session, name: str
+                     ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        try:
+            definition = factory.delete(name)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agents", "delete", True,
+                    task_id=session.active_task or session.id,
+                    reason=name)
+        return {"deleted": definition.to_dict()}
+
+    def agent_definitions(self, session: Session) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        return {"agents": [definition.to_dict()
+                           for definition in factory.list()]}
+
+
     # -- compute (A48) --------------------------------------------------------------------
 
     def _compute_engine(self, session: Session):
