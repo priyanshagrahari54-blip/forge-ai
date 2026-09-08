@@ -206,3 +206,10 @@ class AgentUpdateRequest(BaseModel):
 
 class AgentOutcomeRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=128)
+
+
+# -- A51 agent execution -------------------------------------------------------------------
+
+class AgentRunRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=4000)
+    approval_id: str = Field(default="", max_length=200)

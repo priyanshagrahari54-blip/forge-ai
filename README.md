@@ -376,6 +376,18 @@ and `/evolution`.
 See `docs/A50-AGENT-EVOLUTION.md`. Full suite after A50: 1276 passed,
 2 skipped.
 
+## Agent Execution (A51)
+
+Runtime-defined agents really run tasks: AGENT/execute gating
+decides synchronously, execution happens as real recorded runs
+(`agent-run-*`), bound executors (coding/planning/research) operate
+inside the standard permission gates — the coding path files real
+change-set approvals and applies after operator approval. API at
+`/api/v1/agents/{name}/run` and `/runs`.
+
+See `docs/A51-AGENT-EXECUTION.md`. Full suite after A51: 1283 passed,
+2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

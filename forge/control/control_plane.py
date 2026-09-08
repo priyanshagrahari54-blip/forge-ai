@@ -2711,6 +2711,303 @@ class ControlPlane:
                         "no outcomes recorded means no metrics."}
 
 
+
+    # -- agent execution (A51) ------------------------------------------------------------------
+
+    def _agent_runner(self, session: Session):
+        from forge.agents.runner import AgentRunner
+
+        if not hasattr(self, "_agent_runners"):
+            self._agent_runners: dict[str, Any] = {}
+        runner = self._agent_runners.get(session.id)
+        if runner is None:
+            runner = AgentRunner(
+                session.id,
+                executor_builder=lambda role: self._build_role_executor(
+                    session, role))
+            self._agent_runners[session.id] = runner
+        return runner
+
+    def _build_role_executor(self, session: Session, role: str,
+                             run_id: str = ""):
+        from forge.agents.coder import CoderAgent
+        from forge.agents.execution import CallableAgentExecutor
+        from forge.agents.requirements import TaskRequirementExtractor
+        from forge.runtime.defaults import create_default_runtime
+        from forge.security.permissions import (OperationMode,
+                                                PermissionManager)
+
+        project = self.get_project(session.project_id)
+        root = str(project.root)
+        permissions = PermissionManager(
+            mode=OperationMode.ASSISTED, policy=self.policy,
+            store=self.approval_store, agent="forge-agent-run",
+            audit=self.audit)
+        if role == "coding":
+            runtime = create_default_runtime(permissions, root)
+            return CoderAgent(runtime=runtime, root=root, fabric=self.fabric,
+                              approval_store=self.approval_store,
+                              approval_callback=self
+                              ._agent_run_approval_callback(session,
+                                                            run_id))
+        if role == "planning":
+            extractor = TaskRequirementExtractor()
+
+            def planner_worker(request):
+                import json as _json
+
+                requirements = extractor.extract(
+                    request.task.description)
+                return _json.dumps(
+                    {"capabilities": list(requirements.capabilities),
+                     "requirement":
+                         request.task.description[:200]},
+                    default=str)
+
+            return CallableAgentExecutor("planner", planner_worker)
+        if role == "research":
+            def researcher_worker(request):
+                import json as _json
+                import os as _os
+
+                del request
+                python_files: list[str] = []
+
+                def bounded_files():
+                    for dirpath, dirnames, filenames in _os.walk(root):
+                        dirnames[:] = [name for name in dirnames
+                                       if name not in (
+                                           ".git", ".forge", "__pycache__",
+                                           ".venv", "node_modules",
+                                           ".arena")]
+                        for name in sorted(filenames):
+                            if name.endswith(".py"):
+                                python_files.append(_os.path.relpath(
+                                    _os.path.join(dirpath, name), root))
+                                if len(python_files) >= 200:
+                                    return
+
+                bounded_files()
+                test_files = [path for path in python_files
+                              if "test" in path]
+                return _json.dumps(
+                    {"python_files": len(python_files),
+                     "test_files": len(test_files),
+                     "sample": python_files[:20]})
+
+            return CallableAgentExecutor("researcher", researcher_worker)
+        return None
+
+    def _file_agent_run_approval(self, session: Session, name: str,
+                                 role: str) -> dict[str, Any]:
+        from forge.security.approvals import ApprovalRequest
+
+        request = self.approval_store.submit(ApprovalRequest(
+            agent="forge-agent-run", resource=Resource.AGENT,
+            operation="execute", scopes=(name,),
+            task_id=session.active_task or session.id,
+            reason=f"Direct agent run {name} (role={role})",
+            consequences="The bound executor for this agent runs "
+                         "inside the same policy gates as built-in "
+                         "agents."))
+        self._audit(session.actor, "agents", "run", False,
+                    task_id=session.active_task or session.id,
+                    reason="approval required")
+        return {"allowed": False, "approval_required": True,
+                "approval_request_id": request.id, "run": None}
+
+    def _agent_run_approval_callback(self, session: Session,
+                                      run_id: str) -> Callable[[Any], str]:
+        from forge.control.approvals import ApprovalError
+
+        adapter = type("ApprovalRun", (), {
+            "id": run_id,
+            "project_id": session.project_id})()
+        control = type("Control", (), {"cancel_requested": False})()
+
+        def callback(query: Any) -> str:
+            try:
+                filed = self.approvals.file_query(
+                    query, adapter, model="", provider="")
+            except ApprovalError:
+                return ""
+            tokens = [
+                self._wait_approval_token(
+                    request, session.id, control,
+                    self.config.approval_timeout)
+                for request in filed]
+            return tokens[0] if len(tokens) == 1 else ""
+
+        return callback
+
+    def agent_run(self, session: Session, name: str, requirement: str, *,
+                  approval_id: str = "") -> dict[str, Any]:
+        """Run a defined agent through its bound executor, policy-gated.
+
+        The gate decision is synchronous; execution is dispatched to a
+        worker thread (change-set approvals wait there, exactly like
+        task runs) and the result is polled via ``agent_run_result``.
+        """
+        from uuid import uuid4
+
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import (PermissionEvaluation,
+                                           PermissionRequest)
+
+        if not isinstance(requirement, str) or not requirement.strip() \
+                or len(requirement) > 4000:
+            raise InvalidRequest("Requirement must be 1-4000 characters.")
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        permission = PermissionRequest(
+            agent="forge-agent-run", resource=Resource.AGENT,
+            operation="execute", scope=name,
+            task_id=session.active_task or session.id,
+            reason=f"direct agent run {name} (role={definition.role})",
+            details=(("agent", name), ("role", definition.role)))
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                evaluation = PermissionEvaluation(
+                    decision=PolicyDecision.ALLOW, reason=_reason,
+                    risk=permission.risk, scope=permission.scope,
+                    request_id=permission.request_id)
+            else:
+                return self._file_agent_run_approval(
+                    session, name, definition.role)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            return self._file_agent_run_approval(session, name,
+                                                 definition.role)
+        if evaluation.decision != PolicyDecision.ALLOW:
+            self._audit(session.actor, "agents", "run", False,
+                        task_id=session.active_task or session.id,
+                        reason=evaluation.reason)
+            return {"allowed": False, "approval_required": False,
+                    "approval_request_id": "", "run_id": "",
+                    "reason": evaluation.reason or "denied by policy"}
+        from forge.agents.runner import AgentRunner
+
+        run_id = uuid4().hex[:12]
+        record = Run(
+            id=f"agent-run-{run_id}", project_id=session.project_id,
+            requirement=requirement, status=RunStatus.RUNNING,
+            stage="agent-run", version=1, mode=session.profile,
+            actor=session.actor, created_at=time.time(),
+            updated_at=time.time(), started_at=time.time())
+        self.runs.create(record)
+        runner = AgentRunner(
+            session.id,
+            executor_builder=lambda role, run_id=run_id:
+            self._build_role_executor(session, role, run_id=run_id))
+        if not hasattr(self, "_agent_run_results"):
+            self._agent_run_results: dict[tuple, dict[str, Any]] = {}
+        if not hasattr(self, "_agent_run_logs"):
+            self._agent_run_logs: dict[str, list[dict[str, Any]]] = {}
+
+        def worker():
+            try:
+                result = runner.run(definition, requirement,
+                                    run_id=run_id)
+                self.runs.mutate(
+                    record.id,
+                    status=(RunStatus.SUCCEEDED if result.success
+                            else RunStatus.FAILED),
+                    stage="completed", finished_at=time.time(),
+                    files_json=json.dumps(list(result.files)),
+                    report_json=json.dumps(
+                        {"output": result.output[:2000],
+                         "error": result.error}))
+                self._agent_run_results[(session.id, run_id)] = {
+                    "status": "finished", "run": result.to_dict()}
+                self._agent_run_logs.setdefault(
+                    session.id, []).append(result.to_dict())
+                self._agent_run_logs[session.id] = \
+                    self._agent_run_logs[session.id][-20:]
+                self._audit(session.actor, "agents", "run", True,
+                            task_id=record.id,
+                            reason=f"{name} role={result.role} "
+                                   f"success={result.success} "
+                                   f"elapsed={result.elapsed_ms}ms")
+            except Exception as exc:  # bounded, audited, never silent
+                self.runs.mutate(record.id, status=RunStatus.FAILED,
+                                 stage="failed", finished_at=time.time(),
+                                 error=str(exc)[:500])
+                self._agent_run_results[(session.id, run_id)] = {
+                    "status": "failed", "error": str(exc)[:500]}
+                self._audit(session.actor, "agents", "run", False,
+                            task_id=record.id,
+                            reason=f"{name} error={str(exc)[:300]}")
+
+        if self._executor is not None:
+            self._executor.submit(worker)
+        else:
+            worker()
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "run_id": run_id,
+                "status": "queued", "task_id": record.id}
+
+    def agent_run_result(self, session: Session, name: str, run_id: str
+                         ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        results = getattr(self, "_agent_run_results", {})
+        entry = results.get((session.id, run_id))
+        if entry is None:
+            return {"status": "pending", "run_id": run_id}
+        return {"run_id": run_id, **entry}
+
+    def agent_runs(self, session: Session, name: str
+                   ) -> dict[str, Any]:
+        factory = self._agent_factory(session)
+        if factory.get(name) is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        logs = getattr(self, "_agent_run_logs", {}).get(session.id, [])
+        return {"agent": name,
+                "runs": [entry for entry in logs
+                         if entry["agent"] == name]}
+
+    def list_agent_run_approvals(self, session: Session
+                                 ) -> list[dict[str, Any]]:
+        visible = []
+        for request in self.approval_store.pending():
+            if request.agent == "forge-agent-run" \
+                    and request.task_id in (session.id, session.active_task):
+                visible.append(request.to_dict())
+        return visible
+
+    def decide_agent_run_approval(self, session: Session, approval_id: str,
+                                  approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.agent != "forge-agent-run" \
+                or request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "agents",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"agent-run approval {approval_id}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
+
     # -- agent creation (A49) ----------------------------------------------------------------
 
     def _agent_factory(self, session: Session):

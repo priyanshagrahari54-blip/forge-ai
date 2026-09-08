@@ -778,3 +778,15 @@ framing controls by default (add at the edge for production).
   endpoints.
 - 6 new tests. Full suite: **1276 passed, 2 skipped** (A49 baseline:
   1270/2).
+
+## A51 — Agent Execution
+
+- `forge/agents/runner.py` + plane `agent_run`: AGENT/execute gate
+  decides synchronously; execution runs as real recorded Runs
+  (agent-run-*) so change-set approvals resolve through the standard
+  project-scoped flow; DENY fail-closed; approval round trips.
+- Bound executors: coding (CoderAgent + fabric + approval path),
+  planning (deterministic extraction), research (real file counts);
+  unbound specs refused honestly.
+- API run/runs/result + approvals; 7 new tests. Full suite:
+  **1283 passed, 2 skipped** (A50 baseline: 1276/2).

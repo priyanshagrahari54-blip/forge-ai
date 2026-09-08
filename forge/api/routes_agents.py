@@ -11,8 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from forge.api.deps import (Authed, authed, authed_mutation, get_plane,
                             rate_limit)
 from forge.api.schemas import (AgentCreateRequest, AgentOutcomeRequest,
-                               AgentUpdateRequest)
-from forge.control.control_plane import ControlPlane, InvalidRequest
+                               AgentRunRequest, AgentUpdateRequest)
+from forge.control.control_plane import (ApprovalConflictError,
+                                         ApprovalNotFoundError,
+                                         ControlPlane, InvalidRequest,
+                                         TaskNotFound)
 
 router = APIRouter()
 
@@ -92,5 +95,69 @@ async def agent_evolution(name: str,
                           plane: ControlPlane = Depends(get_plane)):
     try:
         return plane.agent_evolution(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A51 agent execution ----------------------------------------------------------------
+
+@router.post("/agents/{name}/run", dependencies=[rate_limit("agents")])
+async def run_agent(name: str, body: AgentRunRequest,
+                    current: Authed = Depends(authed_mutation),
+                    plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_run(current.session, name, body.requirement,
+                               approval_id=body.approval_id)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/{name}/runs")
+async def agent_runs(name: str,
+                     current: Authed = Depends(authed_mutation),
+                     plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_runs(current.session, name)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/agents/runs/approvals")
+async def agent_run_approvals(current: Authed = Depends(authed_mutation),
+                              plane: ControlPlane = Depends(get_plane)):
+    return {"approvals": plane.list_agent_run_approvals(current.session)}
+
+
+@router.post("/agents/runs/approvals/{approval_id}/approve",
+             dependencies=[rate_limit("agents")])
+async def approve_agent_run(approval_id: str,
+                            current: Authed = Depends(authed_mutation),
+                            plane: ControlPlane = Depends(get_plane)):
+    return _decide_agent_run(plane, current.session, approval_id, True)
+
+
+@router.post("/agents/runs/approvals/{approval_id}/deny",
+             dependencies=[rate_limit("agents")])
+async def deny_agent_run(approval_id: str,
+                         current: Authed = Depends(authed_mutation),
+                         plane: ControlPlane = Depends(get_plane)):
+    return _decide_agent_run(plane, current.session, approval_id, False)
+
+
+def _decide_agent_run(plane: ControlPlane, session, approval_id: str,
+                      approved: bool) -> dict:
+    try:
+        return plane.decide_agent_run_approval(
+            session, approval_id, approved)
+    except (TaskNotFound, ApprovalNotFoundError):
+        raise HTTPException(status_code=404, detail="Not found") from None
+    except ApprovalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+@router.get("/agents/{name}/runs/{run_id}")
+async def agent_run_result(name: str, run_id: str,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_run_result(current.session, name, run_id)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
