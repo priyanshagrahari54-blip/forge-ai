@@ -49,6 +49,7 @@ const ROUTES = {
   security: { render: renderSecurityView, title: "Security" },
   settings: { render: renderSettingsView, title: "Settings" },
   conversation: { render: renderConversationView, title: "Conversation" },
+  research: { render: renderResearchView, title: "Research" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2150,6 +2151,7 @@ const PALETTE_COMMANDS = [
   ["Go to Security", "view", () => { window.location.hash = "#/security"; }],
   ["Go to Settings", "view", () => { window.location.hash = "#/settings"; }],
   ["Go to Conversation", "view", () => { window.location.hash = "#/conversation"; }],
+  ["Go to Research", "view", () => { window.location.hash = "#/research"; }],
   ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
@@ -2882,6 +2884,62 @@ function renderConversationView() {
         render(payload);
       } catch (err) {
         errorState(box, "Message failed", err, renderConversationView);
+      }
+    });
+  load();
+}
+
+/* ---------- research (A47) ---------- */
+
+function renderResearchView() {
+  const reportBox = document.getElementById("research-report");
+  const answerBox = document.getElementById("research-answer");
+  const input = document.getElementById("research-input");
+  const renderReport = (payload) => {
+    reportBox.innerHTML = "";
+    reportBox.appendChild(el("p", null,
+      payload.source_file_count + " source files, " +
+      payload.test_file_count + " test files, " +
+      payload.package_count + " packages."));
+    if (payload.entry_points && payload.entry_points.length) {
+      reportBox.appendChild(el("p", null,
+        "Entry points: " + payload.entry_points.join(", ")));
+    }
+    for (const layer of payload.layers || []) {
+      reportBox.appendChild(el("p", null,
+        layer.path + " (" + layer.kind + ", " + layer.file_count +
+        " files)"));
+    }
+  };
+  const renderAnswer = (payload) => {
+    answerBox.innerHTML = "";
+    answerBox.appendChild(el("p", null,
+      payload.answer + " (confidence " + payload.confidence + ")"));
+    for (const item of payload.evidence || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        item.path + (item.line ? ":" + item.line : "") +
+        " — " + item.kind));
+      answerBox.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/research/report").then(renderReport).catch((err) => {
+      errorState(reportBox, "Unable to load the project report", err,
+        renderResearchView);
+    });
+  };
+  document.getElementById("research-ask").addEventListener(
+    "click", async () => {
+      const question = input.value || "";
+      input.value = "";
+      try {
+        const payload = await api("/api/v1/research/ask",
+          { method: "POST", body: { question: question } });
+        renderAnswer(payload);
+      } catch (err) {
+        errorState(answerBox, "Research failed", err,
+          renderResearchView);
       }
     });
   load();

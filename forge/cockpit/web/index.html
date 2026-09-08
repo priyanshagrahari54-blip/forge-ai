@@ -78,6 +78,9 @@
         <a href="#/conversation" data-route="conversation">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v8H6l-3 2.5v-2.5H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
           <span>Conversation</span></a>
+        <a href="#/research" data-route="research">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor"/><path d="M10.4 10.4L14 14" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Research</span></a>
         <a href="#/settings" data-route="settings">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Settings</span></a>
@@ -220,6 +223,27 @@
       <input type="text" id="conversation-input" placeholder="e.g. what does this project do?">
       <button id="conversation-send" class="primary">Send</button>
     </div>
+  </section>
+</template>
+
+<template id="tpl-research">
+  <div class="view-head">
+    <h2>Research</h2>
+    <p class="muted">Evidence-based questions about this codebase.
+    Every answer cites real symbols, dependencies, and tests found by
+    the repository intelligence index — nothing is fabricated.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Project report</h3></div>
+    <div id="research-report"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Ask a question</h3></div>
+    <div class="button-row">
+      <input type="text" id="research-input" placeholder="e.g. what depends on the supervisor?">
+      <button id="research-ask" class="primary">Ask</button>
+    </div>
+    <div id="research-answer"></div>
   </section>
 </template>
 

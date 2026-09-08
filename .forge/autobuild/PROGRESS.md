@@ -731,3 +731,15 @@ framing controls by default (add at the edge for production).
   questions from real fabric data (naming the no-op honestly).
 - 7 new tests. Full suite: **1245 passed, 2 skipped** (A45 baseline:
   1238/2).
+
+## A47 — Research / Intelligence
+
+- `forge/research/`: evidence-based `ResearchEngine` over the
+  existing repository intelligence stack — symbol/dependency/test
+  questions answered only from real index citations; honest refusal
+  with confidence 0.0 when nothing supports the question; structured
+  evidence-based project report.
+- Plane `research_ask`/`research_report` (project-bound, audited);
+  API `/api/v1/research/*`; cockpit Research view with UI contracts.
+- 8 new tests. Full suite: **1253 passed, 2 skipped** (A46 baseline:
+  1245/2).

@@ -2649,6 +2649,44 @@ class ControlPlane:
 
 
 
+
+    # -- research / intelligence (A47) -----------------------------------------------------
+
+    def _research_engine(self, session: Session):
+        from forge.research.engine import ResearchEngine
+
+        if not hasattr(self, "_research_engines"):
+            self._research_engines: dict[str, Any] = {}
+        project = self.get_project(session.project_id)
+        engine = self._research_engines.get(project.id)
+        if engine is None:
+            engine = ResearchEngine(project.root)
+            self._research_engines[project.id] = engine
+        return engine
+
+    def research_ask(self, session: Session,
+                     question: str) -> dict[str, Any]:
+        """Evidence-based research answer; never fabricated."""
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > 2000:
+            raise InvalidRequest("Question must be 1-2000 characters.")
+        engine = self._research_engine(session)
+        result = engine.ask(question)
+        self._audit(session.actor, "research", "ask", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"evidence={len(result['evidence'])}, "
+                           f"confidence={result['confidence']}")
+        return result
+
+    def research_report(self, session: Session) -> dict[str, Any]:
+        engine = self._research_engine(session)
+        result = engine.report()
+        self._audit(session.actor, "research", "report", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"sources={result['source_file_count']}")
+        return result
+
+
     # -- AI council (A45) ---------------------------------------------------------------
 
     def _council_engine(self, session: Session):
