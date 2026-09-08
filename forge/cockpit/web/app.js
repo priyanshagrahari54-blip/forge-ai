@@ -48,6 +48,7 @@ const ROUTES = {
   agents: { render: renderAgentsView, title: "Agents" },
   security: { render: renderSecurityView, title: "Security" },
   settings: { render: renderSettingsView, title: "Settings" },
+  conversation: { render: renderConversationView, title: "Conversation" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -2148,6 +2149,7 @@ const PALETTE_COMMANDS = [
   ["Go to Agents", "view", () => { window.location.hash = "#/agents"; }],
   ["Go to Security", "view", () => { window.location.hash = "#/security"; }],
   ["Go to Settings", "view", () => { window.location.hash = "#/settings"; }],
+  ["Go to Conversation", "view", () => { window.location.hash = "#/conversation"; }],
   ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
@@ -2848,4 +2850,39 @@ function renderSettingsView() {
     errorState(document.getElementById("settings-session"),
       "Unable to load session", err, renderSettingsView);
   });
+}
+
+/* ---------- general conversation (A43) ---------- */
+
+function renderConversationView() {
+  const box = document.getElementById("conversation-log");
+  const input = document.getElementById("conversation-input");
+  const render = (payload) => {
+    box.innerHTML = "";
+    for (const item of payload.history || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        (item.role === "user" ? "You: " : "Forge: ") + item.text));
+      box.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/conversation").then(render).catch((err) => {
+      errorState(box, "Unable to load the conversation", err,
+        renderConversationView);
+    });
+  };
+  document.getElementById("conversation-send").addEventListener(
+    "click", async () => {
+      const message = input.value || "";
+      input.value = "";
+      try {
+        const payload = await api("/api/v1/conversation",
+          { method: "POST", body: { message: message } });
+        render(payload);
+      } catch (err) {
+        errorState(box, "Message failed", err, renderConversationView);
+      }
+    });
+  load();
 }

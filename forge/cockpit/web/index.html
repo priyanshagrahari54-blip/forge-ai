@@ -75,6 +75,9 @@
         <a href="#/security" data-route="security">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l5 2.2v4.1c0 3.4-2.1 5.9-5 6.7-2.9-.8-5-3.3-5-6.7V3.7z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M5.7 8l1.7 1.7 2.9-3" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Security</span></a>
+        <a href="#/conversation" data-route="conversation">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v8H6l-3 2.5v-2.5H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
+          <span>Conversation</span></a>
         <a href="#/settings" data-route="settings">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Settings</span></a>
@@ -200,6 +203,24 @@
       <div id="d-security"></div>
     </div>
   </div>
+</template>
+
+<template id="tpl-conversation">
+  <div class="view-head">
+    <h2>Conversation</h2>
+    <p class="muted">Say what you need in plain language. Engineering
+    requests become real tasks; questions get real answers from the
+    repository, task status, and your remembered preferences — never
+    fabricated.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Chat</h3></div>
+    <div id="conversation-log"></div>
+    <div class="button-row">
+      <input type="text" id="conversation-input" placeholder="e.g. what does this project do?">
+      <button id="conversation-send" class="primary">Send</button>
+    </div>
+  </section>
 </template>
 
 <template id="tpl-agents">

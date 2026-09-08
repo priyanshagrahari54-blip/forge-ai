@@ -677,3 +677,17 @@ framing controls by default (add at the edge for production).
   with 404 isolation, 400 validation, 409 cap.
 - 15 new tests (12 conversation/plane + 3 API). Full suite:
   **1216 passed, 2 skipped** (A41 baseline: 1201/2).
+
+## A43 — General Conversation Engine
+
+- `forge/conversation/engine.py`: deterministic classification
+  (task_request / question / preference / greeting / chat), routing to
+  real tasks (`submit_task`), real answers (RepositoryIntelligence,
+  live dashboard counts, remembered facts), honest fallbacks, bounded
+  16-message history.
+- Plane `converse()` + `conversation_history()`; memory through the
+  existing gated A37 path (denials surfaced honestly); API
+  `/api/v1/conversation` (POST rate-limited + GET); cockpit
+  Conversation view with all UI contracts.
+- 10 new tests. Full suite: **1226 passed, 2 skipped** (A42 baseline:
+  1216/2).

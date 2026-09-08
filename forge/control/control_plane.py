@@ -2529,6 +2529,107 @@ class ControlPlane:
 
 
 
+
+    # -- general conversation (A43) -------------------------------------------------
+
+    def _conversation_engine(self, session: Session):
+        from forge.conversation.engine import GeneralConversationEngine
+
+        if not hasattr(self, "_conversation_engines"):
+            self._conversation_engines: dict[str, Any] = {}
+        engine = self._conversation_engines.get(session.id)
+        if engine is None:
+            engine = GeneralConversationEngine(
+                submit_task=lambda message: self.submit_task(
+                    session, message).to_dict(),
+                answer_question=lambda question: self._conversation_answer(
+                    session, question),
+                remember=lambda message: self._conversation_remember(
+                    session, message),
+                remember_history=lambda text: self._conversation_note(
+                    session, text),
+            )
+            self._conversation_engines[session.id] = engine
+        return engine
+
+    def _conversation_answer(self, session: Session,
+                             question: str) -> str:
+        """Answer with real information only; never fabricate."""
+        lowered = question.lower()
+        project = self.get_project(session.project_id)
+        if any(marker in lowered for marker in (
+                "what does this project", "explain the project",
+                "what is this project", "describe the project",
+                "what files", "structure of the project",
+                "what does the codebase")):
+            try:
+                from forge.intelligence.repository import (
+                    RepositoryIntelligence)
+                intelligence = RepositoryIntelligence.build(project.root)
+                summary = intelligence.summary()
+                points = ", ".join(summary.get("entry_points", [])
+                                   or ["none detected"])[:400]
+                return (
+                    "This project has "
+                    f"{summary.get('source_file_count', 0)} source files, "
+                    f"{summary.get('test_file_count', 0)} test files, and "
+                    f"{summary.get('package_count', 0)} packages. "
+                    f"Entry points: {points}.")
+            except Exception as exc:
+                return f"I couldn't analyze the repository: {exc}"
+        if any(marker in lowered for marker in (
+                "how many tasks", "task status", "status of tasks",
+                "what is running")):
+            try:
+                counts = self.dashboard(session)["tasks"]
+                return (f"You have {counts['running']} running, "
+                        f"{counts['waiting_approval']} waiting for "
+                        f"approval, and {counts['failed']} failed tasks.")
+            except Exception:
+                return "Task status is unavailable right now."
+        if any(marker in lowered for marker in (
+                "what do you remember", "my preferences",
+                "what did i tell you")):
+            entries = [entry.to_dict() for entry in
+                       self.session_memory.list(session.id)]
+            if not entries:
+                return "I don't have anything remembered for you yet."
+            notes = [entry.get("content", "") for entry in entries[:5]]
+            return "I remember: " + " | ".join(notes)[:800]
+        return ("I don't have a real answer for that. I can analyze "
+                "this repository, report task status, and recall what "
+                "you asked me to remember.")
+
+    def _conversation_remember(self, session: Session,
+                               message: str) -> bool:
+        """Persist a preference through the normal memory gate."""
+        try:
+            self.memory_add(session, "fact", f"preference: {message}")
+            return True
+        except Exception:
+            return False
+
+    def _conversation_note(self, session: Session, text: str) -> None:
+        """Record a bounded conversation summary through the memory gate."""
+        try:
+            self.memory_add(session, "summary", f"conversation: {text}")
+        except Exception:
+            pass
+
+    def converse(self, session: Session, message: str) -> dict[str, Any]:
+        """Classify and route one message; answer with real data."""
+        engine = self._conversation_engine(session)
+        payload = engine.converse(message)
+        self._audit(session.actor, "conversation", payload["kind"], True,
+                    task_id=session.active_task or session.id,
+                    reason=payload["reply"][:300])
+        return payload
+
+    def conversation_history(self, session: Session) -> dict[str, Any]:
+        engine = self._conversation_engine(session)
+        return {"history": engine.snapshot()}
+
+
     # -- voice conversation (A42) ---------------------------------------------------
 
     def voice_conversation_start(self, session: Session) -> dict[str, Any]:

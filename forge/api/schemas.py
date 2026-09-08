@@ -142,3 +142,9 @@ class ComputerActRequest(BaseModel):
 class ComputerScreenRequest(BaseModel):
     image_b64: str = Field(min_length=1, max_length=7_000_000)
     goal: str = Field(default="", max_length=1000)
+
+
+# -- A43 general conversation ----------------------------------------------------
+
+class ConversationRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
