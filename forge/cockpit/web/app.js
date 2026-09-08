@@ -11,6 +11,7 @@ const state = {
   taskId: null,
   deskToken: null,
   voiceToken: null,
+  memToken: null,
   cursor: 0,
   histMax: 0,
   seenSeq: new Set(),
@@ -40,6 +41,7 @@ const ROUTES = {
   approvals: { render: renderApprovals, title: "Approvals" },
   desktop: { render: renderDesktop, title: "Desktop" },
   voice: { render: renderVoice, title: "Voice" },
+  memory: { render: renderMemory, title: "Memory" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -1906,6 +1908,220 @@ async function renderVoice() {
   });
 }
 
+/* ---------- memory (A37) ---------- */
+
+function renderMemoryEntryList(entries, box, onDelete) {
+  box.innerHTML = "";
+  if (!entries || !entries.length) {
+    const empty = el("p", "muted empty-state");
+    empty.textContent = "Nothing remembered yet.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const card = el("div", "surface memory-entry");
+    const head = el("div", "section-header");
+    head.appendChild(el("h4", null,
+      (entry.kind || "entry") + " · " + (entry.source || "–")));
+    card.appendChild(head);
+    card.appendChild(el("p", "muted", "created " +
+      new Date((entry.created_at || 0) * 1000).toLocaleString()));
+    if (entry.content !== undefined) {
+      card.appendChild(el("p", null, entry.content));
+    }
+    if (onDelete) {
+      const del = el("button", "btn small", "Forget");
+      del.addEventListener("click", async () => {
+        try {
+          const body = { entry_id: entry.id };
+          if (state.memToken) body.approval_id = state.memToken;
+          await api("/api/v1/memory/delete", { method: "POST", body: body });
+          if (state.memToken) state.memToken = null;
+          renderMemory();
+        } catch (failure) {
+          errorState(box, "Delete failed", failure, renderMemory);
+        }
+      });
+      card.appendChild(del);
+    }
+    box.appendChild(card);
+  }
+}
+
+async function renderMemory() {
+  const snap = snapEpoch();
+  // Overview: session entries + project keys (policy-filtered server-side).
+  try {
+    const overview = await api("/api/v1/memory");
+    if (stale(snap)) return;
+    const box = document.getElementById("memory-entries");
+    box.innerHTML = "";
+    const entries = overview.session_entries || [];
+    if (!entries.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "Nothing remembered yet.";
+      box.appendChild(empty);
+    } else {
+      for (const entry of entries) {
+        const card = el("div", "surface memory-entry");
+        const head = el("div", "section-header");
+        head.appendChild(el("h4", null,
+          (entry.kind || "entry") + " · " + (entry.source || "–")));
+        card.appendChild(head);
+        card.appendChild(el("p", "muted", "created " +
+          new Date((entry.created_at || 0) * 1000).toLocaleString()));
+        card.appendChild(el("button", "btn small", "Show"));
+        card.querySelector("button").addEventListener("click", async () => {
+          try {
+            const full = await api("/api/v1/memory/entries/" +
+              encodeURIComponent(entry.id));
+            renderMemoryEntryList([full.entry], box, true);
+          } catch (failure) {
+            errorState(box, "Load failed", failure, renderMemory);
+          }
+        });
+        box.appendChild(card);
+      }
+    }
+    const projectBox = document.getElementById("memory-project");
+    projectBox.innerHTML = "";
+    const keys = overview.project_keys || [];
+    if (!keys.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No project memory yet.";
+      projectBox.appendChild(empty);
+    } else {
+      for (const key of keys.slice(0, 200)) {
+        const row = el("div", "memory-key-row");
+        row.appendChild(el("span", "mono", key));
+        const load = el("button", "btn small", "Show");
+        load.addEventListener("click", async () => {
+          try {
+            const loaded = await api("/api/v1/memory/project/get?key=" +
+              encodeURIComponent(key));
+            projectBox.innerHTML = "";
+            const card = el("div", "surface memory-entry");
+            card.appendChild(el("h4", null, key));
+            card.appendChild(el("p", null,
+              loaded.content === null ? "(empty)" : loaded.content));
+            const back = el("button", "btn small", "Back to keys");
+            back.addEventListener("click", renderMemory);
+            card.appendChild(back);
+            projectBox.appendChild(card);
+          } catch (failure) {
+            errorState(projectBox, "Load failed", failure, renderMemory);
+          }
+        });
+        row.appendChild(load);
+        projectBox.appendChild(row);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("memory-entries"),
+      "Unable to load memory", err, renderMemory);
+  }
+  // Pending memory approvals.
+  try {
+    const approvals = await api("/api/v1/memory/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("memory-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending memory approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          "memory " + (approval.operation || "") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/memory/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.memToken = decision.token_id;
+            }
+            renderMemory();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderMemory);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/memory/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderMemory();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderMemory);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("memory-approvals"),
+      "Unable to load memory approvals", err, renderMemory);
+  }
+  document.getElementById("memory-refresh").addEventListener("click", renderMemory);
+  document.getElementById("memory-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = {
+      kind: document.getElementById("memory-kind").value,
+      content: document.getElementById("memory-content").value.trim(),
+    };
+    if (!body.content) return;
+    if (state.memToken) body.approval_id = state.memToken;
+    try {
+      const result = await api("/api/v1/memory", { method: "POST", body: body });
+      if (result.allowed) {
+        state.memToken = null;
+        document.getElementById("memory-content").value = "";
+      }
+      renderMemory();
+    } catch (err) {
+      errorState(document.getElementById("memory-entries"),
+        "Save failed", err, renderMemory);
+    }
+  });
+  document.getElementById("memory-project-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = {
+      key: document.getElementById("memory-key").value.trim(),
+      content: document.getElementById("memory-project-content").value.trim(),
+    };
+    if (!body.key || !body.content) return;
+    if (state.memToken) body.approval_id = state.memToken;
+    try {
+      const result = await api("/api/v1/memory/project/save",
+        { method: "POST", body: body });
+      if (result.allowed) {
+        state.memToken = null;
+        document.getElementById("memory-project-content").value = "";
+      }
+      renderMemory();
+    } catch (err) {
+      errorState(document.getElementById("memory-project"),
+        "Save failed", err, renderMemory);
+    }
+  });
+}
+
 /* ---------- command palette ---------- */
 
 const PALETTE_COMMANDS = [
@@ -1919,6 +2135,7 @@ const PALETTE_COMMANDS = [
   ["View approvals", "view", () => { window.location.hash = "#/approvals"; }],
   ["Go to Desktop", "view", () => { window.location.hash = "#/desktop"; }],
   ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
+  ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";

@@ -57,6 +57,9 @@
         <a href="#/voice" data-route="voice">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.5" width="4" height="11" rx="2" fill="none" stroke="currentColor"/><path d="M1.5 7.5v1a6.5 6.5 0 0 0 13 0v-1M7 13.5h2" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Voice</span></a>
+        <a href="#/memory" data-route="memory">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v9l-5.5-3-5.5 3z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
+          <span>Memory</span></a>
       </div>
       <div class="nav-group" role="group" aria-label="System">
         <div class="nav-label">System</div>
@@ -445,6 +448,53 @@
   <div class="surface">
     <div class="section-header"><h3>Pending voice approvals</h3></div>
     <div id="voice-approvals"></div>
+  </div>
+</template>
+
+<template id="tpl-memory">
+  <div class="page-head">
+    <div>
+      <h2>Memory</h2>
+      <p class="muted">Durable memory: session notes/facts and project
+      knowledge. Every access passes the A33 permission gate; writes may
+      require approval. Memory survives restarts.</p>
+    </div>
+    <button id="memory-refresh" class="btn small">Refresh</button>
+  </div>
+  <div class="grid-2col">
+    <div class="surface">
+      <div class="section-header"><h3>Session memory</h3></div>
+      <form id="memory-form">
+        <label for="memory-kind">Kind</label>
+        <select id="memory-kind">
+          <option value="note">note</option>
+          <option value="fact">fact</option>
+          <option value="summary">summary</option>
+        </select>
+        <label for="memory-content">Content</label>
+        <textarea id="memory-content" rows="3" maxlength="20000"
+                  placeholder="e.g. The API review decided to keep sessions bound to projects."></textarea>
+        <button class="btn primary" type="submit">Remember</button>
+      </form>
+      <div id="memory-entries"></div>
+    </div>
+    <div class="surface">
+      <div class="section-header"><h3>Project memory</h3></div>
+      <form id="memory-project-form">
+        <label for="memory-key">Key</label>
+        <input id="memory-key" type="text" maxlength="256"
+               placeholder="e.g. facts/deployment" />
+        <label for="memory-project-content">Content</label>
+        <textarea id="memory-project-content" rows="3" maxlength="20000"
+                  placeholder="e.g. Deploys run from the main branch only."></textarea>
+        <button class="btn" type="submit">Save project memory</button>
+      </form>
+      <div id="memory-project"></div>
+    </div>
+  </div>
+  <div class="surface">
+    <div class="section-header"><h3>Pending memory approvals</h3></div>
+    <div id="memory-approvals"></div>
   </div>
 </template>
 

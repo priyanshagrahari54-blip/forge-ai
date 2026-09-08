@@ -698,3 +698,17 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
   max-width: 100%;
   flex: 1;
 }
+
+/* A37 memory view */
+.memory-entry {
+  margin: 8px 0;
+  padding: 12px;
+}
+.memory-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}

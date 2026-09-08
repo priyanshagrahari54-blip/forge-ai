@@ -66,6 +66,23 @@ class VoiceTranscribeRequest(BaseModel):
     audio_b64: str = Field(min_length=1, max_length=760_000)
 
 
+class MemorySaveRequest(BaseModel):
+    kind: str = Field(min_length=1, max_length=32)
+    content: str = Field(min_length=1, max_length=20_000)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class MemoryProjectSaveRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=256)
+    content: str = Field(min_length=1, max_length=20_000)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class MemoryDeleteRequest(BaseModel):
+    entry_id: str = Field(min_length=1, max_length=128)
+    approval_id: str = Field(default="", max_length=128)
+
+
 class DesktopCheckRequest(BaseModel):
     action: str = Field(min_length=1, max_length=64)
     target: str = Field(default="", max_length=500)

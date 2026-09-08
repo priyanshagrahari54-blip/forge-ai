@@ -59,6 +59,8 @@ from forge.control.commands import (
 )
 from forge.control.db import Database
 from forge.control.events import EventStore
+from forge.control.memory import VALID_KINDS as VALID_MEMORY_KINDS
+from forge.control.memory import SessionMemoryStore
 from forge.control.sessions import Session, SessionStore
 from forge.core.report import redact
 from forge.core.run_control import SupervisorControl
@@ -489,6 +491,9 @@ class ControlConfig:
     # providers register behind the same protocols as plugins.
     voice_stt_provider: str = "simulated"
     voice_tts_provider: str = "simulated"
+    # A37 memory: record bounded run-outcome summaries into durable
+    # project memory when runs finish (system observability, no secrets).
+    memory_record_runs: bool = True
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -592,6 +597,10 @@ class ControlPlane:
         # A36 voice: the simulated speech stack (STT/TTS/wake) behind the
         # A33 voice permission layer. Real providers register as plugins.
         self._voice_session: Any = None
+        # A37 memory: session-scoped durable memory + per-project durable
+        # knowledge stores (lazily built over each project root).
+        self.session_memory = SessionMemoryStore(self._db)
+        self._memory_stores: dict[str, Any] = {}
         self._queues: dict[str, PersistentTaskQueue] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._active: dict[str, int] = {}
@@ -2022,6 +2031,224 @@ class ControlPlane:
                     "decided_by": session.actor})
         return {"approval": decided.to_dict(), "token_id": token_id}
 
+
+    # -- persistent memory (A37) --------------------------------------------------
+
+    def _project_memory(self, project_id: str):
+        """The durable project knowledge store (bounded, path-safe)."""
+        from forge.memory.store import MemoryStore
+
+        store = self._memory_stores.get(project_id)
+        if store is None:
+            project = self.get_project(project_id)
+            store = MemoryStore(
+                root=str(Path(project.root) / ".forge" / "memory"))
+            self._memory_stores[project_id] = store
+        return store
+
+    def _memory_permission(self, session: Session, operation: str,
+                           scope: str, *, approval_id: str = "",
+                           file_approval: bool = True) -> dict[str, Any]:
+        """Evaluate one Resource.MEMORY access through the A33 gate."""
+        from forge.security.approvals import (ApprovalRequest,
+                                              enforce_with_token)
+        from forge.security.policy import PermissionRequest
+
+        policy = self.policy if self.policy is not None else PermissionPolicy()
+        permission = PermissionRequest(
+            agent="forge-memory", resource=Resource.MEMORY,
+            operation=operation, scope=scope,
+            task_id=session.active_task or session.id,
+            reason=f"memory {operation} {scope}")
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                return {"allowed": True, "decision": "ALLOW",
+                        "approval_required": False,
+                        "approval_request_id": approval_id}
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            request_id = ""
+            if file_approval:
+                filed = self.approval_store.submit(ApprovalRequest(
+                    agent="forge-memory", resource=Resource.MEMORY,
+                    operation=operation, scopes=(scope,),
+                    task_id=session.active_task or session.id,
+                    reason=f"Memory {operation} on {scope!r}",
+                    consequences="The session will change remembered "
+                                 "state."))
+                request_id = filed.id
+            return {"allowed": False, "decision": "REQUIRE_APPROVAL",
+                    "approval_required": True,
+                    "approval_request_id": request_id,
+                    "reason": evaluation.reason}
+        if evaluation.decision == PolicyDecision.ALLOW:
+            return {"allowed": True, "decision": "ALLOW",
+                    "approval_required": False, "approval_request_id": ""}
+        return {"allowed": False, "decision": "DENY",
+                "approval_required": False, "approval_request_id": "",
+                "reason": evaluation.reason}
+
+    def memory_overview(self, session: Session) -> dict[str, Any]:
+        """Session memory entries + project keys this session may read."""
+        session_entries = [
+            entry.to_dict(include_content=False)
+            for entry in self.session_memory.list(session.id)
+            if self._memory_permission(
+                session, "read", f"session:{entry.kind}",
+                file_approval=False)["allowed"]]
+        project_keys = [
+            key for key in self._project_memory(session.project_id).list()
+            if self._memory_permission(
+                session, "read", key, file_approval=False)["allowed"]]
+        return {"session_entries": session_entries,
+                "project_keys": project_keys}
+
+    def memory_add(self, session: Session, kind: str, content: str, *,
+                   approval_id: str = "") -> dict[str, Any]:
+        if kind not in VALID_MEMORY_KINDS:
+            raise InvalidRequest(
+                f"Memory kind must be one of {VALID_MEMORY_KINDS}: {kind!r}")
+        if not isinstance(content, str) or not content.strip() \
+                or len(content.encode("utf-8")) > 20_000:
+            raise InvalidRequest("Memory content must be 1-20000 bytes.")
+        permission = self._memory_permission(
+            session, "write", f"session:{kind}", approval_id=approval_id)
+        if not permission["allowed"]:
+            if permission["approval_required"]:
+                return permission
+            raise PolicyDenied(
+                permission.get("reason") or "Memory write denied by policy.")
+        try:
+            entry = self.session_memory.add(
+                session.id, kind, content, source=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "memory", "write", True,
+                    task_id=session.id, reason=f"session:{kind}")
+        return {"allowed": True, "entry": entry.to_dict()}
+
+    def memory_get(self, session: Session, entry_id: str, *,
+                   approval_id: str = "") -> dict[str, Any]:
+        validate_id(entry_id, kind="memory entry id")
+        entry = self.session_memory.get(session.id, entry_id)
+        if entry is None:
+            raise NotFound("Unknown memory entry.")
+        permission = self._memory_permission(
+            session, "read", f"session:{entry.kind}", approval_id=approval_id)
+        if not permission["allowed"]:
+            if permission["approval_required"]:
+                return {"allowed": False, **permission}
+            raise PolicyDenied(
+                permission.get("reason") or "Memory read denied by policy.")
+        return {"allowed": True, "entry": redact(entry.to_dict())}
+
+    def memory_delete(self, session: Session, entry_id: str, *,
+                      approval_id: str = "") -> dict[str, Any]:
+        validate_id(entry_id, kind="memory entry id")
+        entry = self.session_memory.get(session.id, entry_id)
+        if entry is None:
+            raise NotFound("Unknown memory entry.")
+        permission = self._memory_permission(
+            session, "delete", f"session:{entry.kind}",
+            approval_id=approval_id)
+        if not permission["allowed"]:
+            if permission["approval_required"]:
+                return permission
+            raise PolicyDenied(
+                permission.get("reason") or "Memory delete denied by policy.")
+        self.session_memory.delete(session.id, entry_id)
+        self._audit(session.actor, "memory", "delete", True,
+                    task_id=session.id, reason=f"session:{entry.kind}")
+        return {"allowed": True, "deleted": entry_id}
+
+    def memory_project_save(self, session: Session, key: str,
+                            content: str, *,
+                            approval_id: str = "") -> dict[str, Any]:
+        if not isinstance(key, str) or not key.strip() or len(key) > 256:
+            raise InvalidRequest("Memory key must be 1-256 characters.")
+        if not isinstance(content, str) or not content.strip() \
+                or len(content.encode("utf-8")) > 20_000:
+            raise InvalidRequest("Memory content must be 1-20000 bytes.")
+        permission = self._memory_permission(
+            session, "write", key, approval_id=approval_id)
+        if not permission["allowed"]:
+            if permission["approval_required"]:
+                return permission
+            raise PolicyDenied(
+                permission.get("reason") or "Memory write denied by policy.")
+        try:
+            self._project_memory(session.project_id).save(key, content)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "memory", "write", True,
+                    task_id=session.id, reason=f"project:{key}")
+        return {"allowed": True, "key": key}
+
+    def memory_project_load(self, session: Session,
+                            key: str) -> dict[str, Any]:
+        if not isinstance(key, str) or not key.strip() or len(key) > 256:
+            raise InvalidRequest("Memory key must be 1-256 characters.")
+        permission = self._memory_permission(
+            session, "read", key, file_approval=False)
+        if not permission["allowed"]:
+            raise PolicyDenied(
+                permission.get("reason") or "Memory read denied by policy.")
+        try:
+            content = self._project_memory(session.project_id).load(key)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        return {"key": key, "content": redact(content) if content else None}
+
+    def list_memory_approvals(self, session: Session) -> list[dict[str, Any]]:
+        from forge.security.approvals import ApprovalStatus
+
+        visible: list[dict[str, Any]] = []
+        for request in self.approval_store.all_requests():
+            if request.resource != Resource.MEMORY:
+                continue
+            if request.task_id not in (session.id, session.active_task):
+                continue
+            if request.status != ApprovalStatus.PENDING:
+                continue
+            visible.append({
+                "id": request.id, "operation": request.operation,
+                "scopes": list(request.scopes), "task_id": request.task_id,
+                "reason": request.reason, "agent": request.agent,
+                "created_at": request.created_at,
+            })
+        return visible
+
+    def decide_memory_request(self, session: Session, approval_id: str,
+                              approved: bool) -> dict[str, Any]:
+        request = self.approval_store.get_request(approval_id)
+        if request is None or request.resource != Resource.MEMORY:
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        if request.task_id not in (session.id, session.active_task):
+            raise ApprovalNotFoundError(
+                f"Unknown approval: {approval_id!r}")
+        try:
+            decided = self.approval_store.decide(
+                approval_id, approved, session.actor)
+        except ValueError as exc:
+            raise ApprovalConflictError(str(exc)) from exc
+        token_id = ""
+        if approved:
+            token = self.approval_store.issue(
+                approval_id, decided_by=session.actor,
+                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
+            token_id = token.id
+        self._audit(session.actor, "memory",
+                    "approve" if approved else "deny", True,
+                    task_id=request.task_id,
+                    reason=f"memory approval {approval_id} "
+                    f"{'approved' if approved else 'denied'}")
+        return {"approval": decided.to_dict(), "token_id": token_id}
+
     # -- health -------------------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
@@ -2327,6 +2554,37 @@ class ControlPlane:
                     finished.status == RunStatus.SUCCEEDED,
                     task_id=run_id,
                     reason=f"status {finished.status.value}")
+        self._record_run_memory(finished)
+
+    def _record_run_memory(self, run: Run) -> None:
+        """Append a bounded run summary to durable project memory (A37)."""
+        if not self.config.memory_record_runs:
+            return
+        try:
+            store = self._project_memory(run.project_id)
+            store.save(
+                f"runs/{run.id}",
+                json.dumps({
+                    "status": run.status.value,
+                    "requirement": run.requirement[:500],
+                    "model": run.model, "provider": run.provider,
+                    "attempts": run.attempts, "rollback": run.rollback,
+                    "finished_at": run.finished_at,
+                }, default=str))
+            # Bounded retention: keep the most recent 50 run summaries.
+            keys = [key for key in store.list()
+                    if key.startswith("runs/")]
+            if len(keys) > 50:
+                def mtime(key: str) -> float:
+                    path = store._safe_path(key)
+                    try:
+                        return path.stat().st_mtime
+                    except OSError:
+                        return 0.0
+                for key in sorted(keys, key=mtime)[:len(keys) - 50]:
+                    store.delete(key)
+        except Exception:
+            pass  # memory recording never breaks a finished run
 
     def _finish_run(self, run_id: str, status: RunStatus,
                     *, error: str = "") -> None:

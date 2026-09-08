@@ -153,6 +153,33 @@ audio (bounded WAV) → wake gate → transcription → VoiceCommand → intent
 See `docs/A36-VOICE.md` for the architecture and honesty invariants.
 Full suite after A36: 1075 passed, 2 skipped.
 
+## Persistent Sessions + Memory (A37)
+
+A37 makes the cockpit remember. On top of the already-durable cockpit
+database (sessions, tokens, active-task bindings, run records), it adds:
+
+- **Session memory** — SQLite-backed notes/facts/summaries that survive
+  restarts, are strictly session-scoped, bounded (500 entries, 20 KB per
+  entry, 1 MB per session, FIFO pruning), and served redacted at the API
+  boundary.
+- **Project memory** — durable project knowledge in the path-safe
+  `MemoryStore` under `.forge/memory` (e.g. `facts/deploy`).
+- **Run summaries** — bounded (last 50) outcome summaries recorded into
+  project memory whenever a run finishes; disable with
+  `ControlConfig(memory_record_runs=False)`.
+- **Memory can never bypass permissions**: every access evaluates the
+  A33 `Resource.MEMORY` policy (read/write/delete) with agent identity
+  `forge-memory`; `REQUIRE_APPROVAL` files session-bound approvals that
+  mint single-use tokens — stale or spent tokens fail closed into a
+  fresh approval; read overviews are policy-filtered.
+- **API + cockpit**: `/api/v1/memory*` (overview, session entries,
+  project save/load/list, approvals) and a Memory cockpit view with
+  notes, project keys, and approve/deny that carries the minted token
+  into the resubmission.
+
+See `docs/A37-PERSISTENT-SESSIONS-MEMORY.md` for the model, gating, and
+test matrix. Full suite after A37: 1105 passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

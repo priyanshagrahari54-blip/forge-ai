@@ -16,6 +16,7 @@ from forge.api import (
     routes_approvals,
     routes_commands,
     routes_core,
+    routes_memory,
     routes_tasks,
     routes_views,
     stream,
@@ -137,6 +138,7 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_approvals.router, prefix="/api/v1")
     app.include_router(routes_views.router, prefix="/api/v1")
     app.include_router(routes_commands.router, prefix="/api/v1")
+    app.include_router(routes_memory.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
 
     web_dir = (Path(config.web_dir) if config.web_dir

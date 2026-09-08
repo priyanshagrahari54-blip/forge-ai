@@ -494,3 +494,40 @@ framing controls by default (add at the edge for production).
   2 skipped). `compileall` clean over `forge/`.
 - A33 voice foundation preserved verbatim (`forge/voice/base.py`); all
   A33/A34/A35 tests pass unmodified.
+
+## A37 — Persistent Sessions + Memory
+
+- Added the remembered layer on top of the already-durable cockpit
+  database: `Resource.MEMORY` (read/write/delete) in the A33 policy;
+  `forge/control/memory.py` session-scoped SQLite memory (500 entries /
+  20 KB per entry / 1 MB per session, FIFO pruning, kind validation
+  before the policy gate); per-project durable knowledge wired to the
+  existing path-safe `MemoryStore` under `.forge/memory`; bounded
+  run-outcome summaries (last 50) recorded into project memory when
+  runs finish (`ControlConfig(memory_record_runs)` toggle).
+- Every memory access passes the A33 gate with agent identity
+  `forge-memory` (approver != agent): DENY blocks, REQUIRE_APPROVAL
+  files a session-bound approval and redeems single-use tokens; failed
+  redemptions fail closed into fresh approvals; read overviews are
+  policy-filtered; entries are served redacted.
+- API `/api/v1/memory*`: overview, session entry add/get/delete,
+  project save/load/list, approvals with approve/deny. Rate-limited
+  mutations, schema bounds (kind in note/fact/summary, content
+  1-20 000 bytes, keys 1-256 chars no traversal), audited.
+- Cockpit Memory view: session entries (kind/source/time, show/forget),
+  project keys (load/save), pending memory approvals carrying the
+  minted token into resubmission. All UI contracts preserved.
+- Restart persistence verified end to end: sessions, bearer tokens,
+  active-task bindings, session memory, project memory, and run records
+  survive a brand-new ControlPlane over the same database; session
+  expiry still enforced after restart.
+
+## Executable proof (A37)
+
+- 30 new tests across 5 suites: `tests/test_a37_{memory_store,
+  memory_plane,persistence,api,ui}.py` — store bounds/scoping/pruning,
+  policy gating + approval round trips, cross-session isolation, path
+  safety, run-summary retention, full restart persistence, API
+  boundaries, cockpit contracts.
+- Full suite: **1105 passed, 2 skipped** (A36 baseline: 1075 passed,
+  2 skipped). `compileall` clean over `forge/`.
