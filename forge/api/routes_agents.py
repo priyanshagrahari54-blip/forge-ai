@@ -12,7 +12,7 @@ from forge.api.deps import (Authed, authed, authed_mutation, get_plane,
                             rate_limit)
 from forge.api.schemas import (AgentCreateRequest, AgentMemorySetRequest,
                                AgentOutcomeRequest, AgentRunRequest,
-                               AgentUpdateRequest)
+                               AgentStatusRequest, AgentUpdateRequest)
 from forge.control.control_plane import (ApprovalConflictError,
                                          ApprovalNotFoundError,
                                          ControlPlane, InvalidRequest,
@@ -203,5 +203,16 @@ async def delete_agent_memory(name: str, key: str,
                               plane: ControlPlane = Depends(get_plane)):
     try:
         return plane.agent_memory_delete(current.session, name, key)
+    except InvalidRequest as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- A55 agent lifecycle ----------------------------------------------------------------
+
+@router.post("/agents/{name}/status", dependencies=[rate_limit("agents")])
+async def set_agent_status(name: str, body: AgentStatusRequest,
+                           current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.agent_set_status(current.session, name, body.status)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

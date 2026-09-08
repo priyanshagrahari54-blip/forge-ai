@@ -2861,6 +2861,10 @@ class ControlPlane:
         definition = factory.get(name)
         if definition is None:
             raise InvalidRequest(f"Unknown agent: {name}")
+        if definition.status != "active":
+            raise InvalidRequest(
+                f"Agent {name} is {definition.status}; only active "
+                "agents can run")
         permission = PermissionRequest(
             agent="forge-agent-run", resource=Resource.AGENT,
             operation="execute", scope=name,
@@ -3331,6 +3335,36 @@ class ControlPlane:
                     task_id=session.active_task or session.id,
                     reason=f"{name} -/ {skill_name}")
         return updated.to_dict()
+
+
+
+    # -- agent lifecycle (A55) ----------------------------------------------------------------------
+
+    def agent_set_status(self, session: Session, name: str,
+                         status: str) -> dict[str, Any]:
+        """Transition an agent between active/paused/retired."""
+        factory = self._agent_factory(session)
+        definition = factory.get(name)
+        if definition is None:
+            raise InvalidRequest(f"Unknown agent: {name}")
+        status = (status or "").strip().lower()
+        if status not in ("active", "paused", "retired"):
+            raise InvalidRequest(
+                f"Unknown status {status!r}; expected active, paused, "
+                "or retired")
+        if definition.status == "retired":
+            raise InvalidRequest("Retired agents cannot transition")
+        if status == definition.status:
+            raise InvalidRequest(f"Agent {name} is already {status}")
+        if status == "active" and definition.status != "paused":
+            raise InvalidRequest(
+                f"Only paused agents can return to active "
+                f"(current: {definition.status})")
+        definition.status = status
+        self._audit(session.actor, "agents", "status", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} -> {status}")
+        return definition.to_dict()
 
 
     # -- agent creation (A49) ----------------------------------------------------------------

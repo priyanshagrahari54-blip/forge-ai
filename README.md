@@ -420,6 +420,16 @@ bindings, or policy. API at `/api/v1/skills*`.
 See `docs/A54-AGENT-SKILLS.md`. Full suite after A54: 1298 passed, 2
 skipped.
 
+## Agent Lifecycle (A55)
+
+Defined agents carry validated lifecycle states — active, paused,
+retired (terminal) — and only active agents may run or join teams.
+Lifecycle gates stack on top of the policy gates; they can only
+restrict further. API at `/api/v1/agents/{name}/status`.
+
+See `docs/A55-AGENT-LIFECYCLE.md`. Full suite after A55: 1303 passed,
+2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

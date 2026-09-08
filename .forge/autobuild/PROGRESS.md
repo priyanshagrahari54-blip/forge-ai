@@ -820,3 +820,11 @@ framing controls by default (add at the edge for production).
 - Plane + API `/api/v1/skills*` and agent attach/detach; audited.
 - 5 new tests. Full suite: **1298 passed, 2 skipped** (A53 baseline:
   1293/2).
+
+## A55 — Agent Lifecycle
+
+- `AgentDefinition.status`: active/paused/retired with validated
+  transitions (retired terminal); non-active agents refuse runs;
+  teams require active members; audited; API status endpoint.
+- 5 new tests. Full suite: **1303 passed, 2 skipped** (A54 baseline:
+  1298/2).

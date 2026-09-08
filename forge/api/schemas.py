@@ -245,3 +245,9 @@ class SkillCreateRequest(BaseModel):
 
 class SkillAttachRequest(BaseModel):
     skill: str = Field(min_length=3, max_length=48)
+
+
+# -- A55 agent lifecycle -----------------------------------------------------------------------
+
+class AgentStatusRequest(BaseModel):
+    status: str = Field(min_length=2, max_length=16)

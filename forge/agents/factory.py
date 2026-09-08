@@ -51,6 +51,7 @@ class AgentDefinition:
     metrics: dict = field(default_factory=dict)
     skills: tuple[str, ...] = ()
     base_capabilities: tuple[str, ...] = ()
+    status: str = "active"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +68,7 @@ class AgentDefinition:
             "metrics": dict(self.metrics),
             "skills": list(self.skills),
             "base_capabilities": list(self.base_capabilities),
+            "status": self.status,
             "note": ("Backed by the registered {0} executor."
                      .format(self.executor) if self.real else
                      "A validated definition; no executor is bound "
@@ -149,7 +151,8 @@ class AgentFactory:
             metrics=dict(existing.metrics),
             skills=tuple(existing.skills)
             if capabilities is None else (),
-            base_capabilities=base_caps)
+            base_capabilities=base_caps,
+            status=existing.status)
         self._definitions[name] = updated
         return updated
 

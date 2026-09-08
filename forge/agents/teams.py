@@ -65,6 +65,10 @@ class TeamRegistry:
                 raise ValueError(
                     f"agent {member!r} has no bound executor; teams "
                     "run real agents only")
+            if getattr(definition, "status", "active") != "active":
+                raise ValueError(
+                    f"agent {member!r} is not active; teams run "
+                    "active agents only")
             if member in seen:
                 raise ValueError(f"duplicate member: {member}")
             seen.append(member)
