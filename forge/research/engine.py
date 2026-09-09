@@ -252,19 +252,40 @@ class ResearchEngine:
                 "state": "SUCCESS",
                 "provider": provider.provider_name,
             }
+        real = [r for r in results if r.is_real]
+        knowledge = [r for r in results if not r.is_real]
         evidence = []
         for result in results[:MAX_EVIDENCE]:
+            # Provenance-aware evidence: only genuine provider output is
+            # a "web_result"; model knowledge stays visibly separate.
             evidence.append({
                 "title": result.title,
                 "url": result.url,
                 "snippet": result.snippet,
-                "kind": "web_result",
+                "kind": "web_result" if result.is_real
+                          else "model_knowledge",
+                "source_kind": result.kind,
             })
-        snippets = [f"{r.title}: {r.snippet[:100]}"
-                    for r in results[:4]]
-        answer = (f"Web search ({provider.provider_name}) returned "
-                  f"{len(results)} result(s): "
-                  + "; ".join(snippets))
+        if not knowledge:
+            # All-real results: plain, familiar phrasing.
+            snippets = [f"{r.title}: {r.snippet[:100]}" for r in real[:4]]
+            answer = (f"Web search ({provider.provider_name}) returned "
+                      f"{len(results)} result(s): " + "; ".join(snippets))
+        else:
+            parts = []
+            if real:
+                parts.append(f"{len(real)} live web result(s): "
+                             + "; ".join(
+                                 f"{r.title}: {r.snippet[:100]}"
+                                 for r in real[:4]))
+            if knowledge:
+                parts.append(
+                    f"{len(knowledge)} model-knowledge item(s) (unverified, "
+                    "not real web search output): "
+                    + "; ".join(
+                        f"{r.snippet[:100]}" for r in knowledge[:4]))
+            answer = (f"Web search ({provider.provider_name}) returned "
+                      f"{len(results)} item(s): " + "; ".join(parts))
         return {
             "question": question[:400],
             "answer": answer[:2000],
@@ -274,8 +295,9 @@ class ResearchEngine:
             "web_search": True,
             "state": "SUCCESS",
             "provider": provider.provider_name,
-            "note": "Web results are untrusted external input; "
-                    "verify independently.",
+            "note": ("Web results are untrusted external input; "
+                     "model-knowledge items are unverified and never "
+                     "real web search output. Verify independently."),
         }
 
     def fetch_url(self, url: str, audit: Any = None) -> dict[str, Any]:
