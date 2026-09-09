@@ -3387,6 +3387,66 @@ class ControlPlane:
 
 
 
+
+    # -- backup & recovery (A65) ----------------------------------------------------------------------
+
+    def _backup_manager(self):
+        from forge.backup.manager import BackupManager
+
+        if not hasattr(self, "_backups"):
+            self._backups = BackupManager(
+                self._db, self.config.db_path, self.config.projects,
+                self._db.path.parent / "backups")
+        return self._backups
+
+    def backup_create(self, session: Session, label: str
+                      ) -> dict[str, Any]:
+        try:
+            record = self._backup_manager().create(label, session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "backup", "create", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{label} files={record['files_count']}")
+        return record
+
+    def backup_verify(self, session: Session, backup_id: str
+                      ) -> dict[str, Any]:
+        try:
+            report = self._backup_manager().verify(backup_id)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "backup", "verify", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{backup_id} status={report['status']}")
+        return report
+
+    def backup_restore(self, session: Session, backup_id: str
+                       ) -> dict[str, Any]:
+        if self.running:
+            raise InvalidRequest(
+                "restore requires a stopped plane; stop the plane first")
+        try:
+            report = self._backup_manager().restore(
+                backup_id, stopped=True, actor=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "backup", "restore", True,
+                    task_id=session.active_task or session.id,
+                    reason=backup_id)
+        return report
+
+    def backup_list(self, session: Session) -> dict[str, Any]:
+        return {"backups": self._backup_manager().list()}
+
+    def backup_get(self, session: Session, backup_id: str
+                   ) -> dict[str, Any]:
+        try:
+            return self._backup_manager().get(backup_id)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+
+
     # -- deployment (A64) ----------------------------------------------------------------------------
 
     def _deployment_manager(self, session: Session):

@@ -294,3 +294,9 @@ class DeploymentCreateRequest(BaseModel):
 
 class DeploymentDeployRequest(BaseModel):
     target: str = Field(min_length=1, max_length=512)
+
+
+# -- A65 backup & recovery ----------------------------------------------------------------------
+
+class BackupCreateRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=64)

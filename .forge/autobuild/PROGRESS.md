@@ -912,3 +912,13 @@ framing controls by default (add at the edge for production).
   versions kept. API + audit. Local staging only — no network.
 - 5 new tests. Full suite: **1348 passed, 2 skipped** (A63 baseline:
   1343/2).
+
+## A65 — Backup & Recovery
+
+- `forge/backup/manager.py`: consistent db+files snapshots with
+  sha256 manifests, honest verify with drift detection, restore
+  gated on a stopped plane with WAL consolidation and atomic
+  replacement (file-tree rollback out of scope, stated). Cap 5
+  backups. API + audit.
+- 5 new tests. Full suite: **1353 passed, 2 skipped** (A64 baseline:
+  1348/2).
