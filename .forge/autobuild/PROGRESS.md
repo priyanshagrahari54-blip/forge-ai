@@ -1023,3 +1023,23 @@ framing controls by default (add at the edge for production).
   self-evaluation,rollout,loop,gate}.
 - 14 new tests (5 A73 + 9 A74-A80). Full suite: **1403 passed,
   2 skipped** (A72 baseline: 1389/2).
+
+## A71-A80 pushed + full-chain demonstration (final)
+
+- Commits pushed to `arena/01a080c1-forge-ai` (`aa36163..0adea8c`):
+  `0ac327c` A71, `5730764` A72, `0adea8c` A72-A80. PR #9 MERGEABLE
+  at head `0adea8c`.
+- Real end-to-end demonstration on a fresh plane (recorded live):
+  A71 acceptance 6/6 with a genuine pipeline smoke run
+  (task t-52f331d8d39446d9: submit -> plan -> code -> test ->
+  review -> commit); A72 verification True (terminal, report,
+  files on disk); A73 security True; A74 benchmark ran on the real
+  model (code-judged); A75 commit True; A76 memory True; A77
+  self-evaluation "healthy"; A78 rollout all gates True; A79 loop
+  1/3 iterations; **A80 go/no-go: GO = True** (rollout passed +
+  1 genuinely SUCCEEDED run on record).
+- Master-build final acceptance demonstration: voice ->
+  conversation -> supervisor -> decomposition -> routing ->
+  multi-agent -> tools -> controlled action -> testing ->
+  debugging -> review -> security -> benchmark -> acceptance ->
+  commit -> memory -> self-evaluation -> go/no-go: COMPLETE.
