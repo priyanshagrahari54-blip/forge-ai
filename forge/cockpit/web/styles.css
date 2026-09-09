@@ -580,6 +580,27 @@ table.kv td, table.kv th {
 }
 .palette-item.selected, .palette-item:hover { background: var(--bg3); }
 
+/* A70: dashboard polish — autonomy chips and audit posture */
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 999px; font-size: 0.82rem; }
+.chip .pkind { text-transform: uppercase; letter-spacing: 0.06em; }
+.chip.ok { border-color: var(--ok); color: var(--ok); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+.chip.bad { border-color: var(--bad); color: var(--bad); }
+.audit-box { margin-top: 12px; padding-top: 10px;
+  border-top: 1px dashed var(--line); }
+.audit-line { display: flex; justify-content: space-between; gap: 8px;
+  font-size: 0.85rem; padding: 2px 0; }
+
+/* A68: shortcuts help overlay */
+.shortcut-row { display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 6px; }
+.shortcut-row:hover { background: var(--bg3); }
+.shortcut-keys { min-width: 96px; text-align: right; }
+.shortcut-label { flex: 1; }
+#shortcuts-list { max-height: 320px; overflow-y: auto; margin-top: 6px; }
+
 /* ---------- login ---------- */
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .login.hidden { display: none; }
@@ -672,8 +693,110 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
   .section-header { flex-wrap: wrap; }
 }
 
+/* ---------- desktop view (A35) ---------- */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.result-box { margin-top: 14px; }
+.result-box.hidden { display: none; }
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+
 /* ---------- motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   main#view { animation: none; }
+}
+
+
+/* A36 voice view */
+.audio-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.audio-row audio {
+  max-width: 100%;
+  flex: 1;
+}
+
+/* A37 memory view */
+.memory-entry {
+  margin: 8px 0;
+  padding: 12px;
+}
+.memory-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+
+/* A38 orchestrations view */
+.orch-step {
+  margin: 8px 0;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.orch-step h4 {
+  margin: 0 0 4px 0;
+}
+.orch-step button {
+  margin-right: 8px;
+}
+
+/* ---------- themes (A41) ---------- */
+
+[data-theme="light"] {
+  --bg0: #f2f4f8;
+  --bg1: #ffffff;
+  --bg2: #f7f9fc;
+  --bg3: #eef2f7;
+  --line: #d8dfe9;
+  --line-soft: #e6ebf2;
+  --text: #17202c;
+  --muted: #52617a;
+  --faint: #7b8aa1;
+  --accent: #c2590f;
+  --accent-soft: rgba(194, 89, 15, 0.12);
+  --accent-ink: #ffffff;
+  --link: #2f5fc4;
+  --ok: #1d8a48;
+  --ok-soft: rgba(29, 138, 72, 0.12);
+  --warn: #a36b09;
+  --warn-soft: rgba(163, 107, 9, 0.12);
+  --bad: #c02f27;
+  --bad-soft: rgba(192, 47, 39, 0.12);
+  --info: #2f6fc2;
+  --info-soft: rgba(47, 111, 194, 0.12);
+  --shadow: 0 8px 24px rgba(23, 32, 44, 0.12);
+}
+
+/* ---------- responsive layout (A41) ---------- */
+
+@media (max-width: 760px) {
+  .sidebar {
+    position: relative;
+    width: 100%;
+    height: auto;
+  }
+  #nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .nav-group a {
+    width: 100%;
+  }
+  .view-head h2 {
+    font-size: 1.25rem;
+  }
+  .button-row {
+    flex-wrap: wrap;
+  }
+  .surface {
+    padding: 12px;
+  }
 }

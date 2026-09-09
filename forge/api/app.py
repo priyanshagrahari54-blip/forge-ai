@@ -16,9 +16,33 @@ from forge.api import (
     routes_approvals,
     routes_commands,
     routes_core,
+    routes_memory,
     routes_tasks,
     routes_views,
     stream,
+    routes_orchestrations,
+    routes_vision,
+    routes_computer,
+    routes_agents,
+    routes_voice_conversation,
+    routes_conversation,
+    routes_collaboration,
+    routes_council,
+    routes_models,
+    routes_research,
+    routes_compute,
+    routes_teams,
+    routes_skills,
+    routes_learning,
+    routes_benchmarks,
+    routes_hardening,
+    routes_observability,
+    routes_performance,
+    routes_deployments,
+    routes_backups,
+    routes_plugins,
+    routes_autonomy,
+    routes_final,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
@@ -48,8 +72,8 @@ class _RequestContextMiddleware(BaseHTTPMiddleware):
         # should add framing controls at the edge.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; img-src 'self' data:; base-uri 'self'; "
-            "form-action 'self'")
+            "connect-src 'self'; img-src 'self' data:; "
+            "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
         if not request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -137,6 +161,30 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_approvals.router, prefix="/api/v1")
     app.include_router(routes_views.router, prefix="/api/v1")
     app.include_router(routes_commands.router, prefix="/api/v1")
+    app.include_router(routes_memory.router, prefix="/api/v1")
+    app.include_router(routes_orchestrations.router, prefix="/api/v1")
+    app.include_router(routes_vision.router, prefix="/api/v1")
+    app.include_router(routes_computer.router, prefix="/api/v1")
+    app.include_router(routes_agents.router, prefix="/api/v1")
+    app.include_router(routes_voice_conversation.router, prefix="/api/v1")
+    app.include_router(routes_conversation.router, prefix="/api/v1")
+    app.include_router(routes_collaboration.router, prefix="/api/v1")
+    app.include_router(routes_council.router, prefix="/api/v1")
+    app.include_router(routes_models.router, prefix="/api/v1")
+    app.include_router(routes_research.router, prefix="/api/v1")
+    app.include_router(routes_teams.router, prefix="/api/v1")
+    app.include_router(routes_skills.router, prefix="/api/v1")
+    app.include_router(routes_learning.router, prefix="/api/v1")
+    app.include_router(routes_benchmarks.router, prefix="/api/v1")
+    app.include_router(routes_hardening.router, prefix="/api/v1")
+    app.include_router(routes_observability.router, prefix="/api/v1")
+    app.include_router(routes_performance.router, prefix="/api/v1")
+    app.include_router(routes_deployments.router, prefix="/api/v1")
+    app.include_router(routes_backups.router, prefix="/api/v1")
+    app.include_router(routes_plugins.router, prefix="/api/v1")
+    app.include_router(routes_autonomy.router, prefix="/api/v1")
+    app.include_router(routes_final.router, prefix="/api/v1")
+    app.include_router(routes_compute.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
 
     web_dir = (Path(config.web_dir) if config.web_dir

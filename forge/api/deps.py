@@ -112,6 +112,8 @@ class RateLimiter:
         "approvals": (30.0, 30.0 / 60.0),
         "events": (120.0, 2.0),
         "stream": (10.0, 10.0 / 60.0),
+        "voice": (30.0, 30.0 / 60.0),
+        "memory": (60.0, 60.0 / 60.0),
     }
     MAX_KEYS = 10000
 

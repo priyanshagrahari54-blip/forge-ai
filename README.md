@@ -88,6 +88,525 @@ Auth is local-development sessions (no passwords). See
 `docs/A34-BROWSER-COCKPIT.md` for the architecture, full API reference,
 event catalog, security model, configuration, and honest limitations.
 
+## Desktop Agent (A35)
+
+A35 is controlled desktop execution. The agent (`forge/desktop/`) can
+observe and act on a desktop, but every action — including observations —
+passes the A33 permission system, deterministic risk classification, hard
+security invariants, a permission profile, and (for actuation) the A33
+approval store:
+
+```
+DesktopRequest → identity → task scope → A33 PolicyGate → risk/invariants
+→ profile → approval (single-use token) → provider execution → audit
+```
+
+- **Structured vocabulary**: 15 action kinds with bounded validation as
+  the first gate (target/keyboard/clipboard/args/coordinates limits,
+  shell-metacharacter rejection, relative paths only).
+- **Profiles**: SAFE (observe only), ASSISTED (actuation needs approval),
+  AUTONOMOUS (LOW-risk actuation inside granted task scope), CUSTOM
+  (tighten-only overrides). Hard invariants can never be overridden:
+  credential extraction, security-software disabling, privilege
+  escalation, persistence, remote control.
+- **Approvals**: the same A33 store, single-use scope-bound tokens,
+  distinct approver; stale/spent/out-of-scope tokens fail closed into a
+  fresh request.
+- **Provider protocol + fake desktop**: 16-method `DesktopProvider`
+  protocol; deterministic scriptable `FakeDesktopProvider` (windows,
+  processes, clipboard, input log, fault injection) for tests/dev. The
+  cockpit labels the simulation as a simulation; A35 ships no real-OS
+  provider — the protocol is the plugin point.
+- **API + cockpit**: `/api/v1/desktop/capabilities|state|check|act|grants|
+  approvals|approve|deny`, rate-limited, session-bound; a Desktop cockpit
+  view with state, capability matrix, WHAT/WHY action form, and approval
+  cards that carry the minted token into execution.
+
+See `docs/A35-DESKTOP-AGENT.md` for the full architecture, security model,
+and test matrix. Full suite after A35: 1022 passed, 2 skipped.
+
+## Voice (A36)
+
+A36 adds the audio layer around the A33 voice foundation — the complete
+permission-gated spoken loop (`forge/voice/`):
+
+```
+audio (bounded WAV) → wake gate → transcription → VoiceCommand → intent
+→ A33 policy + approval → action (task / spoken status) → spoken reply → audit
+```
+
+- **Deterministic simulated transport**: a text⇄tone codec over PCM —
+  labeled simulation everywhere. The simulated recognizer refuses real
+  audio instead of guessing; real STT/TTS/wake providers plug in behind
+  the same protocols (`FORGE_VOICE_STT_PROVIDER` /
+  `FORGE_VOICE_TTS_PROVIDER` accept only `simulated` in A36).
+- **Voice can never bypass permissions**: commands execute with agent
+  identity `forge-voice` through the A33 policy/approval system;
+  approvals are session-bound with single-use tokens; unknown intents
+  and un-woken audio fail closed.
+- **API + cockpit**: `/api/v1/voice/capabilities|synthesize|transcribe|
+  process|approvals|approve|deny`; a Voice cockpit view with the stack
+  report, text commands, an audio round trip (synthesize → play → send
+  through wake + recognition), full result traces, and playable spoken
+  replies.
+
+See `docs/A36-VOICE.md` for the architecture and honesty invariants.
+Full suite after A36: 1075 passed, 2 skipped.
+
+## Persistent Sessions + Memory (A37)
+
+A37 makes the cockpit remember. On top of the already-durable cockpit
+database (sessions, tokens, active-task bindings, run records), it adds:
+
+- **Session memory** — SQLite-backed notes/facts/summaries that survive
+  restarts, are strictly session-scoped, bounded (500 entries, 20 KB per
+  entry, 1 MB per session, FIFO pruning), and served redacted at the API
+  boundary.
+- **Project memory** — durable project knowledge in the path-safe
+  `MemoryStore` under `.forge/memory` (e.g. `facts/deploy`).
+- **Run summaries** — bounded (last 50) outcome summaries recorded into
+  project memory whenever a run finishes; disable with
+  `ControlConfig(memory_record_runs=False)`.
+- **Memory can never bypass permissions**: every access evaluates the
+  A33 `Resource.MEMORY` policy (read/write/delete) with agent identity
+  `forge-memory`; `REQUIRE_APPROVAL` files session-bound approvals that
+  mint single-use tokens — stale or spent tokens fail closed into a
+  fresh approval; read overviews are policy-filtered.
+- **API + cockpit**: `/api/v1/memory*` (overview, session entries,
+  project save/load/list, approvals) and a Memory cockpit view with
+  notes, project keys, and approve/deny that carries the minted token
+  into the resubmission.
+
+See `docs/A37-PERSISTENT-SESSIONS-MEMORY.md` for the model, gating, and
+test matrix. Full suite after A37: 1105 passed, 2 skipped.
+
+## Multi-Agent Orchestration (A38)
+
+A38 turns the agents into one coordinated team. A single requirement
+becomes a deterministic, capability-matched plan that executes as a
+dependency-ordered DAG: parallel where safe, sequential where
+requested, with real budgets (bounded workers, per-step attempts and
+timeouts) and cooperative cancellation.
+
+- **The team is real**: planner, architect, researcher, coder, tester,
+  debugger, reviewer, security, performance, documentation, and git
+  executors each do their actual job over the project root. Planning
+  never invents agents — unmatched requirements report `PLAN_REJECTED`.
+- **Dispatch is permission-gated**: every step evaluates the A33
+  `Resource.AGENT / execute` vocabulary with identity
+  `forge-orchestrator`; `DENY` fails closed and `REQUIRE_APPROVAL`
+  waits on the operator. Coder/debugger writes keep flowing through
+  the existing ChangeSet + approval path.
+- **Structured communication**: agent results travel as
+  `AgentMessage` records with evidence and confidence — never
+  uncontrolled free text for critical decisions.
+- **API + cockpit**: `/api/v1/orchestrations*` (submit, list, get,
+  cancel, per-orchestration approvals) and an Orchestrations cockpit
+  view with live status, the plan, per-step outcomes, and
+  approve/deny. Records are session-scoped and survive restarts.
+
+See `docs/A38-ORCHESTRATION.md` for the engine, security model, and
+test matrix. Full suite after A38: 1138 passed, 2 skipped.
+
+## Vision & Multimodal Understanding (A39)
+
+A39 adds provider-independent image understanding: bounded,
+dependency-free parsing of PNG/JPEG/BMP/GIF (including a real PNG
+chunk walker that surfaces embedded text), structured findings, and a
+screenshot-to-action pipeline that proposes but never executes.
+
+- **Vision input is untrusted**: images are bounded and treated as
+  evidence, never authority. Text embedded in an image — even
+  "approve everything" — is surfaced as a dangerous instruction and
+  hard-blocked; it can never grant permissions.
+- **Every analyze call is policy-gated** (`Resource.VISION /
+  analyze`, single-use approval tokens); every proposed action is
+  gated again (`Resource.VISION / execute`), and real execution
+  stays on the browser/desktop bridges under their own gates.
+- **Honest by construction**: the A39 simulated provider has no
+  OCR/model and labels every result `simulation: true`; real
+  providers plug in behind the same `VisionProvider` protocol.
+- **API + cockpit**: `/api/v1/vision*` (capabilities, analyze,
+  propose, approvals) and a Vision cockpit view with upload,
+  understanding, proposals, and approve/deny.
+
+See `docs/A39-VISION.md` for the security model, honesty invariants,
+and test matrix. Full suite after A39: 1163 passed, 2 skipped.
+
+## Computer Use (A40)
+
+A40 combines vision with the desktop pipeline into controlled computer
+use: `screen → understand → element tree → propose → PolicyGate →
+execute` with versioned snapshots, redacted history, and hard guards.
+
+- **No real actions under SAFE/LOCKED**; confirmation dialogs on
+  screen fail closed; HIGH/CRITICAL-risk actions escalate to operator
+  approval even under autonomous profiles; a per-task action budget
+  caps executed actions.
+- **Typed-text redaction**: history/logs/memory only ever see
+  length-only placeholders — raw payloads reach only the provider.
+- **Proposals never execute**: propose/cycle are dry runs; the
+  simulated provider never changes the screen, so the loop honestly
+  refuses to repeat actions.
+- **API + cockpit**: `/api/v1/computer/*` (observe, propose, act,
+  cycle, history, approvals) and a Computer cockpit view.
+
+See `docs/A40-COMPUTER-USE.md` for the full security model and test
+matrix. Full suite after A40: 1195 passed, 2 skipped.
+
+## Premium Cockpit (A41)
+
+The cockpit now covers the full surface — Overview, Tasks, Projects,
+Models, Permissions, Approvals, Activity, Git, Desktop, Voice, Memory,
+Orchestrations, Vision, Computer Use — plus three new live views:
+**Agents** (documented inventory with each agent's real A33 gate and
+honest simulation labels), **Security** (posture, hard invariants,
+recorded evaluations — non-sensitive by construction), and
+**Settings** (session profile, theme, shortcuts). Dark-first theme
+with a complete light variant and a per-session toggle, responsive
+layout under 760px, and the Ctrl+K command palette.
+
+See `docs/A41-COCKPIT.md`. Full suite after A41: 1201 passed, 2
+skipped.
+
+## Natural Voice Conversation (A42)
+
+Multi-turn voice on top of the A36 gate: deterministic context
+resolution across turns, barge-in that blocks actions and recovers,
+clarifying questions instead of guesses, confirm-before-execute (an
+extra conversation-level gate — the A33 voice gate still applies),
+and spoken results. Bounded (24 turns, 4 conversations per session),
+session-isolated, and API-accessible at `/api/v1/voice/conversations*`.
+
+See `docs/A42-VOICE-CONVERSATION.md`. Full suite after A42: 1216
+passed, 2 skipped.
+
+## General Conversation Engine (A43)
+
+One conversational front door: messages are deterministically
+classified and routed — engineering requests become real tasks,
+questions are answered from real data (repository intelligence, live
+task counts, remembered preferences) or honestly declined, and
+preferences persist through the gated A37 memory path. Bounded
+history, rate-limited API (`/api/v1/conversation`), and a cockpit
+Conversation view.
+
+See `docs/A43-GENERAL-CONVERSATION.md`. Full suite after A43: 1226
+passed, 2 skipped.
+
+## AI-to-AI Collaboration (A44)
+
+Agents can consult an external AI and continue working — every
+response is marked `source=external_ai`, `untrusted=true`, honestly
+labeled simulated in this build, and bounded. Consultations are
+permission-gated (`MODEL/call` with the connector as provider) with
+approval round trips and session isolation; external text can never
+authorize actions. API at `/api/v1/ai-to-ai/*`.
+
+See `docs/A44-AI-TO-AI.md`. Full suite after A44: 1232 passed, 2
+skipped.
+
+## AI Council (A45)
+
+Independent simulated model members deliberate with distinct fixed
+stances; the lead review computes honest consensus — disagreements
+are always flagged, minorities preserved, confidence equals the real
+agreeing fraction. Council verdicts are advisory only and can never
+authorize actions. API at `/api/v1/council/*`.
+
+See `docs/A45-AI-COUNCIL.md`. Full suite after A45: 1238 passed, 2
+skipped.
+
+## Model Fabric (A46)
+
+The fabric (A31: routing, registry, failover, health, telemetry)
+gains a governed plane path: `FabricBridge` returns honest routing
+metadata (model/provider/kind/simulated — the built-in local no-op
+is always labeled), and `model_generate` runs behind MODEL/call
+policy with approval round trips and auditing. API at
+`/api/v1/models/*`; the conversation engine answers model questions
+from the real registry.
+
+See `docs/A46-MODEL-FABRIC.md`. Full suite after A46: 1245 passed, 2
+skipped.
+
+## Research / Intelligence (A47)
+
+Evidence-based codebase research: questions about symbols,
+dependencies, and test coverage are answered only from real
+repository-intelligence citations, and honestly refused when nothing
+supports an answer. Structured evidence-based reports, project-bound
+and audited. API at `/api/v1/research/*`; cockpit Research view.
+
+See `docs/A47-RESEARCH-INTELLIGENCE.md`. Full suite after A47: 1253
+passed, 2 skipped.
+
+## Compute (A48)
+
+Managed local code cells that really execute: fresh local Python
+subprocess, real exit codes and timeouts, bounded output, quotas
+enforced before execution, and the backend honestly labeled
+local-python (no remote/GPU backend). Runs are gated by
+TERMINAL/execute policy with approval round trips and auditing. API
+at `/api/v1/compute/*`; cockpit Compute view.
+
+See `docs/A48-COMPUTE.md`. Full suite after A48: 1263 passed, 2
+skipped.
+
+## Agent Creation (A49)
+
+Define agents at runtime: validated name/role/capabilities from the
+canonical vocabulary, with an honest `real` flag — true only when a
+matching registered executor is bound. Definitions grant no
+capabilities and never enter the built-in catalog. API at
+`/api/v1/agents` (POST/PATCH/DELETE + `/defined`); cockpit Agent
+Builder view.
+
+See `docs/A49-AGENT-CREATION.md`. Full suite after A49: 1270 passed,
+2 skipped.
+
+## Agent Evolution (A50)
+
+Agents evolve from real evidence: terminal run outcomes are recorded
+into per-agent ledgers that drive generation counters and honest
+metrics (success rate, attempts, elapsed). Unfinished runs are
+refused; no fake learning. API at `/api/v1/agents/{name}/outcomes`
+and `/evolution`.
+
+See `docs/A50-AGENT-EVOLUTION.md`. Full suite after A50: 1276 passed,
+2 skipped.
+
+## Agent Execution (A51)
+
+Runtime-defined agents really run tasks: AGENT/execute gating
+decides synchronously, execution happens as real recorded runs
+(`agent-run-*`), bound executors (coding/planning/research) operate
+inside the standard permission gates — the coding path files real
+change-set approvals and applies after operator approval. API at
+`/api/v1/agents/{name}/run` and `/runs`.
+
+See `docs/A51-AGENT-EXECUTION.md`. Full suite after A51: 1283 passed,
+2 skipped.
+
+## Agent Teams (A52)
+
+Runtime-defined agents compose into validated ordered teams:
+execution is sequential, every member runs through the standard
+agent-run gates as its own recorded run, bounded output summaries
+hand off between steps, and team results preserve each member's
+real outcome. API at `/api/v1/teams*`.
+
+See `docs/A52-AGENT-TEAMS.md`. Full suite after A52: 1288 passed, 2
+skipped.
+
+## Agent Memory (A53)
+
+Runtime-defined agents get durable per-agent memory: bounded
+key/value facts stored in the plane database, every access gated by
+MEMORY policy (read/write/delete as separate decisions, DENY
+fail-closed), audited, and surviving restarts. API at
+`/api/v1/agents/{name}/memory*`.
+
+See `docs/A53-AGENT-MEMORY.md`. Full suite after A53: 1293 passed, 2
+skipped.
+
+## Agent Skills (A54)
+
+Validated declarative skills: named, versioned capability extensions
+that attach to runtime-defined agents — capability sets recompute
+honestly on attach/detach, and skills never change executors,
+bindings, or policy. API at `/api/v1/skills*`.
+
+See `docs/A54-AGENT-SKILLS.md`. Full suite after A54: 1298 passed, 2
+skipped.
+
+## Agent Lifecycle (A55)
+
+Defined agents carry validated lifecycle states — active, paused,
+retired (terminal) — and only active agents may run or join teams.
+Lifecycle gates stack on top of the policy gates; they can only
+restrict further. API at `/api/v1/agents/{name}/status`.
+
+See `docs/A55-AGENT-LIFECYCLE.md`. Full suite after A55: 1303 passed,
+2 skipped.
+
+## Agent Packaging (A56)
+
+Agent definitions export to plain JSON specifications (never
+secrets or executors) and import through the full factory
+validation — always unbound, with unknown skills dropped honestly.
+API at `/api/v1/agents/{name}/export` and `/api/v1/agents/import`.
+
+See `docs/A56-AGENT-PACKAGING.md`. Full suite after A56: 1308 passed,
+2 skipped.
+
+## Agent Governance (A57)
+
+Per-agent runtime quotas (hourly runs, concurrency) enforced before
+any work starts — teams share member quotas, refusals are audited.
+API at `/api/v1/agents/{name}/limits`.
+
+See `docs/A57-AGENT-GOVERNANCE.md`. Full suite after A57: 1313
+passed, 2 skipped.
+
+## Agent Self-Development (A58)
+
+Agents learn from their own recorded failures: analysis proposes
+only validated, bounded edits (journal notes + metrics + generation
+bump) or honestly reports "not self-fixable"; budgets cap learning
+loops; executors, bindings, and policy are never touched. API at
+`/api/v1/agents/{name}/selfdev*`.
+
+See `docs/A58-SELF-DEVELOPMENT.md`. Full suite after A58: 1318
+passed, 2 skipped.
+
+## Failure Learning (A59)
+
+Every task and agent failure is fingerprinted into a persistent,
+bounded ledger that survives restarts; lessons are honest summaries
+of real recorded errors. API at `/api/v1/learning/failures` and
+`/api/v1/learning/lessons`.
+
+See `docs/A59-FAILURE-LEARNING.md`. Full suite after A59: 1323
+passed, 2 skipped.
+
+## Model Benchmarking (A60)
+
+A bounded benchmark suite sends real prompts through the fabric and
+judges every answer with code — models never grade themselves, and
+results persist in history. API at `/api/v1/benchmarks`.
+
+See `docs/A60-MODEL-BENCHMARKING.md`. Full suite after A60: 1328
+passed, 2 skipped.
+
+## Security Hardening (A61)
+
+Read-only audit reports: policy rule inventory with structural
+findings, session hygiene, and bounded secret-pattern scans that
+report locations but never values. API at
+`/api/v1/hardening/report`.
+
+See `docs/A61-HARDENING.md`. Full suite after A61: 1333 passed, 2
+skipped.
+
+## Observability (A62)
+
+Real counters and bounded latency reservoirs recorded at the
+pipeline funnels, plus live gauges — aggregates only, never user
+data. API at `/api/v1/observability/metrics`.
+
+See `docs/A62-OBSERVABILITY.md`. Full suite after A62: 1338 passed,
+2 skipped.
+
+## Performance (A63)
+
+Per-run queue/execution/total timings computed from the run
+record's own timestamps, plus bounded aggregate statistics over the
+most recent runs. API at `/api/v1/performance/summary` and
+`/api/v1/performance/runs/{run_id}`.
+
+See `docs/A63-PERFORMANCE.md`. Full suite after A63: 1343 passed, 2
+skipped.
+
+## Deployment (A64)
+
+Validated deployment lifecycle: bounded snapshots built into
+sha256-manifested artifacts, hash-verified extraction to targets
+outside the project, and one-step rollback. API at
+`/api/v1/deployments*`.
+
+See `docs/A64-DEPLOYMENT.md`. Full suite after A64: 1348 passed, 2
+skipped.
+
+## Backup & Recovery (A65)
+
+Consistent database+project snapshots with sha256 manifests,
+verification that reports drift honestly, and restore that
+requires a stopped plane and rewrites only plane state. API at
+`/api/v1/backups*`.
+
+See `docs/A65-BACKUP-RECOVERY.md`. Full suite after A65: 1353
+passed, 2 skipped.
+
+## Plugin SDK (A66)
+
+Strictly validated plugin manifests, a session-bounded
+declarative registry, and honest capability bindings computed from
+what is actually registered — declarations never fake power, and
+install never loads foreign code. API at `/api/v1/plugins*`.
+
+See `docs/A66-PLUGIN-SDK.md`. Full suite after A66: 1358 passed, 2
+skipped.
+
+## Command Palette (A67)
+
+A server-canonical command palette (views + safe quick actions,
+hash-route targets only) that the cockpit's Ctrl+K / Cmd+K palette
+syncs on open. API at `/api/v1/commands/palette`.
+
+See `docs/A67-COMMAND-PALETTE.md`. Full suite after A67: 1363
+passed, 2 skipped.
+
+## Cockpit Navigation (A68)
+
+A server-canonical keyboard shortcut catalog: prefix chords and
+immediate keys that navigate views or toggle overlays — navigation
+only. The cockpit renders a `?` help overlay from it. API at
+`/api/v1/commands/shortcuts`.
+
+See `docs/A68-COCKPIT-NAVIGATION.md`. Full suite after A68: 1368
+passed, 2 skipped.
+
+## Autonomy Levels (A69)
+
+Consultative autonomy: per-resource reports computed from the live
+policy (what runs alone, what needs approval, what is blocked),
+stepwise validated transitions, and a level that genuinely selects
+the run mode for new tasks — never granting beyond the policy.
+API at `/api/v1/autonomy`.
+
+See `docs/A69-AUTONOMY-LEVELS.md`. Full suite after A69: 1374
+passed, 2 skipped.
+
+## UX Polish (A70)
+
+The dashboard now shows live autonomy levels, pipeline counters,
+and the security audit posture from real endpoints — each panel
+degrades honestly when the backend is offline.
+
+See `docs/A70-UX-POLISH.md`. Full suite after A70: 1379 passed, 2
+skipped.
+
+## Final Acceptance (A71)
+
+A bounded end-to-end acceptance checklist: live state checks plus
+a real smoke run through the full pipeline, with approval gates
+operated through the real approval machinery. API at
+`/api/v1/final/acceptance`.
+
+See `docs/A71-FINAL-ACCEPTANCE.md`. Full suite after A71: 1384
+passed, 2 skipped.
+
+## Final Verification (A72)
+
+Per-run evidence verification: terminal status, recorded report,
+and every output file on disk — read-only, with NOT_FOUND
+isolation. API at `/api/v1/final/verify-run`.
+
+See `docs/A72-FINAL-VERIFICATION.md`. Full suite after A72: 1389
+passed, 2 skipped.
+
+## Final Gates (A73-A80)
+
+Security gate, code-judged benchmark gate, commit gate, memory
+gate, honest self-evaluation, combined rollout gate, bounded
+improvement loop, and the final go/no-go gate (rollout passed
+plus a genuinely SUCCEEDED run on record). APIs under
+`/api/v1/final/*`.
+
+See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

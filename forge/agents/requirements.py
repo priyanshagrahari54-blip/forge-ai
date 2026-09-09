@@ -89,6 +89,51 @@ class TaskRequirementExtractor:
                 "comment",
             ),
         ),
+        (
+            "research",
+            (
+                "research",
+                "researcher",
+                "analyze",
+                "analysis",
+                "investigate",
+                "explore",
+                "inventory",
+            ),
+        ),
+        (
+            "architecture",
+            (
+                "architecture",
+                "architect",
+                "design",
+                "structure",
+                "layout",
+            ),
+        ),
+        (
+            "performance",
+            (
+                "performance",
+                "optimize",
+                "optimization",
+                "profile",
+                "profiling",
+                "latency",
+                "speed",
+            ),
+        ),
+        (
+            "git",
+            (
+                "git",
+                "commit",
+                "stage",
+                "branch",
+                "push",
+                "repository status",
+            ),
+        ),
     )
 
     ROLE_MAP: dict[str, str] = {
@@ -98,6 +143,10 @@ class TaskRequirementExtractor:
         "review": "reviewing",
         "security": "security",
         "documentation": "documentation",
+        "research": "research",
+        "architecture": "architecture",
+        "performance": "performance",
+        "git": "git",
     }
 
     def extract(self, task_description: str) -> TaskRequirements:

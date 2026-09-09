@@ -358,7 +358,6 @@ pause/cancel cooperative at stage boundaries; voice transcription and
 desktop control are foundations only; `CUSTOM` profiles rejected; no
 framing controls by default (add at the edge for production).
 
-No A35 work was started.
 
 ## A34 UI upgrade — premium browser cockpit (same branch, no backend change)
 
@@ -388,4 +387,659 @@ No A35 work was started.
   blocked); layout was verified by executed-DOM inspection, markup dumps,
   and CSS review at desktop/tablet/mobile breakpoints.
 
-No A35 work was started.
+
+## A35 — Desktop Agent (controlled execution architecture)
+
+- Built `forge/desktop/` on the A33 desktop permission foundation: `actions`
+  (structured 15-kind vocabulary with bounded validation as the *first*
+  gate), `provider` (backend-agnostic `DesktopProvider` protocol, 16
+  methods, `DesktopProviderError(kind, message)` contract, deterministic
+  scriptable `FakeDesktopProvider` with fault injection), `risk` (NONE→
+  CRITICAL classification, fail-safe MEDIUM on ambiguity, five always-deny
+  invariant families incl. kill-utilities-against-security-software and
+  sudo-in-typed-text), `profiles` (SAFE/ASSISTED/AUTONOMOUS/CUSTOM,
+  tighten-only overrides, autonomous ceiling never above LOW), `agent`
+  (identity → scope → A33 PolicyGate → risk/invariants → profile →
+  approval → provider → audit; fail closed at every step), `bridge`
+  (authenticated session boundary, actor re-identification, snapshot
+  redaction, simulate-only-on-fake).
+- Control plane: desktop sessions attach to cockpit sessions
+  (`cockpit:{session.id}`); `desktop_capabilities` reports an honest matrix
+  (`status: "simulation"`, provider label, per-action risk/profile/
+  executable/observation); `desktop_check` evaluates without executing;
+  `desktop_act` runs the complete pipeline with `agent="forge-desktop"`
+  (distinct-approver invariant) and session-bound approvals; `desktop_grants`
+  validates scope tokens; `decide_desktop_request` reuses the A33 store and
+  mints single-use tokens on approve.
+- API `/api/v1/desktop/*`: capabilities, state, check, act, grants,
+  approvals list, approve/deny. Rate-limited mutations; schema bounds
+  (action ≤64, target/reason ≤500, task/approval ids ≤128); CSRF on
+  mutations; unauthenticated access 401.
+- Cockpit Desktop view: session/profile, provider health + simulation
+  label, live observation state, capability matrix (repo-standard
+  `table.data-table`), WHAT/WHY action composer, approval cards that carry
+  the minted single-use token into the resubmitted action and consume it
+  on execution. All A34 UI contracts preserved (same-origin fetch only, no
+  storage, CSP-clean, navigation-only palette with "Go to Desktop").
+- Hard security invariants verified by tests: invariants beat policy
+  ALLOW + approval tokens + AUTONOMOUS profiles; CUSTOM cannot loosen;
+  tokens single-use/scope-bound/expiring with failed redemptions failing
+  closed into fresh approvals; task grants explicit and TTL-bounded;
+  observations redacted; provider errors structured, internals-free, and
+  specific (`disconnected`/`unavailable`/`timeout` recoverable).
+- Fixed during verification: validator `_VALIDATORS` ordering, uniform
+  `(params, target)` validator signatures with `file_access` target-path
+  fallback; cockpit provider-nesting bug (`provider.provider.simulation`);
+  approval-token flow in the cockpit form.
+
+## Executable proof (A35)
+
+- 9 new suites, 137 tests: `tests/test_a35_{actions,provider,risk,profiles,
+  agent,security,ui,e2e,control_plane}.py`. E2E covers observe → plan →
+  approve → act → verify loops against the deterministic fake desktop,
+  denial-leaves-state-untouched, and disconnect/reconnect recovery; the
+  control-plane suite covers the API approval round-trip, single-use
+  tokens, cross-session isolation, task grants, and 401/400 boundaries.
+- Full suite: **1022 passed, 2 skipped** (A34 baseline: 885 passed,
+  2 skipped). `compileall` clean over `forge/`.
+- The A34 desktop pin test was deliberately updated to the A35 contract
+  (`test_desktop_a35_simulation`): simulation status, executable
+  capabilities, fake provider label — coverage preserved, contract
+  advanced. No other A01–A34 test needed modification.
+
+## A36 — Voice (the permission-gated spoken loop)
+
+- Added the audio layer around the A33 voice foundation: `forge/voice/`
+  package with `audio` (bounded 16 kHz mono PCM, strict WAV read/write,
+  RMS levels), `codec` (deterministic text⇄tone transport — a data codec
+  over PCM, never a claim of real speech recognition), `transcriber` /
+  `synthesizer` / `wake` (provider protocols + simulated providers +
+  honest `Unconfigured*` stand-ins), and `session` (the full loop:
+  wake → transcribe → A33 VoiceInterface → policy/approval → action →
+  spoken reply → audit). The A33 module moved verbatim to
+  `forge/voice/base.py`; `from forge.voice import VoiceCommand,
+  VoiceInterface` and all other public names are unchanged.
+- Honesty invariants: simulation labeled everywhere (capabilities,
+  engines, results, cockpit, reply); the simulated recognizer refuses
+  arbitrary audio (`unrecognized`) instead of guessing; wake gate before
+  any processing (`no_wake_word`, explicit bypass recorded); env knobs
+  (`FORGE_VOICE_STT_PROVIDER` / `FORGE_VOICE_TTS_PROVIDER`) accept only
+  `simulated` and refuse unknown names; real providers plug in behind
+  the same protocols.
+- Control plane + API `/api/v1/voice/*`: capabilities, synthesize
+  (text→WAV base64), transcribe (garbage→400, real audio→503
+  VOICE_UNAVAILABLE), process (text or audio, approval token, wake
+  flag, full stage trace + spoken reply), session-bound approvals with
+  approve/deny + single-use tokens. Voice commands execute with agent
+  identity `forge-voice` (approver ≠ agent); intents map onto real
+  task creation (run_tests/commit/update_website/summarize/review) or
+  an informational spoken status reply; unknown intents fail closed.
+- Cockpit Voice view: stack report, text command form, audio round trip
+  (synthesize → play → send through wake+recognition), result trace
+  with playable reply, voice approval cards carrying the minted token
+  into resubmission. CSP widened by exactly one directive
+  (`media-src 'self' blob:`); all other UI contracts preserved.
+- Fixed during verification: VoiceSession transcription UnboundLocalError
+  on the audio path; reply text now uses the informational reply payload
+  for `status`; voice approvals needed the distinct-agent identity.
+
+## Executable proof (A36)
+
+- 53 new tests across 8 suites: `tests/test_a36_{audio,codec,transcriber,
+  synthesizer,wake,session,control_plane,ui}.py`. The session and
+  control-plane suites run the complete loop end to end: typed and audio
+  inputs, approval round trips with single-use tokens, wake gating,
+  real-audio refusal, cross-session isolation, and audit coverage.
+- Full suite: **1075 passed, 2 skipped** (A35 baseline: 1022 passed,
+  2 skipped). `compileall` clean over `forge/`.
+- A33 voice foundation preserved verbatim (`forge/voice/base.py`); all
+  A33/A34/A35 tests pass unmodified.
+
+## A37 — Persistent Sessions + Memory
+
+- Added the remembered layer on top of the already-durable cockpit
+  database: `Resource.MEMORY` (read/write/delete) in the A33 policy;
+  `forge/control/memory.py` session-scoped SQLite memory (500 entries /
+  20 KB per entry / 1 MB per session, FIFO pruning, kind validation
+  before the policy gate); per-project durable knowledge wired to the
+  existing path-safe `MemoryStore` under `.forge/memory`; bounded
+  run-outcome summaries (last 50) recorded into project memory when
+  runs finish (`ControlConfig(memory_record_runs)` toggle).
+- Every memory access passes the A33 gate with agent identity
+  `forge-memory` (approver != agent): DENY blocks, REQUIRE_APPROVAL
+  files a session-bound approval and redeems single-use tokens; failed
+  redemptions fail closed into fresh approvals; read overviews are
+  policy-filtered; entries are served redacted.
+- API `/api/v1/memory*`: overview, session entry add/get/delete,
+  project save/load/list, approvals with approve/deny. Rate-limited
+  mutations, schema bounds (kind in note/fact/summary, content
+  1-20 000 bytes, keys 1-256 chars no traversal), audited.
+- Cockpit Memory view: session entries (kind/source/time, show/forget),
+  project keys (load/save), pending memory approvals carrying the
+  minted token into resubmission. All UI contracts preserved.
+- Restart persistence verified end to end: sessions, bearer tokens,
+  active-task bindings, session memory, project memory, and run records
+  survive a brand-new ControlPlane over the same database; session
+  expiry still enforced after restart.
+
+## Executable proof (A37)
+
+- 30 new tests across 5 suites: `tests/test_a37_{memory_store,
+  memory_plane,persistence,api,ui}.py` — store bounds/scoping/pruning,
+  policy gating + approval round trips, cross-session isolation, path
+  safety, run-summary retention, full restart persistence, API
+  boundaries, cockpit contracts.
+- Full suite: **1105 passed, 2 skipped** (A36 baseline: 1075 passed,
+  2 skipped). `compileall` clean over `forge/`.
+
+## A38 — Multi-Agent Orchestration
+
+- Added the coordinated team runtime (`forge/core/orchestrator.py`):
+  deterministic capability-matched plans (never fabricates agents —
+  empty matches report PLAN_REJECTED), validated dependency DAGs,
+  parallel execution where safe with a sequential chain mode, bounded
+  workers/attempts/step-timeouts, cooperative cancellation, structured
+  AgentMessage records (sender/receiver/task/type/content/evidence/
+  confidence/timestamp), and a full per-step report.
+- Every dispatch passes the A33 gate with the new `Resource.AGENT`
+  (execute/message) vocabulary and identity `forge-orchestrator`
+  (approver != agent): DENY fails closed, REQUIRE_APPROVAL files
+  session-bound requests that wait on the operator; stale/spent/
+  mis-scoped tokens are rejected. Coder/debugger writes flow through
+  the existing ChangeSet + approval path unchanged (ASSISTED writes
+  still require operator decisions).
+- Control plane: durable session-scoped orchestration records
+  (SQLite), submit/list/get/cancel, worker execution on the run pool,
+  default 11-agent team with real executors (planner, architect,
+  researcher, coder, tester, debugger, reviewer, security,
+  performance, documentation, git) plus budgets in `ControlConfig`.
+- API `/api/v1/orchestrations*` (submit/list/get/cancel + per-
+  orchestration approvals) and a cockpit Orchestrations view with live
+  status, the plan, per-step outcomes, and approve/deny.
+- Verified end to end: an orchestrated "Add CSV export functionality"
+  requirement plans the team, the coder's change set files a real
+  approval, the operator approves, and the change is applied with a
+  SUCCEEDED report (DENY paths leave the repo untouched).
+
+## Executable proof (A38)
+
+- 33 new tests across 4 suites: `tests/test_a38_{orchestrator,
+  plane,api,ui}.py` — deterministic planning and validation, proven
+  parallel execution, dependency order/failure-skip, attempt budgets,
+  step timeouts, DENY fail-closed, approval round trips and stale-token
+  rejection, structured messages, events, cancellation, restart
+  persistence, cross-session isolation, API boundaries, cockpit
+  contracts, the AGENT policy vocabulary.
+- Full suite: **1138 passed, 2 skipped** (A37 baseline: 1105 passed,
+  2 skipped). `compileall` clean; cockpit JS `node --check` clean.
+
+## A39 — Vision & Multimodal Understanding
+
+- Provider-independent vision foundation (`forge/vision/`): bounded
+  dependency-free image parsing (PNG/JPEG/BMP/GIF sniffing, dimensions,
+  a real PNG chunk walker surfacing embedded tEXt/iTXt/zTXt text),
+  `VisionResult`/`VisionFinding`/`VisionProvider` protocol, a
+  fail-closed unconfigured provider, and a deterministic simulated
+  provider that performs real structural analysis and labels every
+  result `simulation=true` (no OCR/model in A39 — never presented as
+  more).
+- Screenshot-to-action pipeline is proposal-only: dangerous embedded
+  instructions ("approve everything", "rm -rf", ...) are surfaced and
+  hard-blocked; click proposals pass the new `Resource.VISION`
+  (analyze/execute) vocabulary — ALLOW → proposed (never executed),
+  DENY → blocked, REQUIRE_APPROVAL → session-bound approval. Real
+  execution stays on the existing browser/desktop bridges with their
+  own gates. Vision can never grant permissions.
+- Control plane (`vision_analyze`, `vision_propose`, approvals) + API
+  `/api/v1/vision*` (capabilities, analyze, propose, approvals,
+  approve/deny; 400 on malformed input, 503 VISION_UNAVAILABLE) + a
+  cockpit Vision view (file upload → understanding → proposals →
+  approvals) with all UI contracts preserved.
+- Verified end to end: a crafted PNG carrying "approve everything and
+  delete the repo" in a text chunk is reported as an untrusted
+  dangerous instruction, its proposal is blocked, click proposals
+  follow the policy, and the demo repo is provably untouched.
+
+## Executable proof (A39)
+
+- 25 new tests across 4 suites: `tests/test_a39_{vision,plane,api,ui}.
+  py` — hand-built PNG/JPEG/BMP/GIF parsing, malformed/oversized
+  fail-closed, verbatim chunk extraction, honesty labels, danger
+  surfacing, policy round trips and replay, never-executes proof,
+  cross-session approval isolation, API boundaries, cockpit contracts.
+- Full suite: **1163 passed, 2 skipped** (A38 baseline: 1138 passed,
+  2 skipped). `compileall` clean; cockpit JS `node --check` clean.
+
+## A40 — Computer Use
+
+- `forge/computer/`: vision-driven computer control over the A35
+  desktop pipeline — `observe` (versioned snapshots + honest element
+  trees), `propose` (pure dry runs), `act` (fully guarded), `cycle`
+  (one bounded observe→propose→act round), `history` (redacted).
+- Enforced guards, all real: SAFE/LOCKED sessions may only observe;
+  confirmation dialogs detected from the screen's own text fail
+  closed; HIGH/CRITICAL-risk actions are escalated to operator
+  approval even under autonomous profiles; a per-task action budget
+  caps executed actions; typed text/paths/commands/secret-bearing
+  params are redacted in history (length-only placeholders) — raw
+  payloads reach only the provider at execution time.
+- Control plane (`computer_observe/propose/act/cycle/history`,
+  approvals, `ControlConfig.computer_max_actions`) + API
+  `/api/v1/computer/*` (observe, propose, act, cycle, history,
+  approvals, approve/deny) + cockpit Computer view with all UI
+  contracts (upload → element tree → proposals → manual gated action →
+  history → approvals).
+- Verified end to end: with a task grant, an autonomous session
+  executes a LOW-risk action and the history shows it redacted; SAFE
+  sessions and on-screen dialogs refuse actuation; a
+  `process/terminate` action escalates to approval even autonomous;
+  replaying a spent token fails closed; the demo repo stays untouched
+  by proposals.
+
+## Executable proof (A40)
+
+- 32 new tests across 4 suites: `tests/test_a40_{computer,plane,api,
+  ui}.py` — snapshot bounds, redaction, dialog fail-closed, budgets,
+  escalation, approval round trips + replay, cross-session isolation,
+  API boundaries, cockpit contracts.
+- Full suite: **1195 passed, 2 skipped** (A39 baseline: 1163 passed,
+  2 skipped). `compileall` clean; cockpit JS `node --check` clean.
+
+## A41 — Premium Browser Cockpit
+
+- New cockpit surfaces over real endpoints: Agents (`GET /api/v1/
+  agents` — documented inventory with each agent's real A33 gate,
+  simulated providers labeled), Security (`GET /api/v1/security` —
+  mode, policy default, hard invariants, recorded permission
+  evaluations; non-sensitive by construction), Settings (session
+  profile + theme + shortcuts).
+- Theme support: dark-first with a full `[data-theme="light"]`
+  variable set and a per-session toggle (no browser storage, by
+  design); responsive `@media (max-width: 760px)` layout; palette
+  entries + nav links for all three views. Ctrl+K palette (A34) is
+  unchanged.
+- 6 contract tests: `tests/test_a41_cockpit.py` — endpoints,
+  catalog/gate honesty, simulation labels, view/template/palette
+  contracts, theme/media CSS, renderer hygiene and endpoint scoping.
+
+## A42 — Natural Voice Conversation
+
+- `forge/voice/conversation.py`: bounded multi-turn conversations over
+  the A36 voice gate — deterministic pronoun/context resolution,
+  barge-in that blocks actions and recovers on the next utterance,
+  clarifying questions for unrecognized speech (never guessed),
+  confirm-before-execute with affirmative/negative/ambiguous handling,
+  spoken results, 24-turn and 4-conversation caps.
+- Task creation from conversation still passes the A36 VOICE/command
+  gate; interruption is enforced before execution.
+- Control plane (`voice_conversation_start/say/interrupt/state`,
+  session-scoped + audited) + API (`/api/v1/voice/conversations*`)
+  with 404 isolation, 400 validation, 409 cap.
+- 15 new tests (12 conversation/plane + 3 API). Full suite:
+  **1216 passed, 2 skipped** (A41 baseline: 1201/2).
+
+## A43 — General Conversation Engine
+
+- `forge/conversation/engine.py`: deterministic classification
+  (task_request / question / preference / greeting / chat), routing to
+  real tasks (`submit_task`), real answers (RepositoryIntelligence,
+  live dashboard counts, remembered facts), honest fallbacks, bounded
+  16-message history.
+- Plane `converse()` + `conversation_history()`; memory through the
+  existing gated A37 path (denials surfaced honestly); API
+  `/api/v1/conversation` (POST rate-limited + GET); cockpit
+  Conversation view with all UI contracts.
+- 10 new tests. Full suite: **1226 passed, 2 skipped** (A42 baseline:
+  1216/2).
+
+## A44 — AI-to-AI Collaboration
+
+- `forge/collaboration/`: connector protocol + honestly labeled
+  simulated external AI (no network), fail-closed resolution, bounded
+  per-session consult log. Every response carries
+  source=external_ai, untrusted=true, explicit labels; nothing is
+  executed from external text.
+- Consultations gated as MODEL/call with the connector as provider
+  detail (DENY fail-closed; REQUIRE_APPROVAL round trip; spent tokens
+  refile a fresh approval); session-isolated approvals; API
+  `/api/v1/ai-to-ai/*` + audit.
+- 6 new tests. Full suite: **1232 passed, 2 skipped** (A43 baseline:
+  1226/2).
+
+## A45 — AI Council
+
+- `forge/council/`: deterministic simulated council members with
+  distinct fixed stances (labeled simulation=True), lead-reviewed
+  deliberation with confidence computed from real tallies,
+  disagreements always flagged, minorities preserved verbatim,
+  bounded inputs, empty-council refusal.
+- Advisory only: verdicts execute/write nothing and cannot authorize
+  actions. Plane `council_convene/capabilities/history` with audit;
+  API `/api/v1/council/*`.
+- 6 new tests. Full suite: **1238 passed, 2 skipped** (A44 baseline:
+  1232/2).
+
+## A46 — Model Fabric (controlled bridge)
+
+- The fabric core (routing/registry/failover/health/telemetry) was
+  delivered in A31; A46 adds the governed plane path: `FabricBridge`
+  with honest routing metadata (model/provider/kind/simulated),
+  `plane.model_generate()` behind MODEL/call policy with approval
+  round trips and spent-token refiling, session-isolated model
+  approvals, audited calls.
+- API `/api/v1/models/*`; conversation answers model/registry
+  questions from real fabric data (naming the no-op honestly).
+- 7 new tests. Full suite: **1245 passed, 2 skipped** (A45 baseline:
+  1238/2).
+
+## A47 — Research / Intelligence
+
+- `forge/research/`: evidence-based `ResearchEngine` over the
+  existing repository intelligence stack — symbol/dependency/test
+  questions answered only from real index citations; honest refusal
+  with confidence 0.0 when nothing supports the question; structured
+  evidence-based project report.
+- Plane `research_ask`/`research_report` (project-bound, audited);
+  API `/api/v1/research/*`; cockpit Research view with UI contracts.
+- 8 new tests. Full suite: **1253 passed, 2 skipped** (A46 baseline:
+  1245/2).
+
+## A48 — Compute / Colab
+
+- `forge/compute/`: real local execution (fresh python subprocess,
+  backend honestly labeled local-python, no remote/GPU backend),
+  status from real exit codes/timeouts, bounded output, quotas
+  (cells/seconds/timeout) enforced before execution.
+- Plane `compute_execute` gated by TERMINAL/execute (ALLOW pins
+  exact args per A33 hardening; REQUIRE_APPROVAL round trip; DENY
+  fail-closed), audited; API `/api/v1/compute/*`; cockpit Compute
+  view; ControlConfig compute budgets.
+- 10 new tests. Full suite: **1263 passed, 2 skipped** (A47 baseline:
+  1253/2).
+
+## A49 — Agent Creation
+
+- `forge/agents/factory.py`: validated runtime agent definitions
+  (canonical capability vocabulary, name/role regexes, bounds),
+  honest `real` flag only when a registered executor is bound,
+  binding invalidation on role change, creation grants no power.
+- Plane CRUD + audit; API `/api/v1/agents` POST/PATCH/DELETE and
+  `/agents/defined`; cockpit Agent Builder view.
+- 7 new tests. Full suite: **1270 passed, 2 skipped** (A48 baseline:
+  1263/2).
+
+## A50 — Agent Evolution
+
+- `forge/agents/evolution.py`: evidence ledger — one real terminal
+  run recording bumps generation once and computes honest metrics
+  (success rate, attempts, elapsed); unfinished runs refused; no
+  fake learning; audited under agents/evolve.
+- `AgentDefinition.generation`/`metrics`; API outcomes/evolution
+  endpoints.
+- 6 new tests. Full suite: **1276 passed, 2 skipped** (A49 baseline:
+  1270/2).
+
+## A51 — Agent Execution
+
+- `forge/agents/runner.py` + plane `agent_run`: AGENT/execute gate
+  decides synchronously; execution runs as real recorded Runs
+  (agent-run-*) so change-set approvals resolve through the standard
+  project-scoped flow; DENY fail-closed; approval round trips.
+- Bound executors: coding (CoderAgent + fabric + approval path),
+  planning (deterministic extraction), research (real file counts);
+  unbound specs refused honestly.
+- API run/runs/result + approvals; 7 new tests. Full suite:
+  **1283 passed, 2 skipped** (A50 baseline: 1276/2).
+
+## A52 — Agent Teams
+
+- `forge/agents/teams.py`: validated ordered team definitions (real
+  bound members only, bounded). `team_execute` dispatches members
+  sequentially through the full A51 agent_run path — each member
+  keeps its own gate and recorded run; bounded output handoffs;
+  team runs are real recorded Runs with per-member results.
+- API `/api/v1/teams*`; audited under `teams`.
+- 5 new tests. Full suite: **1288 passed, 2 skipped** (A51 baseline:
+  1283/2).
+
+## A53 — Agent Memory
+
+- `forge/agents/memory.py`: durable SQLite per-agent key/value
+  memory with bounds (64/2000/200). Plane get/set/list/delete gated
+  by MEMORY policy with scope agent:{name}; DENY fail-closed;
+  audited; survives plane restarts.
+- API `/api/v1/agents/{name}/memory*`; 5 new tests. Full suite:
+  **1293 passed, 2 skipped** (A52 baseline: 1288/2).
+
+## A54 — Agent Skills
+
+- `forge/agents/skills.py`: validated declarative skills (canonical
+  capability + description, bounds). Attach/detach recompute agent
+  capabilities from base_capabilities + remaining skills; skills
+  never change executors, real bindings, or policy.
+- Plane + API `/api/v1/skills*` and agent attach/detach; audited.
+- 5 new tests. Full suite: **1298 passed, 2 skipped** (A53 baseline:
+  1293/2).
+
+## A55 — Agent Lifecycle
+
+- `AgentDefinition.status`: active/paused/retired with validated
+  transitions (retired terminal); non-active agents refuse runs;
+  teams require active members; audited; API status endpoint.
+- 5 new tests. Full suite: **1303 passed, 2 skipped** (A54 baseline:
+  1298/2).
+
+## A56 — Agent Packaging
+
+- `forge/agents/packaging.py`: JSON export/import of definitions
+  (format v1) — no secrets/executors exported; imports revalidate
+  fully, always arrive unbound, drop unknown skills honestly, and
+  recompute capabilities.
+- API export/import endpoints; audited. 5 new tests. Full suite:
+  **1308 passed, 2 skipped** (A55 baseline: 1303/2).
+
+## A57 — Agent Governance
+
+- `forge/agents/governance.py`: per-agent quotas (hourly runs,
+  concurrency) enforced in `agent_run` before any work starts;
+  teams share member quotas; refusals audited; API limits
+  endpoints.
+- 5 new tests. Full suite: **1313 passed, 2 skipped** (A56 baseline:
+  1308/2).
+
+## A58 — Agent Self-Development
+
+- Failure feed: worker-level failed agent runs are recorded in the
+  bounded run log (A51 cap unchanged), giving self-development real
+  evidence.
+- `forge/agents/selfdev.py`: analyze → failure-note | none (honest
+  reasons); apply validates through the factory, appends bounded
+  [learned] notes, bumps generation, merges metrics; caps 8/session
+  and 3/agent stop learning loops. API + audit under `selfdev`.
+- 5 new tests. Full suite: **1318 passed, 2 skipped** (A57 baseline:
+  1313/2).
+
+## A59 — Failure Learning
+
+- `forge/learning/failures.py`: persistent bounded failure ledger
+  (fingerprints, counts, 500-key cap). Task failures and agent-run
+  failures recorded automatically at the existing funnels; guarded
+  so learning never breaks the pipeline. API + audit.
+- 5 new tests. Full suite: **1323 passed, 2 skipped** (A58 baseline:
+  1318/2).
+
+## A60 — Model Benchmarking
+
+- `forge/benchmark/harness.py`: 3-check suite (JSON/arithmetic/
+  marker) with code-judged results only; persistent BenchmarkStore;
+  API + audit. Failures reported honestly — no self-graded models.
+- 5 new tests. Full suite: **1328 passed, 2 skipped** (A59 baseline:
+  1323/2).
+
+## A61 — Security Hardening
+
+- `forge/security/hardening.py`: read-only audits — policy rule
+  inventory + structural findings, session hygiene (prune/count),
+  bounded secret-pattern scan of project repos (locations only,
+  never values). API + audit. Changes nothing by itself.
+- 5 new tests. Full suite: **1333 passed, 2 skipped** (A60 baseline:
+  1328/2).
+
+## A62 — Observability
+
+- `forge/observability/metrics.py`: counters + bounded duration
+  reservoirs (mean/p50/p95/max). Funnel counters for task and agent
+  runs (guarded); snapshot gauges (sessions, agents, teams, active
+  runs, failure totals). API endpoint. Aggregates only.
+- 5 new tests. Full suite: **1338 passed, 2 skipped** (A61 baseline:
+  1333/2).
+
+## A63 — Performance
+
+- `forge/performance/profiler.py`: per-run queue/execution/total
+  timings from the run record's own timestamps; bounded aggregates
+  (mean/median/p95/max, per-mode counts, slowest ≤5). API summary +
+  per-run endpoints; cross-project ids map to NOT_FOUND.
+- 5 new tests. Full suite: **1343 passed, 2 skipped** (A62 baseline:
+  1338/2).
+
+## A64 — Deployment
+
+- `forge/deployment/manager.py`: validated lifecycle (created →
+  built → deployed → rolled_back) with bounded sha256-manifested
+  zip artifacts, hash-verified extraction to targets outside the
+  project, one-step rollback, ≤8 deployments/project, last 3
+  versions kept. API + audit. Local staging only — no network.
+- 5 new tests. Full suite: **1348 passed, 2 skipped** (A63 baseline:
+  1343/2).
+
+## A65 — Backup & Recovery
+
+- `forge/backup/manager.py`: consistent db+files snapshots with
+  sha256 manifests, honest verify with drift detection, restore
+  gated on a stopped plane with WAL consolidation and atomic
+  replacement (file-tree rollback out of scope, stated). Cap 5
+  backups. API + audit.
+- 5 new tests. Full suite: **1353 passed, 2 skipped** (A64 baseline:
+  1348/2).
+
+## A66 — Plugin SDK
+
+- `forge/plugins/`: strict manifest validation (no code loading),
+  session-bounded declarative registry, honest capability binding
+  against actually-registered executors/providers. API + audit.
+  Foreign-code loading deliberately out of scope — install cannot
+  smuggle execution.
+- 5 new tests. Full suite: **1358 passed, 2 skipped** (A65 baseline:
+  1353/2).
+
+## A67 — Command Palette
+
+- `forge/cockpit_palette.py`: canonical palette catalog (22 views
+  + safe quick actions; hash-route targets only, self-validating).
+  API GET /api/v1/commands/palette; cockpit palette syncs server
+  entries on open with offline fallback.
+- 5 new tests (incl. cross-check that server targets exist in the
+  client ROUTES). Full suite: **1363 passed, 2 skipped** (A66
+  baseline: 1358/2).
+
+## A68 — Cockpit Navigation
+
+- `forge/cockpit_shortcuts.py`: canonical keyboard catalog (8
+  prefix chords + immediate keys), self-audited; API
+  GET /api/v1/commands/shortcuts. Cockpit wires chords/keys with
+  typing guards and a "?" help overlay from the server catalog.
+- 5 new tests. Full suite: **1368 passed, 2 skipped** (A67
+  baseline: 1363/2).
+
+## A69 — Autonomy Levels
+
+- `forge/autonomy/controller.py`: per-resource autonomy reports
+  evaluated against the live policy (aligned rule probes, most
+  permissive wins, no rule = blocked); stepwise validated
+  transitions; locked profiles refuse overrides; the level selects
+  the run mode for new tasks. API + audit. Never grants beyond
+  policy.
+- 6 new tests. Full suite: **1374 passed, 2 skipped** (A68
+  baseline: 1368/2).
+
+## A70 — UX Polish
+
+- Dashboard autonomy strip (level + per-op counts from
+  /api/v1/autonomy), observability counters/gauges, and a
+  security-audit panel (hardening report) — all live reads that
+  degrade honestly when offline; fmtCount + chip/audit styles;
+  class-toggling-only invariant kept.
+- 5 new tests. Full suite: **1379 passed, 2 skipped** (A69
+  baseline: 1374/2).
+
+## A71 — Final Acceptance
+
+- `forge/final/acceptance.py`: 6 live checks + real smoke run
+  through the pipeline; approval gates operated via the real
+  approval store with every driven approval recorded; timeouts and
+  failures reported honestly. API POST /api/v1/final/acceptance.
+- 5 new tests. Full suite: **1384 passed, 2 skipped** (A70
+  baseline: 1379/2).
+
+## A72 — Final Verification
+
+- `forge/final/verification.py`: evidence checks (terminal
+  status, success, report, files on disk) with NOT_FOUND
+  isolation and honest failure reasons. API
+  POST /api/v1/final/verify-run.
+- 5 new tests. Full suite: **1389 passed, 2 skipped** (A71
+  baseline: 1384/2).
+
+## A72 — Final Verification
+
+- `forge/final/verification.py`: evidence checks (terminal
+  status, success, report, files on disk) with NOT_FOUND
+  isolation and honest failure reasons. API
+  POST /api/v1/final/verify-run.
+- 5 new tests. Full suite: **1389 passed, 2 skipped** (A71
+  baseline: 1384/2).
+
+## A73-A80 — Final Gates
+
+- A73 `forge/final/security_gate.py` (live audits, posture,
+  secrets; all-ALLOW fails, fail-closed passes).
+- A74 `forge/final/benchmark_gate.py` (real A60 harness,
+  code-judged, all models benchmarked, min_passed threshold).
+- A75 `forge/final/commit_gate.py` (read-only git readiness).
+- A76 `forge/final/memory_gate.py` (session_memory table +
+  failure ledger live; read-only).
+- A77 `forge/final/self_evaluation.py` (recorded-facts grade:
+  healthy/attention/degraded/unproven).
+- A78 `forge/final/rollout.py` (all gates + smoke
+  verification; no gate skipped).
+- A79 `forge/final/loop.py` (bounded 1-5 real iterations).
+- A80 `forge/final/gate.py` (go = rollout passed AND >=1 real
+  SUCCEEDED run on record).
+- Acceptance smoke is now idempotent: on an already-demonstrated
+  project it re-verifies live (recorded files exist + live test
+  suite passes) instead of re-implementing; failures stay honest.
+- APIs: POST /api/v1/final/{security,benchmark,commit,memory,
+  self-evaluation,rollout,loop,gate}.
+- 14 new tests (5 A73 + 9 A74-A80). Full suite: **1403 passed,
+  2 skipped** (A72 baseline: 1389/2).
+
+## A71-A80 pushed + full-chain demonstration (final)
+
+- Commits pushed to `arena/01a080c1-forge-ai` (`aa36163..0adea8c`):
+  `0ac327c` A71, `5730764` A72, `0adea8c` A72-A80. PR #9 MERGEABLE
+  at head `0adea8c`.
+- Real end-to-end demonstration on a fresh plane (recorded live):
+  A71 acceptance 6/6 with a genuine pipeline smoke run
+  (task t-52f331d8d39446d9: submit -> plan -> code -> test ->
+  review -> commit); A72 verification True (terminal, report,
+  files on disk); A73 security True; A74 benchmark ran on the real
+  model (code-judged); A75 commit True; A76 memory True; A77
+  self-evaluation "healthy"; A78 rollout all gates True; A79 loop
+  1/3 iterations; **A80 go/no-go: GO = True** (rollout passed +
+  1 genuinely SUCCEEDED run on record).
+- Master-build final acceptance demonstration: voice ->
+  conversation -> supervisor -> decomposition -> routing ->
+  multi-agent -> tools -> controlled action -> testing ->
+  debugging -> review -> security -> benchmark -> acceptance ->
+  commit -> memory -> self-evaluation -> go/no-go: COMPLETE.

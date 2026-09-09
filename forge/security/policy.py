@@ -65,6 +65,9 @@ class Resource(str, Enum):
     MODEL = "model"
     DESKTOP = "desktop"
     VOICE = "voice"
+    MEMORY = "memory"
+    AGENT = "agent"
+    VISION = "vision"
 
 
 #: Operations each resource understands. Unknown operations never match a
@@ -81,10 +84,14 @@ RESOURCE_OPERATIONS: dict[Resource, frozenset[str]] = {
     Resource.NETWORK: frozenset({"request"}),
     Resource.MODEL: frozenset({"call"}),
     Resource.DESKTOP: frozenset({
-        "read_screen", "mouse_move", "mouse_click", "keyboard", "launch",
-        "window", "clipboard", "file_access",
+        "read_screen", "screenshot", "mouse_move", "mouse_click",
+        "keyboard", "launch", "window", "clipboard", "file_access",
+        "process", "system_info",
     }),
     Resource.VOICE: frozenset({"command"}),
+    Resource.MEMORY: frozenset({"read", "write", "delete"}),
+    Resource.AGENT: frozenset({"execute", "message"}),
+    Resource.VISION: frozenset({"analyze", "execute"}),
 }
 
 #: A32 tool-permission keys mapped onto engine resources. Used only for the

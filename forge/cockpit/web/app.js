@@ -9,6 +9,9 @@ const state = {
   route: "dashboard",
   epoch: 0,
   taskId: null,
+  deskToken: null,
+  voiceToken: null,
+  memToken: null,
   cursor: 0,
   histMax: 0,
   seenSeq: new Set(),
@@ -19,6 +22,7 @@ const state = {
   entered: false,
   cache: { tasks: [], task: null, filter: "ALL", search: "" },
   palette: { open: false, selected: 0, items: [] },
+  shortcuts: { open: false, entries: [], chord: null },
 };
 
 const STAGES = ["planning", "coding", "testing", "debugging", "review",
@@ -36,6 +40,20 @@ const ROUTES = {
   git: { render: renderGit, title: "Git" },
   activity: { render: renderActivity, title: "Activity" },
   approvals: { render: renderApprovals, title: "Approvals" },
+  desktop: { render: renderDesktop, title: "Desktop" },
+  voice: { render: renderVoice, title: "Voice" },
+  memory: { render: renderMemory, title: "Memory" },
+  orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
+  vision: { render: renderVision, title: "Vision" },
+  computer: { render: renderComputer, title: "Computer Use" },
+  agents: { render: renderAgentsView, title: "Agents" },
+  security: { render: renderSecurityView, title: "Security" },
+  settings: { render: renderSettingsView, title: "Settings" },
+  conversation: { render: renderConversationView, title: "Conversation" },
+  research: { render: renderResearchView, title: "Research" },
+  compute: { render: renderComputeView, title: "Compute" },
+  agentbuilder: { render: renderAgentBuilderView,
+                     title: "Agent Builder" },
   system: { render: renderSystem, title: "System" },
 };
 
@@ -557,10 +575,106 @@ async function renderDashboard() {
     }
     for (const item of activity.slice(0, 8)) feed.appendChild(eventCard(item, true));
     renderSecurityPosture(document.getElementById("d-security"), true);
+    renderAutonomyStrip();
+    renderAuditPosture();
     loadActiveRun();
   };
   await load();
   state.pollers.push(setInterval(load, 5000));
+}
+
+function fmtCount(value) {
+  if (value === null || value === undefined) return "–";
+  if (value >= 1000000) return (value / 1000000).toFixed(1) + "M";
+  if (value >= 1000) return (value / 1000).toFixed(1) + "k";
+  return String(value);
+}
+
+async function renderAutonomyStrip() {
+  // Real autonomy level + pipeline counters from live endpoints.
+  const snap = snapEpoch();
+  const box = document.getElementById("d-autonomy");
+  if (!box) return;
+  const chips = [];
+  try {
+    const autonomy = await api("/api/v1/autonomy");
+    const summary = autonomy.summary || {};
+    chips.push(el("span", "chip ok",
+      "Autonomy: " + esc(autonomy.level || "assisted")));
+    chips.push(el("span", "chip",
+      fmtCount(summary.autonomous) + " ops autonomous"));
+    chips.push(el("span", "chip warn",
+      fmtCount(summary.approval) + " ops need approval"));
+    chips.push(el("span", "chip bad",
+      fmtCount(summary.blocked) + " ops blocked"));
+  } catch (_err) {
+    chips.push(el("span", "chip",
+      "Autonomy: unavailable (backend offline)"));
+  }
+  try {
+    const metrics = await api("/api/v1/observability/metrics");
+    const counters = metrics.counters || {};
+    const gauges = metrics.gauges || {};
+    chips.push(el("span", "chip",
+      fmtCount(counters["tasks.submitted"]) + " tasks submitted"));
+    chips.push(el("span", "chip",
+      fmtCount(counters["runs.succeeded"]) + " runs ok · " +
+      fmtCount(counters["runs.failed"]) + " failed"));
+    chips.push(el("span", "chip",
+      fmtCount(gauges.agents_defined) + " agents · " +
+      fmtCount(gauges.active_runs) + " active runs"));
+  } catch (_err) {
+    /* counters unavailable: stay honest, show nothing extra */
+  }
+  if (stale(snap)) return;
+  box.innerHTML = "";
+  for (const chip of chips) box.appendChild(chip);
+}
+
+async function renderAuditPosture() {
+  // Security audit result from the hardening report (read-only).
+  const snap = snapEpoch();
+  const box = document.getElementById("d-audit");
+  if (!box) return;
+  try {
+    const report = await api("/api/v1/hardening/report");
+    if (stale(snap)) return;
+    const policy = report.policy || {};
+    const sessions = report.sessions || {};
+    const secrets = report.secrets || [];
+    const hits = secrets.reduce(
+      (sum, entry) => sum + (entry.hits ? entry.hits.length : 0), 0);
+    const tone = report.overall === "ok" ? "ok" : "bad";
+    box.innerHTML = "";
+    const auditHeader = el("div", "section-header");
+    auditHeader.appendChild(el("h3", null, "Security audit"));
+    box.appendChild(auditHeader);
+    const statusLine = el("div", "audit-line");
+    statusLine.appendChild(el("span", null, "Overall posture"));
+    statusLine.appendChild(el("span", "chip " + tone, report.overall));
+    box.appendChild(statusLine);
+    const rulesLine = el("div", "audit-line");
+    rulesLine.appendChild(el("span", null, "Policy rules"));
+    rulesLine.appendChild(el("span", null,
+      fmtCount(policy.rule_count) + " · " +
+      fmtCount(policy.findings ? policy.findings.length : 0) +
+      " findings"));
+    box.appendChild(rulesLine);
+    const sessionLine = el("div", "audit-line");
+    sessionLine.appendChild(el("span", null, "Active sessions"));
+    sessionLine.appendChild(el("span", null,
+      fmtCount(sessions.active_sessions)));
+    box.appendChild(sessionLine);
+    const secretLine = el("div", "audit-line");
+    secretLine.appendChild(el("span", null, "Secret-pattern hits"));
+    secretLine.appendChild(el("span", null, fmtCount(hits)));
+    box.appendChild(secretLine);
+  } catch (_err) {
+    if (stale(snap)) return;
+    box.innerHTML = "";
+    box.appendChild(el("div", "muted",
+      "Security audit unavailable — backend offline."));
+  }
 }
 
 async function loadActiveRun() {
@@ -1517,6 +1631,605 @@ async function renderSystem() {
   renderSecurityPosture(document.getElementById("sys-security"), false);
 }
 
+/* ---------- desktop (A35) ---------- */
+
+const DESK_RESULT_TONES = { ALLOW: "ok", DENY: "bad", REQUIRE_APPROVAL: "warn" };
+
+function deskResultBox(result) {
+  const box = document.getElementById("desk-result");
+  box.innerHTML = "";
+  box.classList.remove("hidden");
+  const tone = DESK_RESULT_TONES[result.decision] || "";
+  const rows = [
+    ["decision", result.decision, tone],
+    ["executed", result.executed ? "yes" : "no"],
+    ["risk", result.risk || "–"],
+    ["approval required", result.approval_required ? "yes" : "no"],
+  ];
+  if (result.approval_request_id) {
+    rows.push(["approval id", result.approval_request_id, true]);
+  }
+  if (result.error) {
+    rows.push(["error", result.error.kind + ": " + result.error.message, "bad"]);
+  }
+  box.appendChild(kvTable(rows));
+  const note = el("p", "muted");
+  note.textContent = result.executed
+    ? "Action executed on the simulated desktop."
+    : "Nothing was executed on the desktop.";
+  box.appendChild(note);
+}
+
+async function renderDesktop() {
+  const snap = snapEpoch();
+  // Provider + profile header.
+  try {
+    const caps = await api("/api/v1/desktop/capabilities");
+    if (stale(snap)) return;
+    const profileBox = document.getElementById("desk-profile");
+    profileBox.innerHTML = "";
+    profileBox.appendChild(kvTable([
+      ["session profile", state.session ? state.session.profile : "–"],
+      ["desktop profile", caps.profile || "–"],
+    ]));
+    const providerBox = document.getElementById("desk-provider");
+    providerBox.innerHTML = "";
+    providerBox.appendChild(kvTable([
+      ["provider", caps.provider || "–", true],
+      ["status", caps.status || "–"],
+    ]));
+    const note = el("p", "muted");
+    note.textContent = (caps.note || "").trim();
+    providerBox.appendChild(note);
+    // Capability matrix.
+    const list = document.getElementById("desk-capabilities");
+    list.innerHTML = "";
+    const table = el("table", "data-table");
+    const head = el("tr");
+    for (const label of ["action", "risk", "profile", "executable"]) {
+      head.appendChild(el("th", null, label));
+    }
+    table.appendChild(head);
+    const select = document.getElementById("desk-action");
+    select.innerHTML = "";
+    for (const item of caps.capabilities || []) {
+      const row = el("tr");
+      row.appendChild(el("td", null, item.action));
+      row.appendChild(el("td", null, item.risk || "–"));
+      row.appendChild(el("td", null, item.profile || "–"));
+      row.appendChild(el("td", null, item.executable ? "yes" : "no"));
+      table.appendChild(row);
+      const option = el("option", null, item.action);
+      option.value = item.action;
+      select.appendChild(option);
+    }
+    list.appendChild(table);
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-capabilities"),
+      "Unable to load desktop capabilities", err, renderDesktop);
+  }
+  // Observation state.
+  try {
+    const statePayload = await api("/api/v1/desktop/state");
+    if (stale(snap)) return;
+    const box = document.getElementById("desk-state");
+    box.innerHTML = "";
+    const provider = (statePayload.provider || {});
+    const providerPayload = provider.provider || {};
+    const rows = [
+      ["provider healthy", provider.healthy ? "yes" : "no"],
+      ["simulation", providerPayload.simulation ? "yes" : "no"],
+    ];
+    const obs = statePayload.observations || {};
+    const focus = obs.active_window && obs.active_window.observation;
+    if (focus && focus.title) {
+      rows.push(["active window", focus.title + " (" + focus.app + ")", true]);
+    }
+    const windows = obs.windows && obs.windows.observation;
+    if (windows && windows.windows) {
+      rows.push(["windows", windows.windows.length]);
+    }
+    const proc = obs.processes && obs.processes.observation;
+    if (proc && proc.processes) {
+      rows.push(["processes", proc.processes.length]);
+    }
+    box.appendChild(kvTable(rows));
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-state"),
+      "Unable to load desktop state", err, renderDesktop);
+  }
+  // Pending desktop approvals for this session.
+  try {
+    const approvals = await api("/api/v1/desktop/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("desk-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending desktop approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          (approval.operation || "desktop") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        card.appendChild(el("p", "muted",
+          "risk: " + (approval.risk || "–") + " · approver must not be the requesting agent"));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/desktop/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.deskToken = decision.token_id;
+            }
+            renderDesktop();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderDesktop);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/desktop/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderDesktop();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderDesktop);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("desk-approvals"),
+      "Unable to load desktop approvals", err, renderDesktop);
+  }
+  // Action form (re-bound every render; the template is re-cloned each time).
+  document.getElementById("desk-refresh").addEventListener("click", renderDesktop);
+  document.getElementById("desk-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const resultBox = document.getElementById("desk-result");
+    resultBox.innerHTML = "";
+    resultBox.classList.add("hidden");
+    let params = {};
+    const paramsText = document.getElementById("desk-params").value.trim();
+    if (paramsText) {
+      try {
+        params = JSON.parse(paramsText);
+      } catch (err) {
+        resultBox.classList.remove("hidden");
+        resultBox.appendChild(el("p", "error", "Parameters must be valid JSON."));
+        return;
+      }
+    }
+    const body = {
+      action: document.getElementById("desk-action").value,
+      target: document.getElementById("desk-target").value.trim(),
+      params: params,
+      reason: document.getElementById("desk-reason").value.trim(),
+    };
+    if (state.deskToken) body.approval_id = state.deskToken;
+    try {
+      const result = await api("/api/v1/desktop/act",
+        { method: "POST", body: body });
+      if (result.executed) state.deskToken = null;
+      deskResultBox(result);
+      renderDesktop();
+    } catch (err) {
+      resultBox.classList.remove("hidden");
+      errorState(resultBox, "Desktop action failed", err, renderDesktop);
+    }
+  });
+}
+
+/* ---------- voice (A36) ---------- */
+
+function playWav(b64, label) {
+  const box = el("div", "audio-row");
+  const caption = el("span", "muted", label || "audio");
+  const audio = el("audio");
+  audio.controls = true;
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  audio.src = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  box.appendChild(caption);
+  box.appendChild(audio);
+  return box;
+}
+
+function voiceResultBox(result) {
+  const box = document.getElementById("voice-result");
+  box.innerHTML = "";
+  box.classList.remove("hidden");
+  const rows = [
+    ["ok", result.ok ? "yes" : "no", result.ok ? "ok" : "bad"],
+    ["input", result.input_mode || "–"],
+    ["simulation", result.simulation ? "yes (labeled)" : "no"],
+    ["transcription", (result.transcription || {}).text || "–", true],
+    ["intent", (result.intent || {}).name || "–"],
+    ["permission", (result.permission || {}).decision || "–"],
+  ];
+  if (result.permission && result.permission.approval_required) {
+    rows.push(["approval id", result.permission.approval_request_id, true]);
+  }
+  if (result.action && result.action.kind === "task") {
+    rows.push(["task", result.action.status + " · " + result.action.task_id, true]);
+  }
+  if (result.action && result.action.kind === "reply") {
+    rows.push(["reply", result.action.text, true]);
+  }
+  rows.push(["spoken reply", result.reply_text || "–", true]);
+  if (result.error) {
+    rows.push(["error", result.error.kind + ": " + result.error.message, "bad"]);
+  }
+  box.appendChild(kvTable(rows));
+  const ra = result.response_audio;
+  if (ra && ra.audio_b64) {
+    const header = el("p", "muted", "Spoken reply (" + ra.engine + "):");
+    box.appendChild(header);
+    box.appendChild(playWav(ra.audio_b64, "reply"));
+  }
+}
+
+async function renderVoice() {
+  const snap = snapEpoch();
+  // Voice stack capabilities (honest simulation labeling).
+  try {
+    const caps = await api("/api/v1/voice/capabilities");
+    if (stale(snap)) return;
+    const box = document.getElementById("voice-capabilities");
+    box.innerHTML = "";
+    box.appendChild(kvTable([
+      ["status", caps.status || "–", true],
+      ["speech-to-text", (caps.transcriber || {}).name || "–", true],
+      ["text-to-speech", (caps.synthesizer || {}).name || "–", true],
+      ["wake word", ((caps.wake || {}).word || "–") + " (" + ((caps.wake || {}).name || "–") + ")", true],
+    ]));
+    const note = el("p", "muted");
+    note.textContent = (caps.note || "").trim();
+    box.appendChild(note);
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("voice-capabilities"),
+      "Unable to load voice capabilities", err, renderVoice);
+  }
+  // Pending voice approvals for this session.
+  try {
+    const approvals = await api("/api/v1/voice/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("voice-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending voice approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          (approval.operation || "voice") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/voice/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.voiceToken = decision.token_id;
+            }
+            renderVoice();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderVoice);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/voice/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderVoice();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderVoice);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("voice-approvals"),
+      "Unable to load voice approvals", err, renderVoice);
+  }
+  document.getElementById("voice-refresh").addEventListener("click", renderVoice);
+  // Text command through the voice loop.
+  document.getElementById("voice-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = document.getElementById("voice-text");
+    const body = { text: input.value.trim() };
+    if (!body.text) return;
+    if (state.voiceToken) body.approval_id = state.voiceToken;
+    try {
+      const result = await api("/api/v1/voice/process",
+        { method: "POST", body: body });
+      if (result.ok && result.action) state.voiceToken = null;
+      voiceResultBox(result);
+      renderVoice();
+    } catch (err) {
+      const resultBox = document.getElementById("voice-result");
+      resultBox.classList.remove("hidden");
+      errorState(resultBox, "Voice command failed", err, renderVoice);
+    }
+  });
+  // Audio round trip: synthesize, then send the audio through the loop.
+  document.getElementById("voice-synth-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = document.getElementById("voice-synth-text");
+    const text = input.value.trim();
+    const audioBox = document.getElementById("voice-audio");
+    audioBox.innerHTML = "";
+    if (!text) return;
+    try {
+      const syn = await api("/api/v1/voice/synthesize",
+        { method: "POST", body: { text: text } });
+      const header = el("p", "muted", "Simulated utterance (" + syn.engine + "):");
+      audioBox.appendChild(header);
+      audioBox.appendChild(playWav(syn.audio_b64, "utterance"));
+      const send = el("button", "btn small primary", "Send audio through the loop");
+      send.addEventListener("click", async () => {
+        try {
+          const result = await api("/api/v1/voice/process",
+            { method: "POST", body: { audio_b64: syn.audio_b64 } });
+          voiceResultBox(result);
+          renderVoice();
+        } catch (failure) {
+          errorState(audioBox, "Audio loop failed", failure, renderVoice);
+        }
+      });
+      audioBox.appendChild(send);
+    } catch (err) {
+      errorState(audioBox, "Synthesis failed", err, renderVoice);
+    }
+  });
+}
+
+/* ---------- memory (A37) ---------- */
+
+function renderMemoryEntryList(entries, box, onDelete) {
+  box.innerHTML = "";
+  if (!entries || !entries.length) {
+    const empty = el("p", "muted empty-state");
+    empty.textContent = "Nothing remembered yet.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const card = el("div", "surface memory-entry");
+    const head = el("div", "section-header");
+    head.appendChild(el("h4", null,
+      (entry.kind || "entry") + " · " + (entry.source || "–")));
+    card.appendChild(head);
+    card.appendChild(el("p", "muted", "created " +
+      new Date((entry.created_at || 0) * 1000).toLocaleString()));
+    if (entry.content !== undefined) {
+      card.appendChild(el("p", null, entry.content));
+    }
+    if (onDelete) {
+      const del = el("button", "btn small", "Forget");
+      del.addEventListener("click", async () => {
+        try {
+          const body = { entry_id: entry.id };
+          if (state.memToken) body.approval_id = state.memToken;
+          await api("/api/v1/memory/delete", { method: "POST", body: body });
+          if (state.memToken) state.memToken = null;
+          renderMemory();
+        } catch (failure) {
+          errorState(box, "Delete failed", failure, renderMemory);
+        }
+      });
+      card.appendChild(del);
+    }
+    box.appendChild(card);
+  }
+}
+
+async function renderMemory() {
+  const snap = snapEpoch();
+  // Overview: session entries + project keys (policy-filtered server-side).
+  try {
+    const overview = await api("/api/v1/memory");
+    if (stale(snap)) return;
+    const box = document.getElementById("memory-entries");
+    box.innerHTML = "";
+    const entries = overview.session_entries || [];
+    if (!entries.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "Nothing remembered yet.";
+      box.appendChild(empty);
+    } else {
+      for (const entry of entries) {
+        const card = el("div", "surface memory-entry");
+        const head = el("div", "section-header");
+        head.appendChild(el("h4", null,
+          (entry.kind || "entry") + " · " + (entry.source || "–")));
+        card.appendChild(head);
+        card.appendChild(el("p", "muted", "created " +
+          new Date((entry.created_at || 0) * 1000).toLocaleString()));
+        card.appendChild(el("button", "btn small", "Show"));
+        card.querySelector("button").addEventListener("click", async () => {
+          try {
+            const full = await api("/api/v1/memory/entries/" +
+              encodeURIComponent(entry.id));
+            renderMemoryEntryList([full.entry], box, true);
+          } catch (failure) {
+            errorState(box, "Load failed", failure, renderMemory);
+          }
+        });
+        box.appendChild(card);
+      }
+    }
+    const projectBox = document.getElementById("memory-project");
+    projectBox.innerHTML = "";
+    const keys = overview.project_keys || [];
+    if (!keys.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No project memory yet.";
+      projectBox.appendChild(empty);
+    } else {
+      for (const key of keys.slice(0, 200)) {
+        const row = el("div", "memory-key-row");
+        row.appendChild(el("span", "mono", key));
+        const load = el("button", "btn small", "Show");
+        load.addEventListener("click", async () => {
+          try {
+            const loaded = await api("/api/v1/memory/project/get?key=" +
+              encodeURIComponent(key));
+            projectBox.innerHTML = "";
+            const card = el("div", "surface memory-entry");
+            card.appendChild(el("h4", null, key));
+            card.appendChild(el("p", null,
+              loaded.content === null ? "(empty)" : loaded.content));
+            const back = el("button", "btn small", "Back to keys");
+            back.addEventListener("click", renderMemory);
+            card.appendChild(back);
+            projectBox.appendChild(card);
+          } catch (failure) {
+            errorState(projectBox, "Load failed", failure, renderMemory);
+          }
+        });
+        row.appendChild(load);
+        projectBox.appendChild(row);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("memory-entries"),
+      "Unable to load memory", err, renderMemory);
+  }
+  // Pending memory approvals.
+  try {
+    const approvals = await api("/api/v1/memory/approvals");
+    if (stale(snap)) return;
+    const box = document.getElementById("memory-approvals");
+    box.innerHTML = "";
+    const items = approvals.approvals || [];
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending memory approvals.";
+      box.appendChild(empty);
+    } else {
+      for (const approval of items) {
+        const card = el("div", "approval-card");
+        const title = el("div", "section-header");
+        title.appendChild(el("h4", null,
+          "memory " + (approval.operation || "") + " → " +
+          (approval.scopes || []).join(", ")));
+        card.appendChild(title);
+        card.appendChild(el("p", null, approval.reason || ""));
+        const actions = el("div", "row-actions");
+        const approve = el("button", "btn small primary", "Approve");
+        const deny = el("button", "btn small", "Deny");
+        approve.addEventListener("click", async () => {
+          try {
+            const decision = await api("/api/v1/memory/approvals/" +
+              encodeURIComponent(approval.id) + "/approve",
+              { method: "POST", body: {} });
+            if (decision && decision.token_id) {
+              state.memToken = decision.token_id;
+            }
+            renderMemory();
+          } catch (failure) {
+            errorState(box, "Approve failed", failure, renderMemory);
+          }
+        });
+        deny.addEventListener("click", async () => {
+          try {
+            await api("/api/v1/memory/approvals/" +
+              encodeURIComponent(approval.id) + "/deny",
+              { method: "POST", body: {} });
+            renderMemory();
+          } catch (failure) {
+            errorState(box, "Deny failed", failure, renderMemory);
+          }
+        });
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        card.appendChild(actions);
+        box.appendChild(card);
+      }
+    }
+  } catch (err) {
+    if (stale(snap)) return;
+    errorState(document.getElementById("memory-approvals"),
+      "Unable to load memory approvals", err, renderMemory);
+  }
+  document.getElementById("memory-refresh").addEventListener("click", renderMemory);
+  document.getElementById("memory-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = {
+      kind: document.getElementById("memory-kind").value,
+      content: document.getElementById("memory-content").value.trim(),
+    };
+    if (!body.content) return;
+    if (state.memToken) body.approval_id = state.memToken;
+    try {
+      const result = await api("/api/v1/memory", { method: "POST", body: body });
+      if (result.allowed) {
+        state.memToken = null;
+        document.getElementById("memory-content").value = "";
+      }
+      renderMemory();
+    } catch (err) {
+      errorState(document.getElementById("memory-entries"),
+        "Save failed", err, renderMemory);
+    }
+  });
+  document.getElementById("memory-project-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = {
+      key: document.getElementById("memory-key").value.trim(),
+      content: document.getElementById("memory-project-content").value.trim(),
+    };
+    if (!body.key || !body.content) return;
+    if (state.memToken) body.approval_id = state.memToken;
+    try {
+      const result = await api("/api/v1/memory/project/save",
+        { method: "POST", body: body });
+      if (result.allowed) {
+        state.memToken = null;
+        document.getElementById("memory-project-content").value = "";
+      }
+      renderMemory();
+    } catch (err) {
+      errorState(document.getElementById("memory-project"),
+        "Save failed", err, renderMemory);
+    }
+  });
+}
+
 /* ---------- command palette ---------- */
 
 const PALETTE_COMMANDS = [
@@ -1528,6 +2241,20 @@ const PALETTE_COMMANDS = [
   ["Go to Git", "view", () => { window.location.hash = "#/git"; }],
   ["Go to Activity", "view", () => { window.location.hash = "#/activity"; }],
   ["View approvals", "view", () => { window.location.hash = "#/approvals"; }],
+  ["Go to Desktop", "view", () => { window.location.hash = "#/desktop"; }],
+  ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
+  ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
+  ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
+  ["Go to Vision", "view", () => { window.location.hash = "#/vision"; }],
+  ["Go to Computer Use", "view", () => { window.location.hash = "#/computer"; }],
+  ["Go to Agents", "view", () => { window.location.hash = "#/agents"; }],
+  ["Go to Security", "view", () => { window.location.hash = "#/security"; }],
+  ["Go to Settings", "view", () => { window.location.hash = "#/settings"; }],
+  ["Go to Conversation", "view", () => { window.location.hash = "#/conversation"; }],
+  ["Go to Research", "view", () => { window.location.hash = "#/research"; }],
+  ["Go to Compute", "view", () => { window.location.hash = "#/compute"; }],
+  ["Go to Agent Builder", "view", () => { window.location.hash = "#/agentbuilder"; }],
+  ["Toggle theme", "view", toggleTheme],
   ["Go to System", "view", () => { window.location.hash = "#/system"; }],
   ["Create task", "action", () => {
     window.location.hash = "#/tasks";
@@ -1574,6 +2301,29 @@ function renderPaletteList() {
   });
 }
 
+async function syncServerPalette() {
+  // The backend palette is canonical; merge its view entries when the
+  // client knows the target route. Never adds execution power: targets
+  // are hash routes only.
+  try {
+    const data = await api("/api/v1/commands/palette");
+    const known = new Set(PALETTE_COMMANDS.map(([label]) => label));
+    for (const entry of (data.entries || [])) {
+      if (entry.kind !== "view") continue;
+      const target = entry.target;
+      if (!target || !ROUTES[target] || target === "task") continue;
+      const label = entry.label || ("Go to " + target);
+      if (!known.has(label)) {
+        known.add(label);
+        PALETTE_COMMANDS.push(
+          [label, "view", () => { window.location.hash = "#/" + target; }]);
+      }
+    }
+  } catch (_err) {
+    /* offline fallback: the local palette stays available */
+  }
+}
+
 function openPalette() {
   state.palette.open = true;
   state.palette.selected = 0;
@@ -1582,11 +2332,97 @@ function openPalette() {
   input.value = "";
   renderPaletteList();
   input.focus();
+  syncServerPalette().then(() => {
+    if (state.palette.open) renderPaletteList();
+  });
 }
 
 function closePalette() {
   state.palette.open = false;
   document.getElementById("palette").classList.add("hidden");
+}
+
+/* ---------- keyboard navigation (A68) ---------- */
+
+async function syncServerShortcuts() {
+  try {
+    const data = await api("/api/v1/commands/shortcuts");
+    state.shortcuts.entries = data.entries || [];
+  } catch (_err) {
+    state.shortcuts.entries = [];
+  }
+  renderShortcutsList();
+}
+
+function renderShortcutsList() {
+  const list = document.getElementById("shortcuts-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const entries = state.shortcuts.entries.length
+    ? state.shortcuts.entries
+    : [{ keys: "?", label: "Toggle shortcuts help", kind: "key" },
+      { keys: "ctrl+k", label: "Open command palette", kind: "key" }];
+  for (const entry of entries) {
+    const row = el("div", "shortcut-row", "");
+    const kbd = el("span", "pkind", entry.keys);
+    kbd.className = "shortcut-keys";
+    row.appendChild(kbd);
+    row.appendChild(el("span", "shortcut-label", entry.label));
+    list.appendChild(row);
+  }
+}
+
+function toggleShortcuts() {
+  state.shortcuts.open = !state.shortcuts.open;
+  document.getElementById("shortcuts").classList.toggle(
+    "hidden", !state.shortcuts.open);
+  if (state.shortcuts.open) renderShortcutsList();
+}
+
+function typingTarget(ev) {
+  const tag = ev.target && ev.target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" ||
+    (ev.target && ev.target.isContentEditable);
+}
+
+const SHORTCUT_CHORDS = {
+  d: "dashboard", t: "tasks", p: "projects", m: "models",
+  a: "approvals", v: "conversation", s: "settings", b: "agentbuilder",
+};
+
+function initShortcuts() {
+  document.getElementById("shortcuts-open").addEventListener(
+    "click", toggleShortcuts);
+  document.getElementById("shortcuts").addEventListener("click", (ev) => {
+    if (ev.target.id === "shortcuts") toggleShortcuts();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (typingTarget(ev)) return;
+    if (ev.key === "Escape" && state.shortcuts.open) {
+      toggleShortcuts();
+      return;
+    }
+    if (ev.key === "?" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      toggleShortcuts();
+      return;
+    }
+    if (ev.key.toLowerCase() === "g" &&
+        !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      state.shortcuts.chord = Date.now();
+      return;
+    }
+    if (state.shortcuts.chord &&
+        Date.now() - state.shortcuts.chord < 800) {
+      const target = SHORTCUT_CHORDS[ev.key.toLowerCase()];
+      state.shortcuts.chord = null;
+      if (target) {
+        ev.preventDefault();
+        window.location.hash = "#/" + target;
+      }
+    }
+  });
+  syncServerShortcuts();
 }
 
 function initPalette() {
@@ -1695,8 +2531,741 @@ function enter() {
     toggle.setAttribute("aria-expanded", "false");
   });
   initPalette();
+  initShortcuts();
   window.addEventListener("hashchange", route);
   route();
 }
 
 document.addEventListener("DOMContentLoaded", bootstrap);
+
+/* ---------- orchestrations (A38) ---------- */
+
+function renderOrchestrations() {
+  document.getElementById("orch-refresh").addEventListener("click",
+    renderOrchestrations);
+  document.getElementById("orch-form").addEventListener("submit",
+    async (ev) => {
+      ev.preventDefault();
+      const body = {
+        requirement: document.getElementById("orch-requirement").value.trim(),
+        chain: document.getElementById("orch-chain").checked,
+      };
+      if (!body.requirement) return;
+      try {
+        await api("/api/v1/orchestrations", { method: "POST", body: body });
+        document.getElementById("orch-requirement").value = "";
+        renderOrchestrations();
+      } catch (err) {
+        errorState(document.getElementById("orch-list"),
+          "Submit failed", err, renderOrchestrations);
+      }
+    });
+  loadOrchestrations();
+  const detail = document.getElementById("orch-detail");
+  detail.innerHTML = "";
+  detail.classList.add("hidden");
+}
+
+async function loadOrchestrations() {
+  const box = document.getElementById("orch-list");
+  try {
+    const payload = await api("/api/v1/orchestrations");
+    const items = payload.orchestrations || [];
+    box.innerHTML = "";
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No orchestrations yet.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = el("div", "surface orch-step");
+      row.appendChild(el("h4", null,
+        (item.requirement || "").slice(0, 80)));
+      row.appendChild(el("p", "muted",
+        item.status + " · stage " + (item.stage || "") + " · " +
+        new Date((item.created_at || 0) * 1000).toLocaleString()));
+      if (item.error) row.appendChild(el("p", null, item.error));
+      row.addEventListener("click",
+        () => renderOrchestrationDetail(item.orchestration_id));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load orchestrations", err,
+      renderOrchestrations);
+  }
+}
+
+async function renderOrchestrationDetail(orchestrationId) {
+  const box = document.getElementById("orch-detail");
+  box.classList.remove("hidden");
+  try {
+    const record = await api("/api/v1/orchestrations/" +
+      encodeURIComponent(orchestrationId));
+    box.innerHTML = "";
+    const head = el("div", "section-header");
+    head.appendChild(el("h3", null,
+      "Orchestration " + record.orchestration_id.slice(0, 8)));
+    box.appendChild(head);
+    box.appendChild(el("p", "muted",
+      record.status + " · " + (record.error || "running or finished")));
+    const steps = (record.plan || {}).steps || [];
+    if (steps.length) {
+      box.appendChild(el("p", null, "Plan: " + steps.map(
+        (step) => step.agent).join(" → ")));
+    }
+    const outcomes = (record.report || {}).steps || [];
+    for (const outcome of outcomes) {
+      const card = el("div", "surface orch-step");
+      card.appendChild(el("h4", null,
+        outcome.agent + " — " + outcome.status +
+        (outcome.attempts > 1 ? " (" + outcome.attempts + " attempts)" : "")));
+      if (outcome.output) {
+        card.appendChild(el("p", "muted",
+          String(outcome.output).slice(0, 300)));
+      }
+      if (outcome.error) card.appendChild(el("p", null, outcome.error));
+      box.appendChild(card);
+    }
+    const approvals = await api("/api/v1/orchestrations/" +
+      encodeURIComponent(orchestrationId) + "/approvals");
+    const pending = approvals.approvals || [];
+    if (pending.length) {
+      box.appendChild(el("p", null, "Pending approvals:"));
+      for (const approval of pending) {
+        const row = el("div", "surface orch-step");
+        row.appendChild(el("p", null,
+          approval.agent + " wants " + approval.operation + " on " +
+          approval.resource + " (" +
+          (approval.scopes || []).join(", ") + ")"));
+        row.appendChild(el("p", "muted",
+          approval.reason || approval.consequences || ""));
+        const approve = el("button", null, "Approve");
+        approve.addEventListener("click", async () => {
+          await api("/api/v1/orchestrations/" +
+            encodeURIComponent(orchestrationId) + "/approvals/" +
+            encodeURIComponent(approval.id) + "/approve",
+            { method: "POST", body: {} });
+          renderOrchestrationDetail(orchestrationId);
+        });
+        const deny = el("button", "ghost", "Deny");
+        deny.addEventListener("click", async () => {
+          await api("/api/v1/orchestrations/" +
+            encodeURIComponent(orchestrationId) + "/approvals/" +
+            encodeURIComponent(approval.id) + "/deny",
+            { method: "POST", body: {} });
+          renderOrchestrationDetail(orchestrationId);
+        });
+        row.appendChild(approve);
+        row.appendChild(deny);
+        box.appendChild(row);
+      }
+    }
+  } catch (err) {
+    errorState(box, "Unable to load orchestration", err,
+      () => renderOrchestrationDetail(orchestrationId));
+  }
+}
+
+/* ---------- vision (A39) ---------- */
+
+function readVisionFile() {
+  return new Promise((resolve, reject) => {
+    const input = document.getElementById("vision-file");
+    if (!input.files || !input.files.length) {
+      reject(new Error("Choose an image first."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      resolve(String(result).split(",")[1] || "");
+    };
+    reader.onerror = () => reject(new Error("Could not read the file."));
+    reader.readAsDataURL(input.files[0]);
+  });
+}
+
+function renderVision() {
+  document.getElementById("vision-analyze").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readVisionFile();
+        const result = await api("/api/v1/vision/analyze",
+          { method: "POST", body: { image_b64: image_b64 } });
+        renderVisionResult(result);
+        renderVisionApprovals();
+      } catch (err) {
+        errorState(document.getElementById("vision-result"),
+          "Analyze failed", err, renderVision);
+      }
+    });
+  document.getElementById("vision-propose").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readVisionFile();
+        const result = await api("/api/v1/vision/propose",
+          { method: "POST", body: { image_b64: image_b64 } });
+        renderVisionProposals(result);
+        renderVisionApprovals();
+      } catch (err) {
+        errorState(document.getElementById("vision-proposals"),
+          "Propose failed", err, renderVision);
+      }
+    });
+  renderVisionApprovals();
+}
+
+function renderVisionResult(result) {
+  const box = document.getElementById("vision-result");
+  box.innerHTML = "";
+  box.appendChild(el("p", null,
+    (result.format || "unknown") + " · " + (result.summary || "")));
+  if (result.simulation) {
+    box.appendChild(el("p", "muted",
+      "simulated understanding (no OCR/model in this build)"));
+  }
+  for (const finding of result.findings || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null, finding.kind + ": " + finding.content));
+    box.appendChild(row);
+  }
+  for (const danger of result.dangerous_instructions || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      "Untrusted instruction in image (blocked): " + danger));
+    box.appendChild(row);
+  }
+}
+
+function renderVisionProposals(result) {
+  const box = document.getElementById("vision-proposals");
+  box.innerHTML = "";
+  for (const proposal of result.proposals || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      proposal.action + " → " + (proposal.target || "—") +
+      " [" + proposal.status + "]"));
+    row.appendChild(el("p", "muted", proposal.reason || ""));
+    box.appendChild(row);
+  }
+}
+
+async function renderVisionApprovals() {
+  const box = document.getElementById("vision-approvals");
+  try {
+    const payload = await api("/api/v1/vision/approvals");
+    const approvals = payload.approvals || [];
+    box.innerHTML = "";
+    if (!approvals.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending vision approvals.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const approval of approvals) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        "forge-vision wants " + approval.operation + " (" +
+        (approval.scopes || []).join(", ") + ")"));
+      const approve = el("button", null, "Approve");
+      approve.addEventListener("click", async () => {
+        await api("/api/v1/vision/approvals/" +
+          encodeURIComponent(approval.id) + "/approve",
+          { method: "POST", body: {} });
+        renderVisionApprovals();
+      });
+      const deny = el("button", "ghost", "Deny");
+      deny.addEventListener("click", async () => {
+        await api("/api/v1/vision/approvals/" +
+          encodeURIComponent(approval.id) + "/deny",
+          { method: "POST", body: {} });
+        renderVisionApprovals();
+      });
+      row.appendChild(approve);
+      row.appendChild(deny);
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load vision approvals", err,
+      renderVisionApprovals);
+  }
+}
+
+/* ---------- computer use (A40) ---------- */
+
+function readComputerFile() {
+  return new Promise((resolve, reject) => {
+    const input = document.getElementById("computer-file");
+    if (!input.files || !input.files.length) {
+      reject(new Error("Choose a screenshot first."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      resolve(String(result).split(",")[1] || "");
+    };
+    reader.onerror = () => reject(new Error("Could not read the file."));
+    reader.readAsDataURL(input.files[0]);
+  });
+}
+
+function computerGoal() {
+  return (document.getElementById("computer-goal") || {}).value || "";
+}
+
+function renderComputer() {
+  document.getElementById("computer-observe").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/observe",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerTree(result);
+        renderComputerHistory();
+      } catch (err) {
+        errorState(document.getElementById("computer-tree"),
+          "Observe failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-propose").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/propose",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerProposals(result);
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Propose failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-cycle").addEventListener("click",
+    async () => {
+      try {
+        const image_b64 = await readComputerFile();
+        const result = await api("/api/v1/computer/cycle",
+          { method: "POST", body: { image_b64: image_b64,
+                                    goal: computerGoal() } });
+        renderComputerProposals(
+          { proposals: [], note: result.note });
+        renderComputerHistory();
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Cycle failed", err, renderComputer);
+      }
+    });
+  document.getElementById("computer-act").addEventListener("click",
+    async () => {
+      try {
+        const action = document.getElementById("computer-action").value;
+        const result = await api("/api/v1/computer/act",
+          { method: "POST", body: {
+              action: action,
+              target: document.getElementById("computer-target").value,
+              reason: document.getElementById("computer-reason").value } });
+        renderComputerHistory();
+        renderComputerApprovals();
+        const box = document.getElementById("computer-proposals");
+        box.innerHTML = "";
+        const row = el("div", "surface memory-entry");
+        row.appendChild(el("p", null,
+          action + " → " + result.decision + " (risk " +
+          (result.risk || "?") + "): " + (result.reason || "")));
+        box.appendChild(row);
+      } catch (err) {
+        errorState(document.getElementById("computer-proposals"),
+          "Action failed", err, renderComputer);
+      }
+    });
+  renderComputerHistory();
+  renderComputerApprovals();
+}
+
+function renderComputerTree(result) {
+  const box = document.getElementById("computer-tree");
+  box.innerHTML = "";
+  const tree = result.element_tree || {};
+  const walk = (node, depth) => {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      "  ".repeat(depth) + node.kind + ": " + node.label +
+      (node.confidence === 0 ? " (simulated region)" : "")));
+    box.appendChild(row);
+    for (const child of node.children || []) {
+      walk(child, depth + 1);
+    }
+  };
+  walk(tree, 0);
+}
+
+function renderComputerProposals(result) {
+  const box = document.getElementById("computer-proposals");
+  box.innerHTML = "";
+  if (result.note) {
+    box.appendChild(el("p", "muted", result.note));
+  }
+  for (const proposal of result.proposals || []) {
+    const row = el("div", "surface memory-entry");
+    row.appendChild(el("p", null,
+      proposal.action + " → " + (proposal.target || "—") +
+      " [" + proposal.status + ", risk " + (proposal.risk || "?") + "]"));
+    row.appendChild(el("p", "muted", proposal.reason || ""));
+    box.appendChild(row);
+  }
+}
+
+async function renderComputerHistory() {
+  const box = document.getElementById("computer-history");
+  try {
+    const history = await api("/api/v1/computer/history");
+    box.innerHTML = "";
+    const snapshots = el("p", "muted");
+    snapshots.textContent = "screen snapshots: " +
+      (history.snapshots || []).map((item) => "v" + item.version).join(", ");
+    box.appendChild(snapshots);
+    for (const action of (history.actions || []).slice(-8).reverse()) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        action.action + " → " + (action.target || "—") + " [" +
+        action.decision + (action.executed ? ", executed" : "") + "]"));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load computer history", err,
+      renderComputerHistory);
+  }
+}
+
+async function renderComputerApprovals() {
+  const box = document.getElementById("computer-approvals");
+  try {
+    const payload = await api("/api/v1/computer/approvals");
+    const approvals = payload.approvals || [];
+    box.innerHTML = "";
+    if (!approvals.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No pending computer approvals.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const approval of approvals) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        "forge-computer wants " + approval.operation + " (" +
+        (approval.scopes || []).join(", ") + ")"));
+      const approve = el("button", null, "Approve");
+      approve.addEventListener("click", async () => {
+        await api("/api/v1/computer/approvals/" +
+          encodeURIComponent(approval.id) + "/approve",
+          { method: "POST", body: {} });
+        renderComputerApprovals();
+      });
+      const deny = el("button", "ghost", "Deny");
+      deny.addEventListener("click", async () => {
+        await api("/api/v1/computer/approvals/" +
+          encodeURIComponent(approval.id) + "/deny",
+          { method: "POST", body: {} });
+        renderComputerApprovals();
+      });
+      row.appendChild(approve);
+      row.appendChild(deny);
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load computer approvals", err,
+      renderComputerApprovals);
+  }
+}
+
+/* ---------- cockpit catalog surfaces (A41) ---------- */
+
+function renderAgentsView() {
+  const box = document.getElementById("agents-list");
+  api("/api/v1/agents").then((payload) => {
+    box.innerHTML = "";
+    for (const agent of payload.agents || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        agent.name + " · " + agent.role +
+        (agent.simulated ? " · simulated provider (labeled)" : "")));
+      row.appendChild(el("p", "muted",
+        "capabilities: " + (agent.capabilities || []).join(", ") +
+        " · gate: " + (agent.gate || "")));
+      if (agent.notes) {
+        row.appendChild(el("p", "muted", agent.notes));
+      }
+      box.appendChild(row);
+    }
+  }).catch((err) => {
+    errorState(box, "Unable to load the agent catalog", err, renderAgentsView);
+  });
+}
+
+function renderSecurityView() {
+  api("/api/v1/security").then((payload) => {
+    const posture = document.getElementById("security-posture");
+    posture.innerHTML = "";
+    posture.appendChild(el("p", null,
+      "Mode: " + payload.mode + " · policy default: " +
+      payload.policy_default + " · rules indexed: " +
+      payload.policy_rules + " · recorded permission evaluations: " +
+      payload.audit_evaluations_recorded));
+    posture.appendChild(el("p", "muted",
+      "Desktop provider: " + (payload.desktop_provider || "") +
+      (payload.vision_simulation ? " · vision: simulated (labeled)"
+                                 : "") +
+      (payload.voice_simulation ? " · voice: simulated (labeled)" : "")));
+    const invariants = document.getElementById("security-invariants");
+    invariants.innerHTML = "";
+    for (const invariant of payload.hard_invariants || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null, invariant));
+      invariants.appendChild(row);
+    }
+  }).catch((err) => {
+    errorState(document.getElementById("security-posture"),
+      "Unable to load the security posture", err, renderSecurityView);
+  });
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light"
+    ? "light" : "dark";
+}
+
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  const button = document.getElementById("settings-theme");
+  if (button) {
+    button.textContent = next === "light"
+      ? "Switch to dark theme" : "Switch to light theme";
+  }
+}
+
+function renderSettingsView() {
+  api("/api/v1/sessions/me").then((payload) => {
+    const session = payload.session || {};
+    const box = document.getElementById("settings-session");
+    box.innerHTML = "";
+    box.appendChild(el("p", null,
+      "Actor: " + (session.actor || "") + " · project: " +
+      (session.project_id || "") + " · profile: " +
+      (session.profile || "")));
+    const button = document.getElementById("settings-theme");
+    button.textContent = currentTheme() === "light"
+      ? "Switch to dark theme" : "Switch to light theme";
+    button.addEventListener("click", toggleTheme);
+  }).catch((err) => {
+    errorState(document.getElementById("settings-session"),
+      "Unable to load session", err, renderSettingsView);
+  });
+}
+
+/* ---------- general conversation (A43) ---------- */
+
+function renderConversationView() {
+  const box = document.getElementById("conversation-log");
+  const input = document.getElementById("conversation-input");
+  const render = (payload) => {
+    box.innerHTML = "";
+    for (const item of payload.history || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        (item.role === "user" ? "You: " : "Forge: ") + item.text));
+      box.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/conversation").then(render).catch((err) => {
+      errorState(box, "Unable to load the conversation", err,
+        renderConversationView);
+    });
+  };
+  document.getElementById("conversation-send").addEventListener(
+    "click", async () => {
+      const message = input.value || "";
+      input.value = "";
+      try {
+        const payload = await api("/api/v1/conversation",
+          { method: "POST", body: { message: message } });
+        render(payload);
+      } catch (err) {
+        errorState(box, "Message failed", err, renderConversationView);
+      }
+    });
+  load();
+}
+
+/* ---------- research (A47) ---------- */
+
+function renderResearchView() {
+  const reportBox = document.getElementById("research-report");
+  const answerBox = document.getElementById("research-answer");
+  const input = document.getElementById("research-input");
+  const renderReport = (payload) => {
+    reportBox.innerHTML = "";
+    reportBox.appendChild(el("p", null,
+      payload.source_file_count + " source files, " +
+      payload.test_file_count + " test files, " +
+      payload.package_count + " packages."));
+    if (payload.entry_points && payload.entry_points.length) {
+      reportBox.appendChild(el("p", null,
+        "Entry points: " + payload.entry_points.join(", ")));
+    }
+    for (const layer of payload.layers || []) {
+      reportBox.appendChild(el("p", null,
+        layer.path + " (" + layer.kind + ", " + layer.file_count +
+        " files)"));
+    }
+  };
+  const renderAnswer = (payload) => {
+    answerBox.innerHTML = "";
+    answerBox.appendChild(el("p", null,
+      payload.answer + " (confidence " + payload.confidence + ")"));
+    for (const item of payload.evidence || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        item.path + (item.line ? ":" + item.line : "") +
+        " — " + item.kind));
+      answerBox.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/research/report").then(renderReport).catch((err) => {
+      errorState(reportBox, "Unable to load the project report", err,
+        renderResearchView);
+    });
+  };
+  document.getElementById("research-ask").addEventListener(
+    "click", async () => {
+      const question = input.value || "";
+      input.value = "";
+      try {
+        const payload = await api("/api/v1/research/ask",
+          { method: "POST", body: { question: question } });
+        renderAnswer(payload);
+      } catch (err) {
+        errorState(answerBox, "Research failed", err,
+          renderResearchView);
+      }
+    });
+  load();
+}
+
+/* ---------- compute (A48) ---------- */
+
+function renderComputeView() {
+  const quotaBox = document.getElementById("compute-quota");
+  const resultBox = document.getElementById("compute-result");
+  const historyBox = document.getElementById("compute-history");
+  const input = document.getElementById("compute-input");
+  const renderQuota = (payload) => {
+    quotaBox.innerHTML = "";
+    quotaBox.appendChild(el("p", null,
+      payload.backend + " — cells used " + payload.quota.cells_used +
+      "/" + payload.quota.max_cells + ", seconds used " +
+      payload.quota.seconds_used + "/" + payload.quota.max_seconds));
+  };
+  const renderHistory = (payload) => {
+    historyBox.innerHTML = "";
+    for (const cell of payload.cells || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        cell.cell_id + " — " + cell.status +
+        " (" + cell.elapsed_ms + " ms)"));
+      row.appendChild(el("pre", null, cell.output || ""));
+      historyBox.appendChild(row);
+    }
+  };
+  const renderResult = (payload) => {
+    resultBox.innerHTML = "";
+    if (!payload.allowed) {
+      resultBox.appendChild(el("p", "error-text",
+        "Not allowed" +
+        (payload.approval_required
+          ? " — approval required (" + payload.approval_request_id + ")"
+          : (payload.reason ? " — " + payload.reason : ""))));
+      return;
+    }
+    resultBox.appendChild(el("pre", null,
+      payload.cell.status + " (exit " + payload.cell.return_code +
+      ", " + payload.cell.elapsed_ms + " ms)\n" + payload.cell.output));
+    renderQuota({ backend: payload.cell.backend,
+                  quota: payload.cell.quota });
+  };
+  const load = () => {
+    api("/api/v1/compute/status").then(renderQuota).catch((err) => {
+      errorState(quotaBox, "Unable to load compute status", err,
+        renderComputeView);
+    });
+    api("/api/v1/compute/history").then(renderHistory).catch((err) => {
+      errorState(historyBox, "Unable to load compute history", err,
+        renderComputeView);
+    });
+  };
+  document.getElementById("compute-run").addEventListener(
+    "click", async () => {
+      const code = input.value || "";
+      try {
+        const payload = await api("/api/v1/compute/execute",
+          { method: "POST", body: { code: code } });
+        renderResult(payload);
+      } catch (err) {
+        errorState(resultBox, "Compute failed", err,
+          renderComputeView);
+      }
+    });
+  load();
+}
+
+/* ---------- agent builder (A49) ---------- */
+
+function renderAgentBuilderView() {
+  const list = document.getElementById("agent-definitions");
+  const result = document.getElementById("agent-create-result");
+  const render = (payload) => {
+    list.innerHTML = "";
+    for (const agent of payload.agents || []) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null,
+        agent.name + " — role " + agent.role + " — " +
+        agent.capabilities.join(", ")));
+      row.appendChild(el("p", "muted", agent.note));
+      list.appendChild(row);
+    }
+  };
+  const load = () => {
+    api("/api/v1/agents/defined").then(render).catch((err) => {
+      errorState(list, "Unable to load defined agents", err,
+        renderAgentBuilderView);
+    });
+  };
+  document.getElementById("agent-create").addEventListener(
+    "click", async () => {
+      const name = document.getElementById("agent-name").value || "";
+      const role = document.getElementById("agent-role").value || "";
+      const caps = document.getElementById("agent-caps").value || "";
+      try {
+        const payload = await api("/api/v1/agents",
+          { method: "POST",
+            body: { name: name, role: role,
+                    capabilities: caps.split(",")
+                      .map((item) => item.trim())
+                      .filter((item) => item.length > 0),
+                    description: "", bind: false } });
+        result.innerHTML = "";
+        result.appendChild(el("p", null,
+          "Created " + payload.name + " — " + payload.note));
+        load();
+      } catch (err) {
+        errorState(result, "Agent creation failed", err,
+          renderAgentBuilderView);
+      }
+    });
+  load();
+}
