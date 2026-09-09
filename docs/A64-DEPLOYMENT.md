@@ -1,6 +1,7 @@
 # A64 — Deployment
 
-Validated, verifiable, rollback-capable deployments.
+Validated, verifiable, rollback-capable deployments with real
+production backends.
 
 ## What A64 adds
 
@@ -17,15 +18,40 @@ Validated, verifiable, rollback-capable deployments.
   - `rollback`: restores the previous artifact version into the
     same target, one step back, honestly refusing when no previous
     version exists.
+- `forge/deployment/production.py` — **Real production backends**:
+  - **Docker**: Build and push container images to a registry
+    (`FORGE_DOCKER_REGISTRY`).
+  - **Kubernetes**: Apply manifests to K8s clusters
+    (`FORGE_K8S_NAMESPACE`).
+  - **SSH/rsync**: Deploy to remote servers via rsync
+    (`FORGE_DEPLOY_SSH_HOST`, `FORGE_DEPLOY_SSH_PATH`).
+  - **Fly.io**: Deploy via the Fly CLI (`FLY_API_TOKEN`).
+  - All production backends build on the same manifest/artifact
+    system and require explicit configuration.
 - Control plane `deployment_create/build/deploy/rollback/list/get`
-  (audited); API at `/api/v1/deployments*`.
+  + **`deployment_backends`** + **`deployment_docker_build`** +
+  **`deployment_ssh_deploy`** (audited); API at
+  `/api/v1/deployments*`.
+
+## Configuration
+
+| Variable | Effect |
+|---|---|
+| `FORGE_DOCKER_REGISTRY` | Docker registry for image push |
+| `FORGE_DOCKER_USERNAME` | Docker registry username |
+| `FORGE_K8S_NAMESPACE` | Kubernetes namespace (default: `default`) |
+| `FORGE_DEPLOY_SSH_HOST` | SSH host for rsync deploy |
+| `FORGE_DEPLOY_SSH_PATH` | Remote path for rsync deploy |
+| `FLY_API_TOKEN` | Fly.io API token |
 
 ## Security notes
 
-- Deployments are local staging, honestly labeled: no network, no
-  secrets exported beyond project files (the walk skips forge
-  metadata dirs), targets outside the project only, hash-verified
-  writes, no overwrite of unknown directories.
+- Local staging is the default: no network, no secrets exported
+  beyond project files (the walk skips forge metadata dirs), targets
+  outside the project only, hash-verified writes, no overwrite of
+  unknown directories.
+- Production backends require explicit configuration and are
+  permission-gated. API keys are read from environment variables.
 
 ## Testing
 

@@ -1,4 +1,4 @@
-"""Compute API (A48): managed local code cells."""
+"""Compute API (A48): managed code cells (local + remote backends)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,9 +18,11 @@ async def execute(body: ComputeExecuteRequest,
                   current: Authed = Depends(authed_mutation),
                   plane: ControlPlane = Depends(get_plane)):
     try:
-        return plane.compute_execute(current.session, body.code,
-                                     timeout=body.timeout,
-                                     approval_id=body.approval_id)
+        return plane.compute_execute(
+            current.session, body.code,
+            timeout=body.timeout,
+            approval_id=getattr(body, "approval_id", ""),
+            backend=getattr(body, "backend", "local"))
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 

@@ -63,11 +63,12 @@ SCREENSHOT (bounded, untrusted)
 ## Honesty invariants
 
 The screen understanding comes from the A39 vision provider and keeps
-its labels: the A40 build has no OCR and no vision model, so element
-regions are simulated heuristics with zero confidence — the cockpit
-and reports say so. Execution and observations come from the real A35
-desktop agent (deterministic fake provider in dev/tests, real
-providers register as plugins).
+its labels: when using the simulated provider, element regions are
+simulated heuristics with zero confidence — the cockpit and reports
+say so. When using the real OpenAI Vision provider (`simulation=false`),
+understanding comes from real API calls. Execution and observations
+come from the real A35 desktop agent (deterministic fake provider in
+dev/tests, real providers register as plugins).
 
 ## API
 

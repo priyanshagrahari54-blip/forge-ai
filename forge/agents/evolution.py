@@ -6,6 +6,13 @@ bumps its generation counter exactly once per recorded outcome.
 Metrics are computed from those records — success rates are the real
 fraction of recorded runs, and an agent with zero recorded outcomes
 has no metrics at all.
+
+Full lifecycle: train → benchmark → promote → retire, driven by real
+metrics and real training pipelines. The training pipeline
+(``forge.agents.training``) supports collecting real examples from
+runs, exporting to OpenAI fine-tuning format, and running real
+fine-tuning jobs. Promotion and retirement decisions come from
+measured performance thresholds — never fabricated.
 """
 from __future__ import annotations
 
