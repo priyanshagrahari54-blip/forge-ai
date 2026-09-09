@@ -3393,6 +3393,20 @@ class ControlPlane:
 
 
 
+
+    # -- final acceptance (A71) -----------------------------------------------------------------------
+
+    def final_acceptance(self, session: Session) -> dict[str, Any]:
+        """Bounded end-to-end acceptance checklist incl. a smoke run."""
+        from forge.final.acceptance import run_acceptance
+
+        report = run_acceptance(self, session)
+        self._audit(session.actor, "final", "acceptance", report["accepted"],
+                    task_id=session.active_task or session.id,
+                    reason=f"{report['passed']}/{report['total']}")
+        return report
+
+
     # -- autonomy levels (A69) ------------------------------------------------------------------------
 
     def _autonomy_override(self, session_id: str) -> str:

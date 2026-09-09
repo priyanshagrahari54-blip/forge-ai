@@ -972,3 +972,12 @@ framing controls by default (add at the edge for production).
   class-toggling-only invariant kept.
 - 5 new tests. Full suite: **1379 passed, 2 skipped** (A69
   baseline: 1374/2).
+
+## A71 — Final Acceptance
+
+- `forge/final/acceptance.py`: 6 live checks + real smoke run
+  through the pipeline; approval gates operated via the real
+  approval store with every driven approval recorded; timeouts and
+  failures reported honestly. API POST /api/v1/final/acceptance.
+- 5 new tests. Full suite: **1384 passed, 2 skipped** (A70
+  baseline: 1379/2).
