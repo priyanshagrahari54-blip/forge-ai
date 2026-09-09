@@ -139,12 +139,17 @@ class TrainingDataPolicy:
     - ``allow``           — external upload for clean/confidential
                             content when authorized.
 
-    Secret material (API keys, tokens, private keys, passwords,
-    credentials) is NEVER uploaded automatically: in every mode a
-    secret hit refuses the upload, and even an ``authorized`` flag can
-    only lift the refusal in ``allow`` mode — where it is still gated
-    by the caller's explicit authorization. This is fail-closed: no
-    code path uploads without passing :meth:`evaluate`.
+    Classification ladder (PUBLIC/INTERNAL → CONFIDENTIAL → SECRET):
+
+    - PUBLIC / INTERNAL content uploads according to the mode.
+    - CONFIDENTIAL content (PII) requires explicit authorization.
+    - SECRET material (API keys, tokens, private keys, passwords,
+      credentials) is NEVER uploaded in any mode: even ``allow`` +
+      ``authorized`` refuses a secret hit. A generic ``authorized``
+      flag can never override ``SECRET``. The refusal is complete —
+      nothing is stripped and uploaded as if training succeeded.
+      This is fail-closed: no code path uploads without passing
+      :meth:`evaluate`.
     """
 
     def __init__(self, mode: str = "") -> None:
@@ -158,8 +163,10 @@ class TrainingDataPolicy:
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode,
                 "fail_closed": True,
-                "note": "Secret/credential/PII scans run before any "
-                        "external upload; default mode is deny."}
+                "secret_never_uploadable": True,
+                "note": ("Secret/credential/PII scans run before any "
+                        "external upload; secret material is refused in "
+                        "every mode (default mode is deny).")}
 
     def scan_example(self, example: Any) -> dict[str, Any]:
         """Scan one example (input + output + metadata)."""
@@ -210,18 +217,21 @@ class TrainingDataPolicy:
             return {"allowed": False, "reason": "no examples to upload",
                     "report": report, "authorized": authorized}
         if report["secret"] > 0:
-            allowed = self.mode == "allow" and authorized
+            # SECRET is always DENY. No mode, token, or authorization
+            # flag can lift this: secrets must never reach an external
+            # training provider through the normal pipeline. The reason
+            # is redacted (counts only — never the matched text).
             return {
-                "allowed": allowed,
+                "allowed": False,
+                "denied": "secret",
                 "reason": (
                     f"{report['secret']} example(s) contain secret/"
-                    f"credential material; automatic upload is refused."
-                    if not allowed else
-                    "secret material present; upload permitted only by "
-                    "explicit allow-mode + authorization"),
+                    f"credential material; secret material can never be "
+                    f"uploaded to an external training provider"),
                 "report": report,
                 "authorized": authorized,
                 "secret_present": True,
+                "redacted": True,
             }
         if self.mode == "deny":
             return {"allowed": False,

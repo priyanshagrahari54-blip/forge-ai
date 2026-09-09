@@ -99,12 +99,14 @@ def test_empty_dataset_never_uploadable():
     assert decision["allowed"] is False
 
 
-def test_secret_never_uploaded_in_deny_or_approval_mode():
+def test_secret_never_uploaded_in_any_mode():
     dataset = _dataset(("task: fix login", "token = 'abcdef1234567890xyz'"))
-    for mode in ("deny", "approval"):
+    for mode in ("deny", "approval", "allow"):
         policy = TrainingDataPolicy(mode=mode)
-        assert policy.evaluate(dataset, authorized=True)["allowed"] \
-            is False
+        decision = policy.evaluate(dataset, authorized=True)
+        assert decision["allowed"] is False
+        assert decision["secret_present"] is True
+        assert decision["denied"] == "secret"
         assert policy.evaluate(dataset, authorized=False)["allowed"] \
             is False
         # default (env-less) mode is deny:
@@ -125,11 +127,82 @@ def test_secret_in_input_also_blocked():
     decision = TrainingDataPolicy(mode="allow").evaluate(
         dataset, authorized=False)
     assert decision["allowed"] is False
-    # …and permits only with the operator mode + authorization both set.
+    # …and now ALSO refuses with the operator mode + authorization both
+    # set: SECRET can never be overridden by a generic authorized flag.
     decision = TrainingDataPolicy(mode="allow").evaluate(
         dataset, authorized=True)
-    assert decision["allowed"] is True
+    assert decision["allowed"] is False
     assert decision["secret_present"] is True
+    assert decision["denied"] == "secret"
+
+
+def test_secret_with_every_permissive_signal_is_still_denied():
+    """secret + allow + authorized + valid approval-equivalent → DENY."""
+    dataset = _dataset(("task: deploy", "password = 's3cr3t-value-12345'"))
+    decision = TrainingDataPolicy(mode="allow").evaluate(
+        dataset, authorized=True)
+    assert decision["allowed"] is False
+    assert decision["denied"] == "secret"
+    # The denial reason is redacted: it never echoes the secret text.
+    assert "s3cr3t-value-12345" not in decision["reason"]
+    assert "12345" not in decision["reason"]
+    assert decision.get("redacted") is True
+
+
+def test_secret_denial_reason_is_redacted():
+    dataset = _dataset(("task: fix login",
+                        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"))
+    decision = TrainingDataPolicy(mode="allow").evaluate(
+        dataset, authorized=True)
+    assert decision["allowed"] is False
+    low = decision["reason"].lower()
+    assert "abcdefghijklmnopqrstuvwxyz123456" not in low
+    assert "bearer" not in low
+    assert decision.get("redacted") is True
+
+
+def test_confidential_requires_explicit_approval():
+    dataset = _dataset(("contact alice@example.com for the patch",
+                        "ok"))
+    policy = TrainingDataPolicy(mode="approval")
+    # confidential + no approval → DENY
+    denied = policy.evaluate(dataset, authorized=False)
+    assert denied["allowed"] is False
+    assert denied["report"]["confidential_or_pii"] == 1
+    # confidential + explicit valid approval → allowed per policy
+    allowed = policy.evaluate(dataset, authorized=True)
+    assert allowed["allowed"] is True
+    # deny mode never uploads, even for confidential content.
+    assert TrainingDataPolicy(mode="deny").evaluate(
+        dataset, authorized=True)["allowed"] is False
+    # allow mode without authorization refuses confidential content.
+    assert TrainingDataPolicy(mode="allow").evaluate(
+        dataset, authorized=False)["allowed"] is False
+
+
+def test_public_and_internal_follow_normal_policy_evaluation():
+    public = _dataset("add CSV export to the reports page")
+    internal = _dataset(("refactor module: build for release-2026",
+                         "implemented per ADR-42"))
+    # deny mode: everything refused.
+    assert TrainingDataPolicy(mode="deny").evaluate(
+        public, authorized=True)["allowed"] is False
+    # approval mode: authorization is the gate.
+    assert TrainingDataPolicy(mode="approval").evaluate(
+        public, authorized=False)["allowed"] is False
+    assert TrainingDataPolicy(mode="approval").evaluate(
+        public, authorized=True)["allowed"] is True
+    assert TrainingDataPolicy(mode="allow").evaluate(
+        public, authorized=True)["allowed"] is True
+    # internal content that scans clean behaves like public content.
+    assert TrainingDataPolicy(mode="approval").evaluate(
+        internal, authorized=True)["allowed"] is True
+    for decision in (TrainingDataPolicy(mode="allow").evaluate(
+            public, authorized=True),
+            TrainingDataPolicy(mode="approval").evaluate(
+                internal, authorized=True)):
+        assert decision["allowed"] is True
+        assert "secret_present" not in decision
 
 
 def test_deny_mode_blocks_even_clean_data():

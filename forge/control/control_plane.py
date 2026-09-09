@@ -2848,6 +2848,23 @@ class ControlPlane:
                         "training upload needs approval"}
         result = pipeline.start_fine_tuning(
             agent_name, model=model, authorized=authorized)
+        policy_verdict = result.get("policy") if isinstance(result, dict) \
+            else None
+        if "error" in result and isinstance(policy_verdict, dict) and \
+                policy_verdict.get("secret_present"):
+            # SECRET material was detected: DENY with a redacted audit
+            # event. The reason carries counts only — never the
+            # matched secret text.
+            _reason = str(policy_verdict.get(
+                "reason", "secret material present"))
+            denied_reason = (
+                f"{agent_name} model={model} upload DENIED by data "
+                f"policy: {_reason} (authorized={authorized} "
+                f"mode={mode}); redacted")
+            self._audit(session.actor, "training", "fine_tune", False,
+                        task_id=session.active_task or session.id,
+                        reason=denied_reason)
+            raise InvalidRequest(denied_reason)
         self._audit(session.actor, "training", "fine_tune",
                     "error" not in result,
                     task_id=session.active_task or session.id,
