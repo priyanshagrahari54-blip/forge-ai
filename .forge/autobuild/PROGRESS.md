@@ -981,3 +981,12 @@ framing controls by default (add at the edge for production).
   failures reported honestly. API POST /api/v1/final/acceptance.
 - 5 new tests. Full suite: **1384 passed, 2 skipped** (A70
   baseline: 1379/2).
+
+## A72 — Final Verification
+
+- `forge/final/verification.py`: evidence checks (terminal
+  status, success, report, files on disk) with NOT_FOUND
+  isolation and honest failure reasons. API
+  POST /api/v1/final/verify-run.
+- 5 new tests. Full suite: **1389 passed, 2 skipped** (A71
+  baseline: 1384/2).

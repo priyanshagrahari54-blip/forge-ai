@@ -3394,6 +3394,21 @@ class ControlPlane:
 
 
 
+
+    # -- final verification (A72) ---------------------------------------------------------------------
+
+    def final_verify_run(self, session: Session, run_id: str
+                         ) -> dict[str, Any]:
+        from forge.final.verification import verify_run_evidence
+
+        report = verify_run_evidence(self, session, run_id)
+        self._audit(session.actor, "final", "verify",
+                    report["verified"],
+                    task_id=session.active_task or session.id,
+                    reason=f"{run_id} verified={report['verified']}")
+        return report
+
+
     # -- final acceptance (A71) -----------------------------------------------------------------------
 
     def final_acceptance(self, session: Session) -> dict[str, Any]:

@@ -312,3 +312,9 @@ class PluginInstallRequest(BaseModel):
 
 class AutonomyLevelRequest(BaseModel):
     level: str = Field(min_length=2, max_length=16)
+
+
+# -- A72 final verification -----------------------------------------------------------------------
+
+class FinalVerifyRunRequest(BaseModel):
+    run_id: str = Field(min_length=6, max_length=64)
