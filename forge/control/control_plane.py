@@ -3390,6 +3390,19 @@ class ControlPlane:
 
 
 
+
+    # -- cockpit navigation (A68) ---------------------------------------------------------------------
+
+    def command_shortcuts(self, session: Session) -> dict[str, Any]:
+        """Canonical keyboard navigation catalog for the cockpit."""
+        from forge.cockpit_shortcuts import (shortcut_payload,
+                                             validate_shortcuts)
+
+        payload = shortcut_payload()
+        validate_shortcuts(payload["entries"])
+        return payload
+
+
     # -- command palette (A67) ------------------------------------------------------------------------
 
     def command_palette(self, session: Session) -> dict[str, Any]:

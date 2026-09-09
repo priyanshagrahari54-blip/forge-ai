@@ -42,6 +42,12 @@ async def command_palette(current: Authed = Depends(authed_mutation),
     return plane.command_palette(current.session)
 
 
+@router.get("/commands/shortcuts")
+async def command_shortcuts(current: Authed = Depends(authed_mutation),
+                            plane: ControlPlane = Depends(get_plane)):
+    return plane.command_shortcuts(current.session)
+
+
 @router.post("/interpret")
 async def interpret(body: InterpretRequest,
                     current: Authed = Depends(authed),

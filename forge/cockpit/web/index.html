@@ -119,6 +119,7 @@
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor"/><path d="M9.3 9.3 12.5 12.5" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Commands</span><kbd>Ctrl K</kbd>
         </button>
+        <button id="shortcuts-open" class="icon-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">?</button>
         <span id="conn" class="conn ok" role="status" title="Backend connection">Connected</span>
         <span id="whoami" class="whoami"></span>
         <span id="profile-chip" class="profile-chip" title="Permission profile"></span>
@@ -188,6 +189,14 @@
     <input id="palette-input" class="command-bar" type="text" autocomplete="off"
            spellcheck="false" placeholder="Type a command — navigation only" aria-label="Command input">
     <div id="palette-list" role="listbox" aria-label="Commands"></div>
+  </div>
+</div>
+
+<div id="shortcuts" class="palette hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+  <div class="palette-box surface-elevated">
+    <div class="section-header"><h3>Keyboard navigation</h3>
+      <span class="muted">navigation only — never executes</span></div>
+    <div id="shortcuts-list"></div>
   </div>
 </div>
 

@@ -547,6 +547,16 @@ syncs on open. API at `/api/v1/commands/palette`.
 See `docs/A67-COMMAND-PALETTE.md`. Full suite after A67: 1363
 passed, 2 skipped.
 
+## Cockpit Navigation (A68)
+
+A server-canonical keyboard shortcut catalog: prefix chords and
+immediate keys that navigate views or toggle overlays — navigation
+only. The cockpit renders a `?` help overlay from it. API at
+`/api/v1/commands/shortcuts`.
+
+See `docs/A68-COCKPIT-NAVIGATION.md`. Full suite after A68: 1368
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

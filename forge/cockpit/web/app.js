@@ -22,6 +22,7 @@ const state = {
   entered: false,
   cache: { tasks: [], task: null, filter: "ALL", search: "" },
   palette: { open: false, selected: 0, items: [] },
+  shortcuts: { open: false, entries: [], chord: null },
 };
 
 const STAGES = ["planning", "coding", "testing", "debugging", "review",
@@ -2245,6 +2246,89 @@ function closePalette() {
   document.getElementById("palette").classList.add("hidden");
 }
 
+/* ---------- keyboard navigation (A68) ---------- */
+
+async function syncServerShortcuts() {
+  try {
+    const data = await api("/api/v1/commands/shortcuts");
+    state.shortcuts.entries = data.entries || [];
+  } catch (_err) {
+    state.shortcuts.entries = [];
+  }
+  renderShortcutsList();
+}
+
+function renderShortcutsList() {
+  const list = document.getElementById("shortcuts-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const entries = state.shortcuts.entries.length
+    ? state.shortcuts.entries
+    : [{ keys: "?", label: "Toggle shortcuts help", kind: "key" },
+      { keys: "ctrl+k", label: "Open command palette", kind: "key" }];
+  for (const entry of entries) {
+    const row = el("div", "shortcut-row", "");
+    const kbd = el("span", "pkind", entry.keys);
+    kbd.className = "shortcut-keys";
+    row.appendChild(kbd);
+    row.appendChild(el("span", "shortcut-label", entry.label));
+    list.appendChild(row);
+  }
+}
+
+function toggleShortcuts() {
+  state.shortcuts.open = !state.shortcuts.open;
+  document.getElementById("shortcuts").classList.toggle(
+    "hidden", !state.shortcuts.open);
+  if (state.shortcuts.open) renderShortcutsList();
+}
+
+function typingTarget(ev) {
+  const tag = ev.target && ev.target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" ||
+    (ev.target && ev.target.isContentEditable);
+}
+
+const SHORTCUT_CHORDS = {
+  d: "dashboard", t: "tasks", p: "projects", m: "models",
+  a: "approvals", v: "conversation", s: "settings", b: "agentbuilder",
+};
+
+function initShortcuts() {
+  document.getElementById("shortcuts-open").addEventListener(
+    "click", toggleShortcuts);
+  document.getElementById("shortcuts").addEventListener("click", (ev) => {
+    if (ev.target.id === "shortcuts") toggleShortcuts();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (typingTarget(ev)) return;
+    if (ev.key === "Escape" && state.shortcuts.open) {
+      toggleShortcuts();
+      return;
+    }
+    if (ev.key === "?" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      toggleShortcuts();
+      return;
+    }
+    if (ev.key.toLowerCase() === "g" &&
+        !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      state.shortcuts.chord = Date.now();
+      return;
+    }
+    if (state.shortcuts.chord &&
+        Date.now() - state.shortcuts.chord < 800) {
+      const target = SHORTCUT_CHORDS[ev.key.toLowerCase()];
+      state.shortcuts.chord = null;
+      if (target) {
+        ev.preventDefault();
+        window.location.hash = "#/" + target;
+      }
+    }
+  });
+  syncServerShortcuts();
+}
+
 function initPalette() {
   document.getElementById("palette-open").addEventListener("click", openPalette);
   document.getElementById("palette").addEventListener("click", (ev) => {
@@ -2351,6 +2435,7 @@ function enter() {
     toggle.setAttribute("aria-expanded", "false");
   });
   initPalette();
+  initShortcuts();
   window.addEventListener("hashchange", route);
   route();
 }

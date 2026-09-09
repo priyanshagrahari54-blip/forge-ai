@@ -942,3 +942,12 @@ framing controls by default (add at the edge for production).
 - 5 new tests (incl. cross-check that server targets exist in the
   client ROUTES). Full suite: **1363 passed, 2 skipped** (A66
   baseline: 1358/2).
+
+## A68 — Cockpit Navigation
+
+- `forge/cockpit_shortcuts.py`: canonical keyboard catalog (8
+  prefix chords + immediate keys), self-audited; API
+  GET /api/v1/commands/shortcuts. Cockpit wires chords/keys with
+  typing guards and a "?" help overlay from the server catalog.
+- 5 new tests. Full suite: **1368 passed, 2 skipped** (A67
+  baseline: 1363/2).
