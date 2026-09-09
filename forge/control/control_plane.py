@@ -3395,6 +3395,112 @@ class ControlPlane:
 
 
 
+
+
+    # -- final benchmark gate (A74) -------------------------------------------------------------------
+
+    def final_benchmark_gate(self, session: Session, min_passed: int = 1
+                             ) -> dict[str, Any]:
+        from forge.final.benchmark_gate import benchmark_gate
+
+        try:
+            report = benchmark_gate(self, session, min_passed=min_passed)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "final", "benchmark",
+                    report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"passed={report['summary']['passed']}/"
+                           f"{report['summary']['total']}")
+        return report
+
+    # -- final commit gate (A75) ----------------------------------------------------------------------
+
+    def final_commit_gate(self, session: Session) -> dict[str, Any]:
+        from forge.final.commit_gate import commit_gate
+
+        report = commit_gate(self, session)
+        self._audit(session.actor, "final", "commit",
+                    report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"passed={report['passed']}")
+        return report
+
+    # -- final memory gate (A76) ----------------------------------------------------------------------
+
+    def final_memory_gate(self, session: Session) -> dict[str, Any]:
+        from forge.final.memory_gate import memory_gate
+
+        report = memory_gate(self, session)
+        self._audit(session.actor, "final", "memory",
+                    report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"passed={report['passed']}")
+        return report
+
+    # -- final self-evaluation (A77) ------------------------------------------------------------------
+
+    def final_self_evaluation(self, session: Session) -> dict[str, Any]:
+        from forge.final.self_evaluation import self_evaluation
+
+        report = self_evaluation(self, session)
+        self._audit(session.actor, "final", "self-evaluation", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"grade={report['grade']}")
+        return report
+
+    # -- final rollout gate (A78) ----------------------------------------------------------------------
+
+    def final_rollout(self, session: Session) -> dict[str, Any]:
+        from forge.final.rollout import rollout_gate
+
+        report = rollout_gate(self, session)
+        self._audit(session.actor, "final", "rollout",
+                    report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"passed={report['passed']}")
+        return report
+
+    # -- final loop (A79) ------------------------------------------------------------------------------
+
+    def final_loop(self, session: Session, max_iterations: int = 3
+                   ) -> dict[str, Any]:
+        from forge.final.loop import final_loop as run_loop
+
+        try:
+            report = run_loop(self, session, max_iterations)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "final", "loop", report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"iterations={report['iterations']}")
+        return report
+
+    # -- final go/no-go gate (A80) ---------------------------------------------------------------------
+
+    def final_gate(self, session: Session) -> dict[str, Any]:
+        from forge.final.gate import final_gate as go_no_go
+
+        report = go_no_go(self, session)
+        self._audit(session.actor, "final", "gate", report["go"],
+                    task_id=session.active_task or session.id,
+                    reason=f"go={report['go']}")
+        return report
+
+
+    # -- final security gate (A73) --------------------------------------------------------------------
+
+    def final_security_gate(self, session: Session) -> dict[str, Any]:
+        from forge.final.security_gate import security_gate
+
+        report = security_gate(self, session)
+        self._audit(session.actor, "final", "security",
+                    report["passed"],
+                    task_id=session.active_task or session.id,
+                    reason=f"passed={report['passed']}")
+        return report
+
+
     # -- final verification (A72) ---------------------------------------------------------------------
 
     def final_verify_run(self, session: Session, run_id: str

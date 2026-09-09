@@ -596,6 +596,17 @@ isolation. API at `/api/v1/final/verify-run`.
 See `docs/A72-FINAL-VERIFICATION.md`. Full suite after A72: 1389
 passed, 2 skipped.
 
+## Final Gates (A73-A80)
+
+Security gate, code-judged benchmark gate, commit gate, memory
+gate, honest self-evaluation, combined rollout gate, bounded
+improvement loop, and the final go/no-go gate (rollout passed
+plus a genuinely SUCCEEDED run on record). APIs under
+`/api/v1/final/*`.
+
+See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

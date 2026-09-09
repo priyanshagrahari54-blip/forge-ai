@@ -990,3 +990,36 @@ framing controls by default (add at the edge for production).
   POST /api/v1/final/verify-run.
 - 5 new tests. Full suite: **1389 passed, 2 skipped** (A71
   baseline: 1384/2).
+
+## A72 — Final Verification
+
+- `forge/final/verification.py`: evidence checks (terminal
+  status, success, report, files on disk) with NOT_FOUND
+  isolation and honest failure reasons. API
+  POST /api/v1/final/verify-run.
+- 5 new tests. Full suite: **1389 passed, 2 skipped** (A71
+  baseline: 1384/2).
+
+## A73-A80 — Final Gates
+
+- A73 `forge/final/security_gate.py` (live audits, posture,
+  secrets; all-ALLOW fails, fail-closed passes).
+- A74 `forge/final/benchmark_gate.py` (real A60 harness,
+  code-judged, all models benchmarked, min_passed threshold).
+- A75 `forge/final/commit_gate.py` (read-only git readiness).
+- A76 `forge/final/memory_gate.py` (session_memory table +
+  failure ledger live; read-only).
+- A77 `forge/final/self_evaluation.py` (recorded-facts grade:
+  healthy/attention/degraded/unproven).
+- A78 `forge/final/rollout.py` (all gates + smoke
+  verification; no gate skipped).
+- A79 `forge/final/loop.py` (bounded 1-5 real iterations).
+- A80 `forge/final/gate.py` (go = rollout passed AND >=1 real
+  SUCCEEDED run on record).
+- Acceptance smoke is now idempotent: on an already-demonstrated
+  project it re-verifies live (recorded files exist + live test
+  suite passes) instead of re-implementing; failures stay honest.
+- APIs: POST /api/v1/final/{security,benchmark,commit,memory,
+  self-evaluation,rollout,loop,gate}.
+- 14 new tests (5 A73 + 9 A74-A80). Full suite: **1403 passed,
+  2 skipped** (A72 baseline: 1389/2).

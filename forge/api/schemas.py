@@ -318,3 +318,13 @@ class AutonomyLevelRequest(BaseModel):
 
 class FinalVerifyRunRequest(BaseModel):
     run_id: str = Field(min_length=6, max_length=64)
+
+
+# -- A74-A80 final gates --------------------------------------------------------------------------
+
+class FinalBenchmarkRequest(BaseModel):
+    min_passed: int = Field(default=1, ge=0, le=8)
+
+
+class FinalLoopRequest(BaseModel):
+    max_iterations: int = Field(default=3, ge=1, le=5)
