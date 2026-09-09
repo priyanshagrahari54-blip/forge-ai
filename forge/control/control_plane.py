@@ -3388,6 +3388,76 @@ class ControlPlane:
 
 
 
+
+    # -- plugin SDK (A66) ----------------------------------------------------------------------------
+
+    def _plugin_registry(self, session: Session):
+        from forge.plugins.registry import PluginRegistry
+
+        if not hasattr(self, "_plugin_registries"):
+            self._plugin_registries: dict[str, Any] = {}
+        registry = self._plugin_registries.get(session.id)
+        if registry is None:
+            registry = PluginRegistry(session.id)
+            self._plugin_registries[session.id] = registry
+        return registry
+
+    def _real_capabilities(self) -> set:
+        real: set = set()
+        for entry in self.agent_catalog():
+            if entry.get("real"):
+                real.update(entry.get("capabilities", []))
+        try:
+            for model in self.fabric.registry.list():
+                real.update(getattr(model, "capabilities", ()) or ())
+        except Exception:
+            pass
+        return real
+
+    def plugin_install(self, session: Session,
+                       manifest: Any) -> dict[str, Any]:
+        registry = self._plugin_registry(session)
+        try:
+            plugin = registry.install(manifest,
+                                      installed_by=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "plugins", "install", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{plugin.manifest['name']} "
+                           f"kind={plugin.manifest['kind']} "
+                           f"caps={','.join(plugin.manifest['capabilities'])}")
+        return plugin.to_dict()
+
+    def plugin_list(self, session: Session) -> dict[str, Any]:
+        return {"plugins": [plugin.to_dict() for plugin in
+                            self._plugin_registry(session).list()]}
+
+    def plugin_status(self, session: Session, plugin_id: str
+                      ) -> dict[str, Any]:
+        from forge.plugins.registry import bind_capabilities
+
+        registry = self._plugin_registry(session)
+        try:
+            plugin = registry.get(plugin_id)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        real = self._real_capabilities()
+        return bind_capabilities(plugin, lambda cap: cap in real)
+
+    def plugin_remove(self, session: Session, plugin_id: str
+                      ) -> dict[str, Any]:
+        registry = self._plugin_registry(session)
+        try:
+            plugin = registry.remove(plugin_id)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "plugins", "remove", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{plugin.manifest['name']} {plugin_id}")
+        return plugin.to_dict()
+
+
     # -- backup & recovery (A65) ----------------------------------------------------------------------
 
     def _backup_manager(self):

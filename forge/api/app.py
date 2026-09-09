@@ -40,6 +40,7 @@ from forge.api import (
     routes_performance,
     routes_deployments,
     routes_backups,
+    routes_plugins,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
@@ -178,6 +179,7 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_performance.router, prefix="/api/v1")
     app.include_router(routes_deployments.router, prefix="/api/v1")
     app.include_router(routes_backups.router, prefix="/api/v1")
+    app.include_router(routes_plugins.router, prefix="/api/v1")
     app.include_router(routes_compute.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
 

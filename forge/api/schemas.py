@@ -300,3 +300,9 @@ class DeploymentDeployRequest(BaseModel):
 
 class BackupCreateRequest(BaseModel):
     label: str = Field(min_length=1, max_length=64)
+
+
+# -- A66 plugin SDK -----------------------------------------------------------------------------
+
+class PluginInstallRequest(BaseModel):
+    manifest: dict

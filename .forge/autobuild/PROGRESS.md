@@ -922,3 +922,13 @@ framing controls by default (add at the edge for production).
   backups. API + audit.
 - 5 new tests. Full suite: **1353 passed, 2 skipped** (A64 baseline:
   1348/2).
+
+## A66 — Plugin SDK
+
+- `forge/plugins/`: strict manifest validation (no code loading),
+  session-bounded declarative registry, honest capability binding
+  against actually-registered executors/providers. API + audit.
+  Foreign-code loading deliberately out of scope — install cannot
+  smuggle execution.
+- 5 new tests. Full suite: **1358 passed, 2 skipped** (A65 baseline:
+  1353/2).
