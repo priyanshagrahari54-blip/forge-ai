@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from forge.api.deps import Authed, authed_mutation, get_plane, rate_limit
 from forge.api.schemas import (FinalBenchmarkRequest,
+                               FinalGateVerifyRequest,
                                FinalLoopRequest,
                                FinalVerifyRunRequest)
 from forge.control.control_plane import ControlPlane, InvalidRequest
@@ -80,3 +81,20 @@ async def final_loop(body: FinalLoopRequest,
 async def final_gate(current: Authed = Depends(authed_mutation),
                      plane: ControlPlane = Depends(get_plane)):
     return plane.final_gate(current.session)
+
+
+@router.post("/final/gate/verify", dependencies=[rate_limit("final")])
+async def final_gate_verify(
+        body: FinalGateVerifyRequest | None = None,
+        current: Authed = Depends(authed_mutation),
+        plane: ControlPlane = Depends(get_plane)):
+    """Explicit provider capability verification for the A80 gate.
+
+    Performs real, bounded capability checks against the requested
+    provider (or every configured provider when omitted), persists the
+    machine-readable results, and returns the refreshed final gate.
+    The gate itself never performs network calls; this endpoint is the
+    explicit verification mechanism.
+    """
+    provider = (body.provider if body is not None else "") or ""
+    return plane.final_gate_verify(current.session, provider)

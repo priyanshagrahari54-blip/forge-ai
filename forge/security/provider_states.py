@@ -100,6 +100,79 @@ def health_for(state: ProviderState | str) -> ProviderHealth:
     return ProviderHealth.DEGRADED
 
 
+#: Standing provider-status ladder for the final gate (A80). This is
+#: the vocabulary that answers "may this provider be treated as
+#: production-capable?" — an environment variable alone is NEVER
+#: enough; a provider is VERIFIED only after an explicit, successful,
+#: recent capability verification (see ``forge.final.provider_verification``).
+#:
+#: Ladder semantics:
+#:   NOT_CONFIGURED   — no configuration present (nothing to verify)
+#:   CONFIGURED       — configuration present, capability NOT yet
+#:                      verified (and no fresh failed attempt)
+#:   AUTHENTICATING   — verification in progress (credential check)
+#:   AUTHENTICATED    — credentials accepted (transient stage)
+#:   REACHABLE        — endpoint reachable (transient stage)
+#:   HEALTHY          — standing good state (transient stage)
+#:   VERIFIED         — full capability verification succeeded and is
+#:                      recent enough per the documented TTL policy
+#:   DEGRADED         — previously verified but failing intermittently
+#:                      (e.g. fabric router feedback after failures)
+#:   UNAVAILABLE      — configured but unreachable / DNS failure
+#:   MISCONFIGURED    — configuration present but invalid/refused by
+#:                      policy (e.g. SSH host without allowlist)
+#:   PROVIDER_ERROR   — a fresh verification attempt ended in a
+#:                      provider-side error (5xx, bad payload)
+#:   TIMEOUT / RATE_LIMITED / AUTH_ERROR / POLICY_DENIED — a fresh
+#:                      verification attempt ended in that specific
+#:                      outcome; AUTH_ERROR also covers credentials
+#:                      rejected during verification.
+PROVIDER_STATUS_LADDER = (
+    "NOT_CONFIGURED", "CONFIGURED", "AUTHENTICATING", "AUTHENTICATED",
+    "REACHABLE", "HEALTHY", "VERIFIED", "DEGRADED", "UNAVAILABLE",
+    "MISCONFIGURED", "PROVIDER_ERROR", "TIMEOUT", "RATE_LIMITED",
+    "AUTH_ERROR", "POLICY_DENIED",
+)
+
+
+class ProviderStatus(str, Enum):
+    """Standing status of one provider as judged by the A80 gate.
+
+    ``CONFIGURED`` never implies capability: it only records that
+    configuration exists. Only ``VERIFIED`` (with fresh evidence)
+    qualifies a provider for PRODUCTION_READY.
+    """
+
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    CONFIGURED = "CONFIGURED"
+    AUTHENTICATING = "AUTHENTICATING"
+    AUTHENTICATED = "AUTHENTICATED"
+    REACHABLE = "REACHABLE"
+    HEALTHY = "HEALTHY"
+    VERIFIED = "VERIFIED"
+    DEGRADED = "DEGRADED"
+    UNAVAILABLE = "UNAVAILABLE"
+    MISCONFIGURED = "MISCONFIGURED"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+    TIMEOUT = "TIMEOUT"
+    RATE_LIMITED = "RATE_LIMITED"
+    AUTH_ERROR = "AUTH_ERROR"
+    POLICY_DENIED = "POLICY_DENIED"
+
+    @property
+    def verified(self) -> bool:
+        return self is ProviderStatus.VERIFIED
+
+    @property
+    def failure(self) -> bool:
+        """True when this status is an unresolved provider failure."""
+        return self in (
+            ProviderStatus.UNAVAILABLE, ProviderStatus.PROVIDER_ERROR,
+            ProviderStatus.TIMEOUT, ProviderStatus.RATE_LIMITED,
+            ProviderStatus.AUTH_ERROR, ProviderStatus.POLICY_DENIED,
+        )
+
+
 def state_dict(state: ProviderState | str, **extra: Any) -> dict[str, Any]:
     """Serialization helper for provider outcomes."""
     state = state if isinstance(state, ProviderState) \

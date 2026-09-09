@@ -4,153 +4,160 @@ Go requires the full rollout to pass AND at least one real SUCCEEDED
 run recorded in the project — the end-to-end demonstration the master
 build demands. Every requirement is listed with its evidence.
 
-The gate also validates provider state and capability:
+Capability classification is truthful about provider state:
 
-- ``decision`` — ``GO`` / ``NO_GO`` with machine-readable reasons.
-- ``capability_status`` —
-  ``PRODUCTION_READY``: go criteria met AND at least one real
-  external provider is configured and believed available;
-  ``ARCHITECTURE_COMPLETE``: go criteria met but every real external
-  provider is unconfigured (the build is complete; it runs on
-  deterministic simulators until an operator configures providers);
-  never reported as production-ready in that state.
-- ``security_invariants`` — posture and secret evidence taken from the
-  live security gate inside the rollout.
+- ``ARCHITECTURE_COMPLETE`` — every architecture/security/engineering
+  gate passes but no real external provider has been successfully
+  capability-VERIFIED (recently). The build is complete and runs on
+  deterministic simulators/local providers until an operator verifies
+  a real provider.
+- ``PRODUCTION_READY`` — all of the above AND at least one real
+  external provider is configured, its credentials authenticate, its
+  endpoint is reachable, its required capability succeeds in an
+  explicit verification, the machine-readable evidence is recent
+  enough under the documented TTL policy, and there is no unresolved
+  configured-provider failure.
 
-A80 does not ask only "did the tests pass": it demands A71-A79 gates
-plus a real successful run plus explicit real-capability validation,
-and it never reports PRODUCTION_READY while every provider is a
-simulator.
+An environment variable alone is NEVER evidence of capability:
+``OPENAI_API_KEY`` present is CONFIGURED, nothing more. The gate never
+makes network calls; verification is an explicit operator action
+(``forge.final.provider_verification`` / ``POST
+/api/v1/final/gate/verify``) whose results are persisted with
+timestamps and surfaced here.
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any
 
+from forge.final.provider_verification import (
+    KNOWN_PROVIDERS,
+    is_recent,
+    provider_config,
+    verification_ttl,
+)
 from forge.final.rollout import rollout_gate
+from forge.security.provider_states import ProviderStatus
 
 TERMINAL_OK = ("SUCCEEDED",)
 
+#: Providers whose verification is performed against the shared OpenAI
+#: endpoint (auth + connectivity); keyed by the report entry name.
+_OPENAI_BACKED = (
+    "model-openai", "research-web", "vision-openai", "voice-whisper",
+    "voice-tts", "collaboration-openai", "training-openai",
+)
 
-def external_provider_report() -> dict[str, dict[str, Any]]:
-    """Deterministic, env-only report of real external providers.
+def _fabric_base(name: str) -> str:
+    """Map a report entry to the model-fabric provider name it shares
+    a health signal with (best-effort)."""
+    if name == "ollama-local":
+        return "ollama"
+    if name in _OPENAI_BACKED or name == "model-openai":
+        return "openai"
+    return name.split("-", 1)[1] if "-" in name else name
 
-    Every integration that can talk to the outside world is listed
-    with its configuration state. No network probing happens here (the
-    gate must stay deterministic); a provider is AVAILABLE when its
-    configuration is present and complete, MISCONFIGURED when present
-    but incomplete/refused by policy (e.g. SSH without an allowlist),
-    and UNAVAILABLE when not configured at all.
+
+def external_provider_report(
+        records: dict[str, dict[str, Any]] | None = None,
+        fabric_health: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Deterministic report of real external providers.
+
+    Pure configuration + persisted verification records: this function
+    NEVER touches the network (the gate must stay deterministic and
+    offline). Status vocabulary is the ``PROVIDER_STATUS_LADDER``:
+    NOT_CONFIGURED / CONFIGURED / MISCONFIGURED / VERIFIED /
+    AUTH_ERROR / TIMEOUT / RATE_LIMITED / UNAVAILABLE / PROVIDER_ERROR
+    / POLICY_DENIED / DEGRADED.
+
+    ``CONFIGURED`` only means configuration exists; a provider reaches
+    ``VERIFIED`` solely through a fresh, successful explicit
+    capability verification (see ``forge.final.provider_verification``).
     """
-    def env(*names: str) -> str:
-        return next((os.environ.get(name, "").strip()
-                     for name in names if os.environ.get(name, "").strip()),
-                    "")
-
-    openai_key = env("OPENAI_API_KEY")
+    records = records or {}
+    ttl = verification_ttl()
+    now = time.time()
     report: dict[str, dict[str, Any]] = {}
 
-    report["model-openai"] = {
-        "kind": "model",
-        "status": "AVAILABLE" if openai_key else "UNAVAILABLE",
-        "configured": bool(openai_key),
-        "note": "" if openai_key else "set OPENAI_API_KEY for real model calls",
-    }
-    report["ollama-local"] = {
-        "kind": "model",
-        "status": "AVAILABLE" if env("OLLAMA_BASE_URL", "OLLAMA_URL")
-        else "AVAILABLE",  # local-first default endpoint is implicit
-        "configured": True,
-        "note": "Local endpoint; reachability is probed per call.",
-    }
-    report["research-web"] = {
-        "kind": "research",
-        "status": "AVAILABLE" if (openai_key or env("FORGE_SEARXNG_URL"))
-        else "UNAVAILABLE",
-        "configured": bool(openai_key or env("FORGE_SEARXNG_URL")),
-        "note": "providers: openai web search / searxng",
-    }
-    report["vision-openai"] = {
-        "kind": "vision",
-        "status": "AVAILABLE" if openai_key else "UNAVAILABLE",
-        "configured": bool(openai_key),
-        "note": "FORGE_VISION_PROVIDER=openai-vision + OPENAI_API_KEY",
-    }
-    voice_stt = env("FORGE_VOICE_STT_PROVIDER")
-    report["voice-whisper"] = {
-        "kind": "voice",
-        "status": "AVAILABLE" if (voice_stt == "openai-whisper"
-                                  and openai_key) else (
-            "MISCONFIGURED" if voice_stt == "openai-whisper"
-            else "UNAVAILABLE"),
-        "configured": voice_stt == "openai-whisper",
-        "note": "FORGE_VOICE_STT_PROVIDER=openai-whisper + OPENAI_API_KEY",
-    }
-    voice_tts = env("FORGE_VOICE_TTS_PROVIDER")
-    report["voice-tts"] = {
-        "kind": "voice",
-        "status": "AVAILABLE" if (voice_tts == "openai-tts"
-                                  and openai_key) else (
-            "MISCONFIGURED" if voice_tts == "openai-tts"
-            else "UNAVAILABLE"),
-        "configured": voice_tts == "openai-tts",
-        "note": "FORGE_VOICE_TTS_PROVIDER=openai-tts + OPENAI_API_KEY",
-    }
-    colab = env("FORGE_COLAB_URL")
-    ssh_host = env("FORGE_COMPUTE_SSH_HOST", "FORGE_COMPUTE_SSH_USER")
-    modal = env("MODAL_TOKEN_ID")
-    ssh_allowlist = env("FORGE_COMPUTE_SSH_ALLOWLIST")
-    if ssh_host and not ssh_allowlist:
-        report["compute-ssh"] = {
-            "kind": "compute",
-            "status": "MISCONFIGURED",
-            "configured": True,
-            "note": "FORGE_COMPUTE_SSH_ALLOWLIST missing; destination "
-                    "refused (fail-closed)",
+    def verification_block(name: str) -> dict[str, Any] | None:
+        """Decorate one persisted verification record."""
+        record = records.get(name)
+        if record is None:
+            return None
+        fresh = is_recent(record, ttl)
+        verified_at = record.get("verified_at")
+        return {
+            "state": record.get("status", ""),
+            "capability": record.get("capability", ""),
+            "checked_at": record.get("checked_at"),
+            "verified_at": verified_at,
+            "expires_at": (float(verified_at) + ttl)
+            if verified_at else None,
+            "fresh": bool(fresh),
+            "evidence": record.get("evidence") or {},
+            "error": record.get("error", ""),
+            "note": record.get("note", ""),
         }
-    else:
-        report["compute-ssh"] = {
-            "kind": "compute",
-            "status": "AVAILABLE" if ssh_host else "UNAVAILABLE",
-            "configured": bool(ssh_host),
-            "note": "FORGE_COMPUTE_SSH_* configuration",
+
+    for name in KNOWN_PROVIDERS:
+        cfg = provider_config(name)
+        kind = cfg.get("kind", "external")
+        entry: dict[str, Any] = {
+            "kind": kind,
+            "configured": bool(cfg["configured"]),
+            "config_state": cfg["config_state"],
+            "note": cfg["note"],
+            "verification": None,
         }
-    report["compute-colab"] = {
-        "kind": "compute",
-        "status": "AVAILABLE" if colab else "UNAVAILABLE",
-        "configured": bool(colab),
-        "note": "FORGE_COLAB_URL",
-    }
-    report["compute-modal"] = {
-        "kind": "compute",
-        "status": "AVAILABLE" if modal else "UNAVAILABLE",
-        "configured": bool(modal),
-        "note": "MODAL_TOKEN_ID",
-    }
-    deploy_host = env("FORGE_DEPLOY_SSH_HOST")
-    deploy_allowlist = env("FORGE_DEPLOY_SSH_ALLOWLIST")
-    report["deploy-ssh-rsync"] = {
-        "kind": "deployment",
-        "status": "AVAILABLE" if (deploy_host and deploy_allowlist)
-        else ("MISCONFIGURED" if deploy_host and not deploy_allowlist
-              else "UNAVAILABLE"),
-        "configured": bool(deploy_host),
-        "note": "FORGE_DEPLOY_SSH_HOST/PATH + allowlist",
-    }
-    report["collaboration-openai"] = {
-        "kind": "collaboration",
-        "status": "AVAILABLE" if openai_key else "UNAVAILABLE",
-        "configured": bool(openai_key),
-        "note": "OPENAI_API_KEY",
-    }
-    report["training-openai"] = {
-        "kind": "training",
-        "status": "AVAILABLE" if openai_key else "UNAVAILABLE",
-        "configured": bool(openai_key),
-        "note": ("OPENAI_API_KEY + FORGE_TRAINING_EXTERNAL_UPLOAD mode "
-                 "(default deny)"),
-    }
+        verification = verification_block(name)
+        status = cfg["config_state"]  # NOT_CONFIGURED | MISCONFIGURED
+        if cfg["config_state"] == "CONFIGURED":
+            if verification is None:
+                status = ProviderStatus.CONFIGURED.value
+                entry["note"] = (
+                    "configured but NOT capability-verified; run the "
+                    "explicit provider verification "
+                    "(POST /api/v1/final/gate/verify)")
+            elif verification["fresh"]:
+                status = verification["state"]
+            else:
+                # Stale evidence: neither verified nor a fresh failure.
+                status = ProviderStatus.CONFIGURED.value
+                if verification["state"] == ProviderStatus.VERIFIED.value:
+                    entry["note"] = (
+                        "verified earlier but evidence is stale "
+                        "(older than the documented TTL); re-run "
+                        "provider verification")
+                else:
+                    entry["note"] = (
+                        "previous verification attempt is stale "
+                        f"({verification['state']}); re-run provider "
+                        "verification")
+        entry["status"] = status
+        if verification is not None:
+            entry["verification"] = verification
+        report[name] = entry
+
+    # Fabric-health fold-in: router feedback (real failed calls) can
+    # only downgrade a standing status, never upgrade it.
+    for name, entry in report.items():
+        if entry["config_state"] != "CONFIGURED":
+            continue
+        if entry.get("status") not in (
+                ProviderStatus.CONFIGURED.value,
+                ProviderStatus.VERIFIED.value):
+            continue
+        if not fabric_health:
+            continue
+        for provider_name, state in fabric_health.items():
+            if provider_name != _fabric_base(name):
+                continue
+            raw = str(state.get("status", "")).lower()
+            if raw == "unhealthy":
+                entry["status"] = ProviderStatus.DEGRADED.value
+                entry["note"] = entry.get("note", "") + \
+                    "; degraded by fabric router feedback"
     return report
 
 
@@ -178,33 +185,44 @@ def final_gate(plane: Any, session: Any) -> dict[str, Any]:
         "policy_constrained": _check_passed("posture") is not False,
     }
 
-    # Real-provider capability validation (env-derived, deterministic).
-    provider_report = external_provider_report()
-    # Fold in live fabric health when the fabric knows these providers
-    # (router feedback degrades unhealthy models after real failures).
+    # Provider state: env-derived configuration + PERSISTED explicit
+    # verification records. The gate itself never calls the network.
+    try:
+        records = dict(plane.provider_verifications.all())
+    except Exception:
+        records = {}
     try:
         fabric_health = plane.fabric.provider_health()
-        for name in list(provider_report):
-            base = name.split("-", 1)[1] if "-" in name else name
-            for provider_name, state in fabric_health.items():
-                if provider_name != base:
-                    continue
-                status = str(state.get("status", "")).lower()
-                if status == "unhealthy" and \
-                        provider_report[name]["status"] == "AVAILABLE":
-                    provider_report[name]["status"] = "DEGRADED"
-                    provider_report[name]["note"] = (
-                        provider_report[name].get("note", "") +
-                        "; degraded by router feedback")
     except Exception:
-        pass  # gate stays deterministic when the fabric is unavailable
-    real_capable = [
-        name for name, state in provider_report.items()
-        if state.get("status") == "AVAILABLE" and
-        name not in ("ollama-local",)]
+        fabric_health = None
+    provider_report = external_provider_report(
+        records=records, fabric_health=fabric_health)
+
+    external = {name: state for name, state in provider_report.items()
+                if state.get("kind") in ("external", "voice", "vision",
+                                         "compute", "deployment",
+                                         "research", "collaboration",
+                                         "training")
+                and state.get("config_state") == "CONFIGURED"}
+    verified = [name for name, state in external.items()
+                if state.get("status") == ProviderStatus.VERIFIED.value
+                and state.get("verification", {}).get("fresh")]
+    configured_not_verified = [
+        name for name, state in external.items()
+        if state.get("status") in (
+            ProviderStatus.CONFIGURED.value,
+            ProviderStatus.DEGRADED.value)]
+    unresolved = [
+        name for name, state in external.items()
+        if state.get("status") in (
+            ProviderStatus.AUTH_ERROR.value, ProviderStatus.TIMEOUT.value,
+            ProviderStatus.RATE_LIMITED.value,
+            ProviderStatus.UNAVAILABLE.value,
+            ProviderStatus.PROVIDER_ERROR.value,
+            ProviderStatus.POLICY_DENIED.value)]
     misconfigured = [
         name for name, state in provider_report.items()
-        if state.get("status") == "MISCONFIGURED"]
+        if state.get("config_state") == "MISCONFIGURED"]
 
     requirements = {
         "rollout_passed": rollout["passed"],
@@ -212,9 +230,32 @@ def final_gate(plane: Any, session: Any) -> dict[str, Any]:
         "security_invariants": all(security_invariants.values()),
     }
     go = all(requirements.values())
-    decision = "GO" if go else "NO_GO"
 
-    if go and real_capable:
+    ttl = verification_ttl()
+    readiness = {
+        # 1-2. rollout + security gates (the requirements above).
+        "rollout_and_security_gates_pass": bool(go),
+        # 3. at least one real external provider is configured.
+        "real_provider_configured": len(external) > 0,
+        # 4-6. authentication + connectivity + required capability
+        #      succeeded in an explicit verification.
+        "provider_verified": len(verified) > 0,
+        # 7. the result is machine-verifiable (structured evidence).
+        "machine_verifiable_evidence": bool(provider_report),
+        # 8. evidence is recent enough under the documented TTL policy.
+        "evidence_recent": all(
+            state.get("verification", {}).get("fresh", False)
+            for state in (provider_report[name] for name in verified))
+        if verified else False,
+        # 9. no critical security failure (live security gate clean).
+        "no_critical_security_failure": all(security_invariants.values()),
+        # 10. no unresolved provider failure.
+        "no_unresolved_provider_failure": not unresolved
+        and not misconfigured,
+    }
+    production_ready = go and all(readiness.values())
+    decision = "GO" if go else "NO_GO"
+    if production_ready:
         capability_status = "PRODUCTION_READY"
     elif go:
         capability_status = "ARCHITECTURE_COMPLETE"
@@ -225,11 +266,26 @@ def final_gate(plane: Any, session: Any) -> dict[str, Any]:
     for key, passed in requirements.items():
         if not passed:
             reasons.append(f"requirement not met: {key}")
-    if go and not real_capable:
-        reasons.append(
-            "no real external provider is configured; the build runs on "
-            "deterministic simulators (ARCHITECTURE_COMPLETE, not "
-            "PRODUCTION_READY)")
+    if go and not production_ready:
+        for key, passed in readiness.items():
+            if not passed:
+                if key == "provider_verified":
+                    reasons.append(
+                        "no real external provider has been capability-"
+                        "VERIFIED; configured-but-unverified providers: "
+                        + (", ".join(sorted(configured_not_verified))
+                           or "none"))
+                elif key == "real_provider_configured":
+                    reasons.append(
+                        "no real external provider is configured "
+                        "(ARCHITECTURE_COMPLETE, not PRODUCTION_READY)")
+                elif key == "no_unresolved_provider_failure":
+                    reasons.append(
+                        "unresolved configured-provider failure(s): "
+                        + ", ".join(sorted(unresolved)))
+                else:
+                    reasons.append(f"production-ready criterion not met: "
+                                   f"{key}")
     for name in misconfigured:
         reasons.append(
             f"provider {name} is present but misconfigured "
@@ -240,19 +296,36 @@ def final_gate(plane: Any, session: Any) -> dict[str, Any]:
         "decision": decision,
         "capability_status": capability_status,
         "requirements": requirements,
+        "production_readiness": readiness,
         "reasons": reasons,
         "evidence": {
             "rollout": rollout,
             "succeeded_runs": succeeded_runs,
             "security_invariants": security_invariants,
-            "real_providers": real_capable,
-            "misconfigured_providers": misconfigured,
+            "configured_providers": sorted(external),
+            "verified_providers": sorted(verified),
+            "configured_not_verified": sorted(configured_not_verified),
+            "unresolved_provider_failures": sorted(unresolved),
+            "misconfigured_providers": sorted(misconfigured),
             "provider_report": provider_report,
+            "verification_policy": {
+                "ttl_seconds": ttl,
+                "mechanism": "POST /api/v1/final/gate/verify "
+                             "(explicit; the gate itself never calls "
+                             "the network)",
+                "freshness": ("evidence is usable while newer than "
+                              "ttl_seconds; stale evidence falls back "
+                              "to CONFIGURED"),
+            },
         },
         "checked_at": time.time(),
-        "note": ("Go requires every rollout gate to pass, at least one "
-                 "genuinely SUCCEEDED run on record, and live security "
-                 "invariants. PRODUCTION_READY additionally requires a "
-                 "configured real external provider; a GO on simulators "
-                 "alone is classified ARCHITECTURE_COMPLETE."),
+        "note": (
+            "GO requires every rollout gate to pass, at least one "
+            "genuinely SUCCEEDED run on record, and live security "
+            "invariants. PRODUCTION_READY additionally requires an "
+            "explicit, recent, successful capability verification of "
+            "a configured real external provider — configuration "
+            "alone (e.g. an OPENAI_API_KEY environment variable) is "
+            "CONFIGURED, never VERIFIED. A GO without any verified "
+            "provider is classified ARCHITECTURE_COMPLETE."),
     }

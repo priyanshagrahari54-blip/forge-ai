@@ -327,5 +327,15 @@ class FinalBenchmarkRequest(BaseModel):
     min_passed: int = Field(default=1, ge=0, le=8)
 
 
+class FinalGateVerifyRequest(BaseModel):
+    """Explicit A80 provider-capability verification request.
+
+    ``provider`` empty means: verify every currently configured
+    provider. Must name one of the known providers otherwise.
+    """
+
+    provider: str = Field(default="", max_length=64)
+
+
 class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)

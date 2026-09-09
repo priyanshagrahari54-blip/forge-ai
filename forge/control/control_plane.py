@@ -580,6 +580,11 @@ class ControlPlane:
         self.runs = RunStore(self._db)
         self.orchestrations = OrchestrationStore(self._db)
         self._init_checkpoints_table()
+        # A80 provider-capability verification records (explicit, TTL-
+        # bounded; the gate reads these and never calls the network).
+        from forge.final.provider_verification import \
+            ProviderVerificationStore
+        self.provider_verifications = ProviderVerificationStore(self._db)
         sink = (Path(self.config.audit_sink) if self.config.audit_sink
                 else Path(self.config.db_path).parent / "audit.jsonl")
         sink.parent.mkdir(parents=True, exist_ok=True)
@@ -3649,6 +3654,38 @@ class ControlPlane:
                     reason=f"go={report['go']}")
         return report
 
+    def final_gate_verify(self, session: Session, provider: str = ""
+                          ) -> dict[str, Any]:
+        """Explicit provider capability verification (A80).
+
+        Performs real, bounded capability checks against the requested
+        provider(s) — or every configured provider when ``provider``
+        is empty — persists the machine-readable results, and returns
+        the refreshed final gate. This is the ONLY path that performs
+        provider network calls for the gate; the gate itself stays
+        deterministic and offline.
+        """
+        from forge.final.gate import final_gate as go_no_go
+        from forge.final.provider_verification import KNOWN_PROVIDERS, \
+            run_verifications
+
+        names = None
+        if provider:
+            if provider not in KNOWN_PROVIDERS:
+                raise InvalidRequest(f"Unknown provider: {provider!r}")
+            names = [provider]
+        results = run_verifications(self.provider_verifications, names)
+        self._audit(
+            session.actor, "final", "gate_verify",
+            any(record.get("status") == "VERIFIED"
+                for record in results.values()),
+            task_id=session.active_task or session.id,
+            reason=("verified=" + ",".join(
+                sorted(name for name, record in results.items()
+                       if record.get("status") == "VERIFIED")) or
+                "no provider verified")
+        )
+        return go_no_go(self, session)
 
     # -- final security gate (A73) --------------------------------------------------------------------
 
