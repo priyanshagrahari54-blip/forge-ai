@@ -177,6 +177,63 @@ def ip_blocked_reason(ip_text: str) -> str | None:
     return None
 
 
+#: Maps the classification-table reason strings onto machine-readable
+#: destination classes (single vocabulary shared by every policy that
+#: inspects resolved addresses — research fetch, SSH destinations,
+#: operator proxy endpoints).
+_BLOCK_REASON_TO_CLASS = {
+    "this host": "this-host",
+    "private network": "private",
+    "carrier-grade NAT": "cg-nat",
+    "loopback": "loopback",
+    "link-local / cloud metadata": "link-local",
+    "IETF protocol assignments": "reserved",
+    "documentation range": "documentation",
+    "benchmarking range": "benchmark",
+    "multicast": "multicast",
+    "reserved": "reserved",
+    "unspecified": "unspecified",
+    "IPv4-mapped": "ipv4-mapped",      # reclassified as the inner address
+    "IPv4-translated": "ipv4-translated",  # reclassified as the inner address
+    "discard-only": "reserved",
+    "unique local": "private",
+    "link-local": "link-local",
+}
+
+#: The cloud-metadata endpoint is refused *even under an operator
+#: private-network exemption*: no legitimate SSH/execute/proxy target
+#: is ever the host's own metadata service.
+_CLOUD_METADATA_V4 = ipaddress.ip_network("169.254.169.254/32")
+
+
+def ip_class(ip_text: str) -> str:
+    """Classify one IP literal (no DNS) for destination policy.
+
+    Returns a machine-readable class: ``public``, ``loopback``,
+    ``private``, ``link-local``, ``cloud-metadata``, ``cg-nat``,
+    ``this-host``, ``documentation``, ``benchmark``, ``multicast``,
+    ``reserved``, ``unspecified``, or ``unparseable``. IPv4-mapped and
+    6to4 IPv6 addresses are reclassified as their embedded IPv4
+    address; the classifier shares its ranges with
+    :func:`ip_blocked_reason`, so policy layers cannot drift apart.
+    """
+    try:
+        address = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return "unparseable"
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return ip_class(str(address.ipv4_mapped))
+    if isinstance(address, ipaddress.IPv6Address) and address.sixtofour:
+        return ip_class(str(ipaddress.IPv4Address(int(address.sixtofour))))
+    if address.version == 4 and address in _CLOUD_METADATA_V4:
+        return "cloud-metadata"
+    for network, reason in _BLOCKED_IPV6 if address.version == 6 \
+            else _BLOCKED_IPV4:
+        if address in network:
+            return _BLOCK_REASON_TO_CLASS.get(reason, "reserved")
+    return "public"
+
+
 def hostname_blocked_reason(hostname: str) -> str | None:
     """Return the policy reason for a literal hostname, else ``None``."""
     host = (hostname or "").strip().lower().rstrip(".")

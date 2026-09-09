@@ -28,6 +28,7 @@ import socket
 import time
 from typing import Any
 
+from forge.compute.remote import RemoteComputeError
 from forge.security.provider_states import (
     PROVIDER_STATUS_LADDER,
     ProviderState,
@@ -304,7 +305,7 @@ def _ssh_verify() -> dict[str, Any]:
     """
     try:
         from forge.compute.remote import _execute_ssh_secure, \
-            parse_ssh_config
+            parse_ssh_config, ssh_destination_policy
     except Exception as exc:  # pragma: no cover — import guard
         return {"state": "PROVIDER_ERROR",
                 "error": f"SSH transport unavailable: {exc}",
@@ -315,6 +316,16 @@ def _ssh_verify() -> dict[str, Any]:
         return {"state": "MISCONFIGURED",
                 "error": f"SSH configuration refused: {exc}",
                 "evidence": {"provider": "ssh-remote"}}
+    try:
+        # Destination-IP policy (resolved-address classification) applies
+        # to verification too: an allowlisted name that resolves into a
+        # private/metadata range is refused before the probe connects.
+        ssh_destination_policy(config)
+    except RemoteComputeError as exc:
+        return {"state": "POLICY_DENIED",
+                "error": str(exc),
+                "evidence": {"provider": "ssh-remote",
+                             "target": str(getattr(config, "target", ""))}}
     outcome = _execute_ssh_secure(
         "import sys; sys.stdout.write('forge-verify-ok')",
         config, _SSH_TIMEOUT)

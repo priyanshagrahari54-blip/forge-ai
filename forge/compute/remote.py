@@ -3,38 +3,60 @@
 Provides remote Python execution via:
 
 - **local** — default, real subprocess (see ``forge.compute.engine``)
-- **Google Colab** — kernel proxy (``FORGE_COLAB_URL``)
+- **Colab-compatible kernel proxy** (``FORGE_COLAB_URL``) — an
+  operator-provided kernel-proxy endpoint speaking the Colab JSON
+  protocol (``POST /execute``). This is NOT a bundled Google Colab
+  integration and the code makes no Google-account claim; a proxy URL
+  configured by the operator is expected.
 - **SSH** — strict, fail-closed remote host (``FORGE_COMPUTE_SSH_*``)
 - **Modal** — serverless sandbox (``MODAL_TOKEN_ID`` + secret)
 
-Security invariants for the SSH backend:
+Security invariants for the remote backends:
 
 - User code NEVER appears in a command line and never goes through a
-  shell. It is delivered exclusively over stdin to a fixed remote
-  command: ``python3 -I -`` (isolated mode, program read from stdin).
-- Host-key verification is mandatory: ``StrictHostKeyChecking=yes``
-  against the configured known_hosts file; password prompts are
-  disabled (``BatchMode=yes``). There is no
-  ``StrictHostKeyChecking=no`` anywhere.
+  shell. It is delivered exclusively over stdin (SSH) or a request
+  body (kernel proxy) to a fixed remote command: ``python3 -I -``
+  (isolated mode, program read from stdin). No ``shell=True``
+  anywhere.
+- Host-key verification is mandatory for SSH:
+  ``StrictHostKeyChecking=yes`` against the configured known_hosts
+  file; password prompts are disabled (``BatchMode=yes``). There is
+  no ``StrictHostKeyChecking=no`` anywhere.
 - The destination must appear in an explicit allowlist
   (``FORGE_COMPUTE_SSH_ALLOWLIST``) — fail-closed when absent.
+- Destination IP policy: before any connection, the configured
+  hostname is resolved and **every** returned address is classified
+  (public / loopback / private / link-local / cloud-metadata /
+  multicast / reserved / …). If any address is non-public the
+  destination is refused, unless the operator has explicitly opted
+  into a private-network destination (``FORGE_COMPUTE_SSH_ALLOW_PRIVATE=1``
+  / ``FORGE_COLAB_ALLOW_LOCALHOST=1`` / ``FORGE_COLAB_ALLOW_PRIVATE=1``
+  — see below). Unresolvable/unknown hostnames fail closed. The
+  cloud-metadata endpoint (``169.254.169.254``) is always refused.
+- Every remote URL (including ``FORGE_COLAB_URL``) goes through
+  parse -> normalize -> policy (scheme/credentials/port/name) ->
+  DNS/IP safety -> connect, with no bypasses.
 - User, host, and port are explicit; the hostname matches a strict
   pattern; connection, execution, and output are bounded; the whole
   remote process group is cancellable via timeout.
 - Execution is policy-gated by the caller (control plane
-  ``compute_execute`` -> TERMINAL policy), audited, and labeled with
-  the backend name and honest status.
+  ``compute_execute`` -> TERMINAL policy, A33 approval flow), audited,
+  and labeled with the backend name and honest status.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+
+from forge.security.ssrf import ip_class
 
 MAX_CODE = 6000
 MAX_OUTPUT = 4000
@@ -51,6 +73,230 @@ _KNOWN_HOSTS_RE = re.compile(r"^[A-Za-z0-9_./~-]{1,500}$")
 
 class RemoteComputeError(RuntimeError):
     """Configuration/transport failure for a remote backend."""
+
+
+# ---------------------------------------------------------------------------
+# Destination-IP policy (A48 security hardening)
+#
+# Every backend hostname is resolved and *every* returned address is
+# classified before any connection may be attempted. Non-public
+# destinations are refused unless the operator has explicitly opted
+# in (these env variables are operator-controlled; a hostname in the
+# SSH allowlist alone never bypasses this policy):
+#
+#   FORGE_COMPUTE_SSH_ALLOW_PRIVATE=1   SSH destination may be any
+#                                       non-public class (except the
+#                                       never-allowed set below).
+#   FORGE_COLAB_ALLOW_LOCALHOST=1       kernel proxy may point at a
+#                                       loopback/link-local endpoint.
+#   FORGE_COLAB_ALLOW_PRIVATE=1         kernel proxy may point at a
+#                                       private-network endpoint.
+#
+# Cloud-metadata endpoints (169.254.169.254), multicast,
+# documentation/benchmark ranges and other never-routes are refused
+# even with an opt-in flag.
+# ---------------------------------------------------------------------------
+
+_SSH_PRIVATE_EXCEPTION_ENV = "FORGE_COMPUTE_SSH_ALLOW_PRIVATE"
+_COLAB_LOCAL_EXCEPTION_ENV = "FORGE_COLAB_ALLOW_LOCALHOST"
+_COLAB_PRIVATE_EXCEPTION_ENV = "FORGE_COLAB_ALLOW_PRIVATE"
+
+#: Classes tolerated by the "local endpoint" opt-in.
+_LOCAL_CLASSES = frozenset({"loopback", "link-local", "this-host",
+                            "unspecified"})
+#: Classes tolerated by the "private network" opt-in.
+_PRIVATE_CLASSES = frozenset({"private", "cg-nat"})
+#: Classes that are never permitted destinations, even with opt-ins.
+_NEVER_DESTINATION_CLASSES = frozenset({
+    "cloud-metadata", "multicast", "documentation", "benchmark",
+    "reserved", "unparseable", "ipv4-mapped", "ipv4-translated"})
+
+
+def _host_resolver(host: str) -> list[tuple[Any, ...]]:
+    """Resolve helper used by the destination policy (patchable in tests).
+
+    Returns the raw ``socket.getaddrinfo`` result list.
+    """
+    return socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+
+
+def classify_destination(host: str) -> tuple[list[dict[str, str]], str]:
+    """Resolve ``host`` and classify EVERY returned address.
+
+    Returns ``(entries, error)`` where each entry is
+    ``{"address": ip_text, "class": ip_class}`` (sorted, de-duplicated)
+    and ``error`` is ``""`` on success. IP literals are classified
+    directly (no DNS round trip, offline-deterministic). Fail-closed:
+    unknown/unresolvable hostnames yield an error message, never an
+    empty "allowed" list.
+    """
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return [], "empty hostname"
+    try:
+        address = ipaddress.ip_address(host)
+        ip_texts = [str(address)]
+    except ValueError:
+        try:
+            infos = _host_resolver(host)
+        except (socket.gaierror, OSError) as exc:
+            return [], f"could not be resolved ({exc})"
+        ip_texts = sorted({info[4][0] for info in infos})
+        if not ip_texts:
+            return [], "DNS returned no addresses"
+    entries = [{"address": ip_text, "class": ip_class(ip_text)}
+               for ip_text in ip_texts]
+    return entries, ""
+
+
+def _exception_env_set(name: str) -> bool:
+    return os.environ.get(name, "").strip() == "1"
+
+
+def _refusal_message(purpose: str, host: str,
+                     *, non_public: list[dict[str, str]],
+                     opt_in_allowed: bool,
+                     never: list[dict[str, str]],
+                     hint: str) -> str:
+    names = ", ".join(
+        f"{entry['address']} ({entry['class']})" for entry in non_public)
+    msg = (f"{purpose} destination {host!r} resolves to non-public "
+           f"address(es): {names}; refused by destination-IP policy.")
+    if never:
+        never_names = ", ".join(
+            f"{entry['address']} ({entry['class']})" for entry in never)
+        msg += (f" {never_names} is in the never-routed set and is refused "
+                "even with an operator exception.")
+    elif not opt_in_allowed:
+        msg += f" {hint}"
+    return msg
+
+
+def ssh_destination_policy(config: "SSHConfig") -> list[dict[str, str]]:
+    """Destination-IP policy gate for the SSH backend.
+
+    Resolves ``config.host`` and classifies every address. Raises
+    :class:`RemoteComputeError` when the host is unresolvable (fail
+    closed) or when any resolved address is non-public without the
+    explicit operator opt-in ``FORGE_COMPUTE_SSH_ALLOW_PRIVATE=1``.
+    Never-routed classes (cloud metadata, multicast, documentation,
+    benchmark, reserved) are refused even with the opt-in. Returns the
+    classified entries on success (public-only or opt-in'd).
+    """
+    entries, error = classify_destination(config.host)
+    if error:
+        raise RemoteComputeError(
+            f"SSH destination {config.host!r} {error}; refusing to "
+            "connect (fail-closed: unknown/unresolvable destinations "
+            "are never allowed)")
+    non_public = [e for e in entries if e["class"] != "public"]
+    if not non_public:
+        return entries
+    never = [e for e in non_public
+             if e["class"] in _NEVER_DESTINATION_CLASSES]
+    opt_in = _exception_env_set(_SSH_PRIVATE_EXCEPTION_ENV)
+    if opt_in and not never:
+        return entries
+    raise RemoteComputeError(_refusal_message(
+        "SSH", config.host, non_public=non_public,
+        opt_in_allowed=opt_in, never=never,
+        hint=(f"if this is an explicit operator-controlled "
+              f"private-network destination, set "
+              f"{_SSH_PRIVATE_EXCEPTION_ENV}=1 (the host must still "
+              "be on FORGE_COMPUTE_SSH_ALLOWLIST)")))
+
+
+def colab_url_policy(url: str) -> str:
+    """parse -> normalize -> policy -> DNS/IP safety for a proxy URL.
+
+    Returns the normalized URL when the endpoint passes every check;
+    raises :class:`RemoteComputeError` otherwise (before any byte is
+    sent). Port and resolved-address policies are described in the
+    module header; this function is pure policy and never connects.
+    """
+    from urllib.parse import urlparse
+
+    url = (url or "").strip()
+    if not url:
+        raise RemoteComputeError("FORGE_COLAB_URL is empty")
+    if len(url) > 2048:
+        raise RemoteComputeError("FORGE_COLAB_URL is too long")
+    if "://" not in url:
+        url = f"https://{url}"
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise RemoteComputeError(
+            f"FORGE_COLAB_URL could not be parsed: {exc}") from exc
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if scheme not in ("https", "http"):
+        raise RemoteComputeError(
+            "FORGE_COLAB_URL must be https:// (or http:// with "
+            "FORGE_COLAB_ALLOW_HTTP=1)")
+    if scheme == "http" and not _exception_env_set("FORGE_COLAB_ALLOW_HTTP"):
+        raise RemoteComputeError(
+            "FORGE_COLAB_URL uses http://; set FORGE_COLAB_ALLOW_HTTP=1 "
+            "to permit it explicitly")
+    if parsed.username is not None or parsed.password is not None:
+        raise RemoteComputeError(
+            "FORGE_COLAB_URL must not embed credentials")
+    if not host:
+        raise RemoteComputeError("FORGE_COLAB_URL has no hostname")
+    # Fast literal-name policy (also caught by resolution below, kept
+    # for deterministic offline refusal of obvious local endpoints).
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(
+            (".local", ".internal")):
+        if not _exception_env_set(_COLAB_LOCAL_EXCEPTION_ENV):
+            raise RemoteComputeError(
+                "FORGE_COLAB_URL points at a local endpoint; set "
+                "FORGE_COLAB_ALLOW_LOCALHOST=1 to permit it explicitly")
+    # Port policy: default ports only, unless the operator has opted
+    # into a non-standard deployment (local or private endpoint flags).
+    default_port = 443 if scheme == "https" else 80
+    if parsed.port is not None and parsed.port != default_port:
+        if not (_exception_env_set(_COLAB_LOCAL_EXCEPTION_ENV)
+                or _exception_env_set(_COLAB_PRIVATE_EXCEPTION_ENV)):
+            raise RemoteComputeError(
+                f"FORGE_COLAB_URL uses non-default port {parsed.port}; "
+                "set FORGE_COLAB_ALLOW_LOCALHOST=1 or "
+                "FORGE_COLAB_ALLOW_PRIVATE=1 to permit it explicitly")
+        if not (0 < parsed.port < 65536):
+            raise RemoteComputeError(
+                f"FORGE_COLAB_URL has an invalid port {parsed.port}")
+    # Resolved-IP policy: every returned address must be public unless
+    # the matching operator opt-in is set.
+    entries, error = classify_destination(host)
+    if error:
+        raise RemoteComputeError(
+            f"FORGE_COLAB_URL host {host!r} {error}; refusing "
+            "(fail-closed: unresolvable endpoints are never allowed)")
+    non_public = [e for e in entries if e["class"] != "public"]
+    if non_public:
+        local = [e for e in non_public if e["class"] in _LOCAL_CLASSES]
+        private = [e for e in non_public
+                   if e["class"] in _PRIVATE_CLASSES]
+        never = [e for e in non_public
+                 if e["class"] in _NEVER_DESTINATION_CLASSES]
+        allow_local = _exception_env_set(_COLAB_LOCAL_EXCEPTION_ENV)
+        allow_private = _exception_env_set(_COLAB_PRIVATE_EXCEPTION_ENV)
+        permitted = (not never
+                     and (not local or allow_local)
+                     and (not private or allow_private))
+        if not permitted:
+            hints = []
+            if local and not allow_local:
+                hints.append(f"set {_COLAB_LOCAL_EXCEPTION_ENV}=1 for "
+                             "loopback/link-local endpoints")
+            if private and not allow_private:
+                hints.append(f"set {_COLAB_PRIVATE_EXCEPTION_ENV}=1 for "
+                             "private-network endpoints")
+            raise RemoteComputeError(_refusal_message(
+                "FORGE_COLAB_URL", host, non_public=non_public,
+                opt_in_allowed=bool(allow_local or allow_private),
+                never=never,
+                hint="; ".join(hints) + "."))
+    return url.rstrip("/")
 
 
 @dataclass(frozen=True)
@@ -394,6 +640,15 @@ class RemoteComputeBackend:
                                    "FORGE_COMPUTE_SSH_ALLOWLIST"),
                         "output_truncated": False, "elapsed_ms": 0.0,
                         "backend": "ssh-remote", "timed_out": False}
+            # Destination-IP policy: resolve + classify every address
+            # before the transport may start (fail-closed).
+            try:
+                ssh_destination_policy(self._ssh_config)
+            except RemoteComputeError as exc:
+                return {"status": "refused",
+                        "output": str(exc),
+                        "output_truncated": False, "elapsed_ms": 0.0,
+                        "backend": "ssh-remote", "timed_out": False}
             return _execute_ssh_secure(code, self._ssh_config, timeout)
         if self._modal_token:
             return self._execute_modal(code, timeout)
@@ -405,41 +660,16 @@ class RemoteComputeBackend:
                 "output_truncated": False, "elapsed_ms": 0.0,
                 "backend": "unavailable", "timed_out": False}
 
-    # -- Google Colab ---------------------------------------------------------
+    # -- Kernel proxy (Colab-style JSON API) --------------------------------
 
     def _colab_endpoint(self) -> str:
-        """Normalize + validate the configured Colab kernel proxy URL."""
-        from urllib.parse import urlparse
-        url = self._colab_url
-        if "://" not in url:
-            url = f"https://{url}"
-        parsed = urlparse(url)
-        scheme = (parsed.scheme or "").lower()
-        host = (parsed.hostname or "").lower()
-        if scheme not in ("https", "http"):
-            raise RemoteComputeError(
-                "FORGE_COLAB_URL must be https:// (or http:// with "
-                "FORGE_COLAB_ALLOW_HTTP=1)")
-        if scheme == "http" and \
-                os.environ.get("FORGE_COLAB_ALLOW_HTTP", "") != "1":
-            raise RemoteComputeError(
-                "FORGE_COLAB_URL uses http://; set "
-                "FORGE_COLAB_ALLOW_HTTP=1 to permit it explicitly")
-        if parsed.username is not None or parsed.password is not None:
-            raise RemoteComputeError(
-                "FORGE_COLAB_URL must not embed credentials")
-        if not host:
-            raise RemoteComputeError("FORGE_COLAB_URL has no hostname")
-        # The Colab connect flow legitimately proxies through a localhost
-        # kernel endpoint; localhost requires an explicit opt-in because
-        # it routes straight into this machine.
-        if host in ("localhost", "127.0.0.1", "::1") or host.endswith(
-                (".local", ".internal")):
-            if os.environ.get("FORGE_COLAB_ALLOW_LOCALHOST", "") != "1":
-                raise RemoteComputeError(
-                    "FORGE_COLAB_URL points at a local endpoint; set "
-                    "FORGE_COLAB_ALLOW_LOCALHOST=1 to permit it explicitly")
-        return url.rstrip("/")
+        """Normalize + validate the configured kernel-proxy URL.
+
+        Delegates to :func:`colab_url_policy` (parse -> normalize ->
+        policy -> DNS/IP safety), so the same enforcement protects the
+        backend and any other consumer of ``FORGE_COLAB_URL``.
+        """
+        return colab_url_policy(self._colab_url)
 
     def _execute_colab(self, code: str, timeout: float) -> dict[str, Any]:
         """Execute code via a Colab notebook kernel proxy (SSRF-safe)."""
