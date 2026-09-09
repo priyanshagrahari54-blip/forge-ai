@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.security.review import ReviewVerdict
+from forge.security.review import ReviewDecision, ReviewVerdict
 
 
 @dataclass

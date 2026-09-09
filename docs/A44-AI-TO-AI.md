@@ -6,10 +6,15 @@ with the external contribution always marked and always untrusted.
 ## What A44 adds
 
 - `forge/collaboration/connectors.py` — `ExternalAIConnector`
-  protocol, `SimulatedExternalAIConnector` (the only connector in
-  A44: deterministic, bounded, no network, labeled
-  `simulation: true`), fail-closed `build_connector`, and a bounded
+  protocol, `SimulatedExternalAIConnector` (deterministic, bounded,
+  no network, labeled `simulation: true`), `OpenAIConnector` (real
+  OpenAI API calls, requires `OPENAI_API_KEY`, labeled
+  `simulation: false`), fail-closed `build_connector`, and a bounded
   per-session `CollaborationSession` log.
+- **Real OpenAI connector** — `forge/collaboration/openai_connector.py`:
+  real ChatCompletion calls via the OpenAI API. Requires
+  `OPENAI_API_KEY`; returns `available()=False` when unset. Response
+  is bounded to 6000 chars, latency measured, labeled `simulation=false`.
 - **Every external response is marked**: `source="external_ai"`,
   `untrusted=true`, explicit connector/model labels, honest
   simulation flag, bounded content. The module executes nothing,
@@ -25,12 +30,21 @@ with the external contribution always marked and always untrusted.
   (capabilities, consult rate-limited, history, approvals,
   approve/deny); audited under the `ai-to-ai` category.
 
+## Configuration
+
+| Variable | Effect |
+|---|---|
+| `OPENAI_API_KEY` | Enables the real `openai` connector |
+| `FORGE_OPENAI_MODEL` | Model for OpenAI connector (default: `gpt-4o-mini`) |
+| `OPENAI_BASE_URL` | Custom API base URL (default: OpenAI) |
+
 ## Security notes
 
 - External text is untrusted input by construction — the same status
   as model output and image content. It can never authorize actions.
-- No real network exists in this build; the simulated connector says
-  so in every response and in `/capabilities`.
+- Real connector responses carry `simulation=false` and the real
+  model name; simulated responses carry `simulation=true`.
+- API keys are read from environment variables, never stored.
 
 ## Testing
 

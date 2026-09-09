@@ -115,7 +115,8 @@ def _reverify(plane: Any, session: Any, prior: Any) -> dict[str, Any] | None:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"], cwd=str(root),
-            capture_output=True, text=True, timeout=120)
+            capture_output=True, text=True, timeout=120,
+            check=False)
     except subprocess.TimeoutExpired:
         return {"status": "FAILED", "task_id": prior.id,
                 "error": "re-verification timed out after 120s"}

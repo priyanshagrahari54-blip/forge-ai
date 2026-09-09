@@ -99,7 +99,7 @@ def test_plane_compute_gated_and_audited(tmp_path):
         assert "status=succeeded" in audited[-1].reason
         status = plane.compute_status(session)
         assert status["backend"] == "local-python"
-        assert "remote or GPU" in status["note"]
+        assert "Real local Python execution" in status["note"]
         assert plane.compute_history(session)["cells"]
 
 

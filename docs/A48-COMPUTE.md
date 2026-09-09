@@ -1,8 +1,9 @@
 # A48 — Compute / Colab
 
-Managed local computation: code cells that really execute, with
-honest resource accounting and the same permission posture as every
-other controlled action.
+Managed computation: code cells that really execute, with honest
+resource accounting and the same permission posture as every other
+controlled action. Supports both local Python execution and remote
+backends (Google Colab, SSH, Modal) when configured.
 
 ## What A48 adds
 
@@ -13,8 +14,16 @@ other controlled action.
   4000 chars with an explicit `output_truncated` flag. Quotas
   (cells + total seconds + per-cell timeout) are enforced **before**
   execution and refusals leave no side effects. Backend is labeled
-  `local-python` and the status payload states that no remote/GPU
-  backend exists in this build.
+  `local-python` by default.
+- `forge/compute/remote.py` — **Real remote compute backends**:
+  - **Google Colab** (`FORGE_COLAB_URL`): Execute code on a Colab
+    notebook kernel proxy endpoint, with GPU access.
+  - **SSH Remote** (`FORGE_COMPUTE_SSH_HOST`): Execute code on a
+    remote server via SSH.
+  - **Modal** (`MODAL_TOKEN_ID`): Execute code on Modal's
+    serverless GPU infrastructure.
+  - All remote backends use the same permission gate, quotas, and
+    bounded output. Results carry the real backend name.
 - Control plane `compute_execute()` — gated by TERMINAL/execute
   policy exactly like terminal commands (ALLOW rules must pin the
   concrete executable and exact args — the existing A33 hardening is
@@ -29,7 +38,13 @@ other controlled action.
 - `ControlConfig` gains `compute_max_cells` (20),
   `compute_max_seconds` (300), `compute_cell_timeout` (30).
 
-## Security notes
+## Configuration
+
+| Variable | Effect |
+|---|---|
+| `FORGE_COLAB_URL` | Google Colab kernel proxy URL |
+| `FORGE_COMPUTE_SSH_HOST` | SSH host for remote execution (e.g., `user@host`) |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Modal serverless credentials |
 
 - Compute inherits the terminal permission model; nothing executes
   without a policy decision, and approvals bind to the session/task.

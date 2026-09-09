@@ -135,12 +135,29 @@ credentials, CSP-clean, navigation-only palette ("Go to Voice").
 
 A36 result: **53 new tests; full suite 1075 passed, 2 skipped.**
 
+## Real Providers
+
+A36 now includes real STT/TTS providers alongside the simulated ones:
+
+| Provider | Location | Requirements |
+|---|---|---|
+| OpenAI Whisper (STT) | `forge/voice/openai_stt.py` | `OPENAI_API_KEY` |
+| OpenAI TTS | `forge/voice/openai_tts.py` | `OPENAI_API_KEY` |
+
+Configure via environment variables:
+- `FORGE_VOICE_STT_PROVIDER=openai-whisper` — real speech-to-text
+- `FORGE_VOICE_TTS_PROVIDER=openai-tts` — real text-to-speech
+- `FORGE_WHISPER_MODEL` — Whisper model (default: `whisper-1`)
+- `FORGE_TTS_MODEL` — TTS model (default: `tts-1`)
+- `FORGE_TTS_VOICE` — TTS voice (default: `alloy`)
+
+Real providers are labeled `simulation=false` and use the real API.
+The same security model applies: voice remains a permission-gated
+request source, and all existing pipeline tests continue to pass.
+
 ## What A36 deliberately does not do
 
-Real speech recognition or synthesis. The simulated transport is an
-honest, deterministic stand-in for the full audio loop; real STT/TTS
-providers (Ollama-local, API-hosted) plug into the same protocols as
-documented plugins. Browser microphone capture is not part of the A36
-cockpit: the browser records non-WAV container formats and converting
-them needs a real recognizer — the view says so and offers the full
-simulated audio round trip instead.
+Browser microphone capture is not part of the A36 cockpit: the
+browser records non-WAV container formats and converting them needs
+a real recognizer — the view says so and offers the full simulated
+audio round trip instead.

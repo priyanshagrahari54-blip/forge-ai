@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forge.models.fabric import ModelFabric
 
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.intelligence.agent_context import AgentContext, AgentContextBuilder

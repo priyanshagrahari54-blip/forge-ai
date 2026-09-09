@@ -44,7 +44,9 @@ class MetricsRegistry:
             ordered = sorted(samples)
             count = len(ordered)
 
-            def percentile(ratio: float) -> float:
+            def percentile(ratio: float,
+                            ordered=ordered,
+                            count=count) -> float:
                 if not ordered:
                     return 0.0
                 index = min(count - 1, int(ratio * count))

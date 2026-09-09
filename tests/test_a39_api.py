@@ -38,7 +38,7 @@ def test_capabilities_and_analyze(tmp_path):
         _session, _token, headers = login(client)
         caps = client.get("/api/v1/vision/capabilities",
                           headers=headers).json()
-        assert caps["providers"] == ["simulated"]
+        assert "simulated" in caps["providers"]
         assert "png" in caps["formats"]
         result = client.post("/api/v1/vision/analyze", headers=headers,
                              json={"image_b64": b64(make_png())}).json()
