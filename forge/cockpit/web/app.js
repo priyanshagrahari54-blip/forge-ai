@@ -2204,6 +2204,29 @@ function renderPaletteList() {
   });
 }
 
+async function syncServerPalette() {
+  // The backend palette is canonical; merge its view entries when the
+  // client knows the target route. Never adds execution power: targets
+  // are hash routes only.
+  try {
+    const data = await api("/api/v1/commands/palette");
+    const known = new Set(PALETTE_COMMANDS.map(([label]) => label));
+    for (const entry of (data.entries || [])) {
+      if (entry.kind !== "view") continue;
+      const target = entry.target;
+      if (!target || !ROUTES[target] || target === "task") continue;
+      const label = entry.label || ("Go to " + target);
+      if (!known.has(label)) {
+        known.add(label);
+        PALETTE_COMMANDS.push(
+          [label, "view", () => { window.location.hash = "#/" + target; }]);
+      }
+    }
+  } catch (_err) {
+    /* offline fallback: the local palette stays available */
+  }
+}
+
 function openPalette() {
   state.palette.open = true;
   state.palette.selected = 0;
@@ -2212,6 +2235,9 @@ function openPalette() {
   input.value = "";
   renderPaletteList();
   input.focus();
+  syncServerPalette().then(() => {
+    if (state.palette.open) renderPaletteList();
+  });
 }
 
 function closePalette() {

@@ -932,3 +932,13 @@ framing controls by default (add at the edge for production).
   smuggle execution.
 - 5 new tests. Full suite: **1358 passed, 2 skipped** (A65 baseline:
   1353/2).
+
+## A67 — Command Palette
+
+- `forge/cockpit_palette.py`: canonical palette catalog (22 views
+  + safe quick actions; hash-route targets only, self-validating).
+  API GET /api/v1/commands/palette; cockpit palette syncs server
+  entries on open with offline fallback.
+- 5 new tests (incl. cross-check that server targets exist in the
+  client ROUTES). Full suite: **1363 passed, 2 skipped** (A66
+  baseline: 1358/2).

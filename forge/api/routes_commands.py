@@ -36,6 +36,12 @@ async def execute_command(body: CommandRequest,
         expected_version=body.expected_version)
 
 
+@router.get("/commands/palette")
+async def command_palette(current: Authed = Depends(authed_mutation),
+                          plane: ControlPlane = Depends(get_plane)):
+    return plane.command_palette(current.session)
+
+
 @router.post("/interpret")
 async def interpret(body: InterpretRequest,
                     current: Authed = Depends(authed),

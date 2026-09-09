@@ -538,6 +538,15 @@ install never loads foreign code. API at `/api/v1/plugins*`.
 See `docs/A66-PLUGIN-SDK.md`. Full suite after A66: 1358 passed, 2
 skipped.
 
+## Command Palette (A67)
+
+A server-canonical command palette (views + safe quick actions,
+hash-route targets only) that the cockpit's Ctrl+K / Cmd+K palette
+syncs on open. API at `/api/v1/commands/palette`.
+
+See `docs/A67-COMMAND-PALETTE.md`. Full suite after A67: 1363
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

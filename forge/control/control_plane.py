@@ -3389,6 +3389,18 @@ class ControlPlane:
 
 
 
+
+    # -- command palette (A67) ------------------------------------------------------------------------
+
+    def command_palette(self, session: Session) -> dict[str, Any]:
+        """Canonical cockpit palette: views and safe quick actions."""
+        from forge.cockpit_palette import palette_payload, validate_entries
+
+        payload = palette_payload()
+        validate_entries(payload["entries"])
+        return payload
+
+
     # -- plugin SDK (A66) ----------------------------------------------------------------------------
 
     def _plugin_registry(self, session: Session):
