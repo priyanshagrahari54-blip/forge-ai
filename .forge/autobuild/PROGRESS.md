@@ -962,3 +962,13 @@ framing controls by default (add at the edge for production).
   policy.
 - 6 new tests. Full suite: **1374 passed, 2 skipped** (A68
   baseline: 1368/2).
+
+## A70 — UX Polish
+
+- Dashboard autonomy strip (level + per-op counts from
+  /api/v1/autonomy), observability counters/gauges, and a
+  security-audit panel (hardening report) — all live reads that
+  degrade honestly when offline; fmtCount + chip/audit styles;
+  class-toggling-only invariant kept.
+- 5 new tests. Full suite: **1379 passed, 2 skipped** (A69
+  baseline: 1374/2).

@@ -575,10 +575,106 @@ async function renderDashboard() {
     }
     for (const item of activity.slice(0, 8)) feed.appendChild(eventCard(item, true));
     renderSecurityPosture(document.getElementById("d-security"), true);
+    renderAutonomyStrip();
+    renderAuditPosture();
     loadActiveRun();
   };
   await load();
   state.pollers.push(setInterval(load, 5000));
+}
+
+function fmtCount(value) {
+  if (value === null || value === undefined) return "–";
+  if (value >= 1000000) return (value / 1000000).toFixed(1) + "M";
+  if (value >= 1000) return (value / 1000).toFixed(1) + "k";
+  return String(value);
+}
+
+async function renderAutonomyStrip() {
+  // Real autonomy level + pipeline counters from live endpoints.
+  const snap = snapEpoch();
+  const box = document.getElementById("d-autonomy");
+  if (!box) return;
+  const chips = [];
+  try {
+    const autonomy = await api("/api/v1/autonomy");
+    const summary = autonomy.summary || {};
+    chips.push(el("span", "chip ok",
+      "Autonomy: " + esc(autonomy.level || "assisted")));
+    chips.push(el("span", "chip",
+      fmtCount(summary.autonomous) + " ops autonomous"));
+    chips.push(el("span", "chip warn",
+      fmtCount(summary.approval) + " ops need approval"));
+    chips.push(el("span", "chip bad",
+      fmtCount(summary.blocked) + " ops blocked"));
+  } catch (_err) {
+    chips.push(el("span", "chip",
+      "Autonomy: unavailable (backend offline)"));
+  }
+  try {
+    const metrics = await api("/api/v1/observability/metrics");
+    const counters = metrics.counters || {};
+    const gauges = metrics.gauges || {};
+    chips.push(el("span", "chip",
+      fmtCount(counters["tasks.submitted"]) + " tasks submitted"));
+    chips.push(el("span", "chip",
+      fmtCount(counters["runs.succeeded"]) + " runs ok · " +
+      fmtCount(counters["runs.failed"]) + " failed"));
+    chips.push(el("span", "chip",
+      fmtCount(gauges.agents_defined) + " agents · " +
+      fmtCount(gauges.active_runs) + " active runs"));
+  } catch (_err) {
+    /* counters unavailable: stay honest, show nothing extra */
+  }
+  if (stale(snap)) return;
+  box.innerHTML = "";
+  for (const chip of chips) box.appendChild(chip);
+}
+
+async function renderAuditPosture() {
+  // Security audit result from the hardening report (read-only).
+  const snap = snapEpoch();
+  const box = document.getElementById("d-audit");
+  if (!box) return;
+  try {
+    const report = await api("/api/v1/hardening/report");
+    if (stale(snap)) return;
+    const policy = report.policy || {};
+    const sessions = report.sessions || {};
+    const secrets = report.secrets || [];
+    const hits = secrets.reduce(
+      (sum, entry) => sum + (entry.hits ? entry.hits.length : 0), 0);
+    const tone = report.overall === "ok" ? "ok" : "bad";
+    box.innerHTML = "";
+    const auditHeader = el("div", "section-header");
+    auditHeader.appendChild(el("h3", null, "Security audit"));
+    box.appendChild(auditHeader);
+    const statusLine = el("div", "audit-line");
+    statusLine.appendChild(el("span", null, "Overall posture"));
+    statusLine.appendChild(el("span", "chip " + tone, report.overall));
+    box.appendChild(statusLine);
+    const rulesLine = el("div", "audit-line");
+    rulesLine.appendChild(el("span", null, "Policy rules"));
+    rulesLine.appendChild(el("span", null,
+      fmtCount(policy.rule_count) + " · " +
+      fmtCount(policy.findings ? policy.findings.length : 0) +
+      " findings"));
+    box.appendChild(rulesLine);
+    const sessionLine = el("div", "audit-line");
+    sessionLine.appendChild(el("span", null, "Active sessions"));
+    sessionLine.appendChild(el("span", null,
+      fmtCount(sessions.active_sessions)));
+    box.appendChild(sessionLine);
+    const secretLine = el("div", "audit-line");
+    secretLine.appendChild(el("span", null, "Secret-pattern hits"));
+    secretLine.appendChild(el("span", null, fmtCount(hits)));
+    box.appendChild(secretLine);
+  } catch (_err) {
+    if (stale(snap)) return;
+    box.innerHTML = "";
+    box.appendChild(el("div", "muted",
+      "Security audit unavailable — backend offline."));
+  }
 }
 
 async function loadActiveRun() {

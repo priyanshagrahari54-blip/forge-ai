@@ -580,6 +580,19 @@ table.kv td, table.kv th {
 }
 .palette-item.selected, .palette-item:hover { background: var(--bg3); }
 
+/* A70: dashboard polish — autonomy chips and audit posture */
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 999px; font-size: 0.82rem; }
+.chip .pkind { text-transform: uppercase; letter-spacing: 0.06em; }
+.chip.ok { border-color: var(--ok); color: var(--ok); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+.chip.bad { border-color: var(--bad); color: var(--bad); }
+.audit-box { margin-top: 12px; padding-top: 10px;
+  border-top: 1px dashed var(--line); }
+.audit-line { display: flex; justify-content: space-between; gap: 8px;
+  font-size: 0.85rem; padding: 2px 0; }
+
 /* A68: shortcuts help overlay */
 .shortcut-row { display: flex; align-items: center; gap: 10px;
   padding: 6px 8px; border-radius: 6px; }
