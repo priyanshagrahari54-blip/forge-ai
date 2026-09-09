@@ -63,10 +63,20 @@ class ComputeEngine:
         self.cells: list[dict[str, Any]] = []
 
     def backend_info(self) -> dict[str, Any]:
+        remote_info: dict[str, Any] = {"available": False}
+        try:
+            from forge.compute.remote import RemoteComputeBackend
+            remote = RemoteComputeBackend()
+            remote_info = {
+                "available": remote.available(),
+                "backend": remote.backend_name,
+            }
+        except Exception:
+            pass
         return {"backend": BACKEND,
                 "note": "Real local Python execution via a fresh "
-                        "subprocess; no remote or GPU backend exists "
-                        "in this build.",
+                        "subprocess.",
+                "remote": remote_info,
                 "quota": self.quota.to_dict()}
 
     def execute(self, code: str, *, timeout: float | None = None
@@ -88,7 +98,8 @@ class ComputeEngine:
             completed = subprocess.run(
                 [sys.executable, "-I", "-c", code],
                 cwd=str(self.root), capture_output=True, text=True,
-                timeout=timeout)
+                timeout=timeout,
+                check=False)
             status = "succeeded" if completed.returncode == 0 else "failed"
             output = (completed.stdout or "") + (completed.stderr or "")
             return_code = completed.returncode

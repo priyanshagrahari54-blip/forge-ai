@@ -181,7 +181,7 @@ class BackupManager:
         self._db.execute("DELETE FROM backups WHERE id = ?", (row["id"],))
 
     def verify(self, backup_id: str) -> dict[str, Any]:
-        record = self.get(backup_id)
+        self.get(backup_id)  # raises when the ledger row is missing
         archive_path = self._archive_path(backup_id)
         if not archive_path.is_file():
             raise ValueError("backup archive is missing")
@@ -224,7 +224,7 @@ class BackupManager:
 
     def restore(self, backup_id: str, *, stopped: bool,
                 actor: str = "") -> dict[str, Any]:
-        record = self.get(backup_id)
+        self.get(backup_id)  # raises when the ledger row is missing
         if not stopped:
             raise ValueError(
                 "restore requires a stopped plane; stop the plane first")

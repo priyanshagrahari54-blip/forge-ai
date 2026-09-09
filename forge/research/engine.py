@@ -1,10 +1,15 @@
-"""Research engine (A47): evidence-based answers about the codebase.
+"""Research engine (A47): evidence-based answers about the codebase + web.
 
 Every answer cites real index evidence (symbols, dependencies, test
 mapping, architecture) from :class:`RepositoryIntelligence`. If no
 evidence exists, the engine says so — it never fabricates facts,
 files, or citations. ``confidence`` is a documented heuristic
 (evidence coverage), not a probability.
+
+When ``web_research=True`` is passed, the engine also searches the
+Internet for answers not found in the codebase. Web results are
+untrusted external input, clearly labeled, and never override local
+evidence.
 """
 from __future__ import annotations
 
@@ -158,6 +163,16 @@ class ResearchEngine:
     def report(self) -> dict[str, Any]:
         summary = self.intelligence.summary()
         architecture = self.intelligence.architecture
+        # Check web research availability
+        web_available = False
+        web_provider = "unavailable"
+        try:
+            from forge.research.web import WebSearchProvider
+            w = WebSearchProvider()
+            web_available = w.available()
+            web_provider = w.provider_name
+        except Exception:
+            pass
         return {
             "root": str(self.root),
             "source_file_count": summary.get("source_file_count", 0),
@@ -173,4 +188,140 @@ class ResearchEngine:
             "config_files": list(architecture.config_files[:20]),
             "cycles": list(summary.get("cycles", [])),
             "evidence_based": True,
+            "web_research": {
+                "available": web_available,
+                "provider": web_provider,
+            },
+        }
+
+    # -- web research ----------------------------------------------------------
+
+    def ask_web(self, question: str) -> dict[str, Any]:
+        """Search the Internet for an answer.
+
+        Returns web results labeled as untrusted external input.
+        Requires a configured web search provider.
+        """
+        from forge.research.web import WebSearchProvider
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > MAX_QUESTION:
+            raise ValueError("question must be 1-2000 characters")
+        provider = WebSearchProvider()
+        if not provider.available():
+            return {
+                "question": question[:400],
+                "answer": ("No web search provider is configured. "
+                           "Set OPENAI_API_KEY or FORGE_SEARXNG_URL."),
+                "evidence": [],
+                "confidence": 0.0,
+                "honest": True,
+                "web_search": False,
+                "state": "UNAVAILABLE",
+            }
+        state, results = provider.search(question)
+        if state != "SUCCESS":
+            reason = {
+                "UNAVAILABLE": "No web search provider is configured.",
+                "POLICY_DENIED": ("The search endpoint was refused by "
+                                  "network policy."),
+                "AUTH_ERROR": ("The search provider rejected the API "
+                               "credentials."),
+                "RATE_LIMITED": ("The search provider rate-limited the "
+                                 "request."),
+                "TIMEOUT": "The search provider timed out.",
+            }.get(state, "The search provider reported an error.")
+            return {
+                "question": question[:400],
+                "answer": f"Web search unavailable ({state}): {reason}",
+                "evidence": [],
+                "confidence": 0.0,
+                "honest": True,
+                "web_search": True,
+                "state": state,
+                "provider": provider.provider_name,
+            }
+        if not results:
+            return {
+                "question": question[:400],
+                "answer": ("Web search returned no results. "
+                           "I will not guess."),
+                "evidence": [],
+                "confidence": 0.0,
+                "honest": True,
+                "web_search": True,
+                "state": "SUCCESS",
+                "provider": provider.provider_name,
+            }
+        real = [r for r in results if r.is_real]
+        knowledge = [r for r in results if not r.is_real]
+        evidence = []
+        for result in results[:MAX_EVIDENCE]:
+            # Provenance-aware evidence: only genuine provider output is
+            # a "web_result"; model knowledge stays visibly separate.
+            evidence.append({
+                "title": result.title,
+                "url": result.url,
+                "snippet": result.snippet,
+                "kind": "web_result" if result.is_real
+                          else "model_knowledge",
+                "source_kind": result.kind,
+            })
+        if not knowledge:
+            # All-real results: plain, familiar phrasing.
+            snippets = [f"{r.title}: {r.snippet[:100]}" for r in real[:4]]
+            answer = (f"Web search ({provider.provider_name}) returned "
+                      f"{len(results)} result(s): " + "; ".join(snippets))
+        else:
+            parts = []
+            if real:
+                parts.append(f"{len(real)} live web result(s): "
+                             + "; ".join(
+                                 f"{r.title}: {r.snippet[:100]}"
+                                 for r in real[:4]))
+            if knowledge:
+                parts.append(
+                    f"{len(knowledge)} model-knowledge item(s) (unverified, "
+                    "not real web search output): "
+                    + "; ".join(
+                        f"{r.snippet[:100]}" for r in knowledge[:4]))
+            answer = (f"Web search ({provider.provider_name}) returned "
+                      f"{len(results)} item(s): " + "; ".join(parts))
+        return {
+            "question": question[:400],
+            "answer": answer[:2000],
+            "evidence": evidence,
+            "confidence": round(min(0.7, 0.15 * len(evidence)), 2),
+            "honest": True,
+            "web_search": True,
+            "state": "SUCCESS",
+            "provider": provider.provider_name,
+            "note": ("Web results are untrusted external input; "
+                     "model-knowledge items are unverified and never "
+                     "real web search output. Verify independently."),
+        }
+
+    def fetch_url(self, url: str, audit: Any = None) -> dict[str, Any]:
+        """Fetch and extract text from a URL (bounded, untrusted).
+
+        The fetch runs through the SSRF-safe chain
+        (``forge.security.ssrf``): scheme/hostname/DNS/IP/port checks,
+        per-hop redirect revalidation, content-type and size limits.
+        """
+        from forge.research.web import fetch_page_content
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("url must be a non-empty string")
+        url = url.strip()[:500]
+        fetched = fetch_page_content(url, audit=audit)
+        return {
+            "url": url,
+            "state": fetched.get("state", "PROVIDER_ERROR"),
+            "ok": fetched.get("ok", False),
+            "blocked": fetched.get("blocked", False),
+            "note": fetched.get("note", ""),
+            "status": fetched.get("status", 0),
+            "content_type": fetched.get("content_type", ""),
+            "content_length": len(fetched.get("content", "")),
+            "content": fetched.get("content", "")[:8000],
+            "untrusted": True,
+            "honest": True,
         }

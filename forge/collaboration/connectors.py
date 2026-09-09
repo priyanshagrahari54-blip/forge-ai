@@ -16,10 +16,13 @@ Design invariants:
   AI is a ``Resource.MODEL / call`` decision with the connector name
   as provider detail — DENY fails closed, REQUIRE_APPROVAL files an
   approval, and only a redeemed single-use token releases the call.
-* **Only the simulated connector exists in A44** (no real network).
-  It is deterministic, bounded, honestly labeled, and never
-  fabricates knowledge — its answers are template-shaped context,
-  explicitly marked as simulated external input.
+* **The simulated connector is the default and needs no network.** It
+  is deterministic, bounded, honestly labeled, and never fabricates
+  knowledge — its answers are template-shaped context, explicitly
+  marked as simulated external input. Real connectors (``openai``,
+  see :mod:`forge.collaboration.openai_connector`) register behind the
+  same protocol, require ``OPENAI_API_KEY``, classify every call with
+  an explicit outcome state, and never report failure as success.
 """
 from __future__ import annotations
 
@@ -104,12 +107,15 @@ class SimulatedExternalAIConnector:
         return response.to_dict()
 
 
-AVAILABLE_CONNECTORS = ("simulated-external",)
+AVAILABLE_CONNECTORS = ("simulated-external", "openai")
 
 
 def build_connector(name: str) -> ExternalAIConnector:
     if name == "simulated-external":
         return SimulatedExternalAIConnector()
+    if name == "openai":
+        from forge.collaboration.openai_connector import OpenAIConnector
+        return OpenAIConnector()
     raise ValueError(
         f"Unknown external AI connector {name!r}; available: "
         f"{', '.join(AVAILABLE_CONNECTORS)}")

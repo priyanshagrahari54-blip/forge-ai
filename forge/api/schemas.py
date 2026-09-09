@@ -184,6 +184,7 @@ class ComputeExecuteRequest(BaseModel):
     code: str = Field(min_length=1, max_length=6000)
     timeout: float | None = Field(default=None, gt=0, le=120)
     approval_id: str = Field(default="", max_length=200)
+    backend: str = Field(default="local", max_length=32)
 
 
 # -- A49 agent creation -------------------------------------------------------------------
@@ -324,6 +325,16 @@ class FinalVerifyRunRequest(BaseModel):
 
 class FinalBenchmarkRequest(BaseModel):
     min_passed: int = Field(default=1, ge=0, le=8)
+
+
+class FinalGateVerifyRequest(BaseModel):
+    """Explicit A80 provider-capability verification request.
+
+    ``provider`` empty means: verify every currently configured
+    provider. Must name one of the known providers otherwise.
+    """
+
+    provider: str = Field(default="", max_length=64)
 
 
 class FinalLoopRequest(BaseModel):

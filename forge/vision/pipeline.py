@@ -22,15 +22,18 @@ from forge.vision.base import VisionProvider, VisionResult
 from forge.vision.simulated import SimulatedVisionProvider
 from forge.vision.base import UnconfiguredVisionProvider
 
-#: Provider names the control plane accepts in A39. Real providers
+#: Provider names the control plane accepts. Real providers
 #: register behind the same VisionProvider protocol as plugins.
-AVAILABLE_PROVIDERS = ("simulated",)
+AVAILABLE_PROVIDERS = ("simulated", "openai-vision")
 
 
 def build_vision_provider(name: str) -> VisionProvider:
     """Resolve a provider by name; unknown names fail closed."""
     if name == "simulated":
         return SimulatedVisionProvider()
+    if name == "openai-vision":
+        from forge.vision.real import OpenAIVisionProvider
+        return OpenAIVisionProvider()
     if name == "unconfigured":
         return UnconfiguredVisionProvider()
     raise ValueError(

@@ -14,7 +14,8 @@ from typing import Any
 def _git(root: str, *args: str) -> str:
     result = subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True,
-        timeout=10)
+        timeout=10,
+        check=False)
     return result.stdout.strip()
 
 

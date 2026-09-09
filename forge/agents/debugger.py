@@ -4,6 +4,10 @@ import json
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forge.models.fabric import ModelFabric
 
 from forge.agents.coder import CoderAgent
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse

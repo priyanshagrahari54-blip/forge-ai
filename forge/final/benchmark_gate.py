@@ -20,7 +20,6 @@ def benchmark_gate(plane: Any, session: Any, min_passed: int = 1
         raise ValueError("min_passed must be 0-8")
     results, summary = run_benchmark(plane.fabric)
     passed = int(summary["passed"])
-    total = int(summary["total"])
     try:
         names = plane.fabric.registry.names()
     except Exception:

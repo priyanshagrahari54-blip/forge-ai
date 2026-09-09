@@ -2,8 +2,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from forge.tools.change_applier import ApprovalCallback
 from forge.core.planner import Planner
 from forge.core.run_control import SupervisorControl, TaskCancelled
 from forge.core.state import ForgeState

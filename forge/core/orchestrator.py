@@ -151,7 +151,6 @@ class OrchestrationPlan:
 
 def _topological_order(steps: tuple[OrchestrationStep, ...]) -> list[str]:
     """Kahn's algorithm over step ids; raises on any cycle."""
-    by_id = {step.id: step for step in steps}
     indegree = {step.id: 0 for step in steps}
     dependents: dict[str, list[str]] = {step.id: [] for step in steps}
     for step in steps:
