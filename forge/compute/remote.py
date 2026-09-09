@@ -172,21 +172,24 @@ def _refusal_message(purpose: str, host: str,
     return msg
 
 
-def ssh_destination_policy(config: "SSHConfig") -> list[dict[str, str]]:
-    """Destination-IP policy gate for the SSH backend.
+def destination_ip_policy(host: str, *, purpose: str,
+                          opt_in_env: str,
+                          hint: str) -> list[dict[str, str]]:
+    """Shared resolved-address gate for any SSH-style destination.
 
-    Resolves ``config.host`` and classifies every address. Raises
+    Resolves ``host`` and classifies every returned address. Raises
     :class:`RemoteComputeError` when the host is unresolvable (fail
     closed) or when any resolved address is non-public without the
-    explicit operator opt-in ``FORGE_COMPUTE_SSH_ALLOW_PRIVATE=1``.
-    Never-routed classes (cloud metadata, multicast, documentation,
-    benchmark, reserved) are refused even with the opt-in. Returns the
-    classified entries on success (public-only or opt-in'd).
+    explicit operator opt-in named by ``opt_in_env``. Never-routed
+    classes (cloud metadata, multicast, documentation, benchmark,
+    reserved) are refused even with the opt-in. Returns the classified
+    entries on success (public-only or opt-in'd). ``purpose`` and
+    ``hint`` shape the refusal message for the calling backend.
     """
-    entries, error = classify_destination(config.host)
+    entries, error = classify_destination(host)
     if error:
         raise RemoteComputeError(
-            f"SSH destination {config.host!r} {error}; refusing to "
+            f"{purpose} destination {host!r} {error}; refusing to "
             "connect (fail-closed: unknown/unresolvable destinations "
             "are never allowed)")
     non_public = [e for e in entries if e["class"] != "public"]
@@ -194,16 +197,29 @@ def ssh_destination_policy(config: "SSHConfig") -> list[dict[str, str]]:
         return entries
     never = [e for e in non_public
              if e["class"] in _NEVER_DESTINATION_CLASSES]
-    opt_in = _exception_env_set(_SSH_PRIVATE_EXCEPTION_ENV)
+    opt_in = _exception_env_set(opt_in_env)
     if opt_in and not never:
         return entries
     raise RemoteComputeError(_refusal_message(
-        "SSH", config.host, non_public=non_public,
-        opt_in_allowed=opt_in, never=never,
+        purpose, host, non_public=non_public,
+        opt_in_allowed=opt_in, never=never, hint=hint))
+
+
+def ssh_destination_policy(config: "SSHConfig") -> list[dict[str, str]]:
+    """Destination-IP policy gate for the SSH compute backend.
+
+    Thin wrapper over :func:`destination_ip_policy` with the compute
+    opt-in (``FORGE_COMPUTE_SSH_ALLOW_PRIVATE=1``) and its allowlist
+    note. The environment alone — or a hostname on the allowlist —
+    never bypasses the resolved-address check.
+    """
+    return destination_ip_policy(
+        config.host, purpose="SSH",
+        opt_in_env=_SSH_PRIVATE_EXCEPTION_ENV,
         hint=(f"if this is an explicit operator-controlled "
               f"private-network destination, set "
               f"{_SSH_PRIVATE_EXCEPTION_ENV}=1 (the host must still "
-              "be on FORGE_COMPUTE_SSH_ALLOWLIST)")))
+              "be on FORGE_COMPUTE_SSH_ALLOWLIST)"))
 
 
 def colab_url_policy(url: str) -> str:

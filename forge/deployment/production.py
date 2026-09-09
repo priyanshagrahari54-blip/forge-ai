@@ -11,6 +11,14 @@ Security invariants for remote (SSH/rsync) deployment:
 
 * Destination identity is explicit (user@host:path) and MUST appear on
   ``FORGE_DEPLOY_SSH_ALLOWLIST`` — deployment is refused otherwise.
+* Destination-IP policy (shared with remote compute): before rsync
+  starts, the hostname is resolved and EVERY returned address is
+  classified. Non-public addresses refuse the deployment unless the
+  operator explicitly opted in with
+  ``FORGE_DEPLOY_SSH_ALLOW_PRIVATE=1``; unresolvable hostnames fail
+  closed; the never-routed set (cloud metadata, multicast,
+  documentation/benchmark/reserved ranges) is refused even with the
+  opt-in. A hostname on the allowlist never bypasses this policy.
 * ``rsync --delete`` NEVER runs unless (a) the caller explicitly
   requests deletion AND (b) the caller passes a validated approval
   token (``delete_approved=True``). The deployer itself refuses
@@ -35,6 +43,11 @@ import subprocess
 import time
 from typing import Any
 from pathlib import Path
+
+from forge.compute.remote import (
+    RemoteComputeError as _DestinationPolicyError,
+    destination_ip_policy,
+)
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,252})$")
 _USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -139,6 +152,31 @@ def _ssh_base_argv(target: dict[str, Any]) -> list[str]:
         argv += ["-i", target["identity"]]
     argv += [f"{target['user']}@{target['host']}"]
     return argv
+
+
+#: Operator opt-in that permits rsync deployment to a destination
+#: resolving to non-public addresses (never the never-routed set).
+_DEPLOY_PRIVATE_EXCEPTION_ENV = "FORGE_DEPLOY_SSH_ALLOW_PRIVATE"
+
+
+def _deploy_destination_policy(target: dict[str, Any]) -> None:
+    """Resolved-address policy gate for an rsync deployment target.
+
+    Resolves ``target['host']`` and classifies every address; raises
+    :class:`RemoteDeployError` (fail-closed) when the host is
+    unresolvable or any address is non-public without the explicit
+    operator opt-in ``FORGE_DEPLOY_SSH_ALLOW_PRIVATE=1``.
+    """
+    try:
+        destination_ip_policy(
+            target["host"], purpose="SSH deploy",
+            opt_in_env=_DEPLOY_PRIVATE_EXCEPTION_ENV,
+            hint=(f"if this is an explicit operator-controlled "
+                  f"private-network deploy destination, set "
+                  f"{_DEPLOY_PRIVATE_EXCEPTION_ENV}=1 (the host must "
+                  "still be on FORGE_DEPLOY_SSH_ALLOWLIST)"))
+    except _DestinationPolicyError as exc:
+        raise RemoteDeployError(str(exc)) from exc
 
 
 class DockerDeployer:
@@ -410,6 +448,13 @@ class SSHDeployer:
             return {"success": False,
                     "error": ("destructive deployment (--delete) refused: "
                               "requires an approved token"),
+                    "backend": "ssh-rsync"}
+        # Destination-IP policy: resolve + classify every address before
+        # rsync may start (fail-closed, allowlist alone never bypasses).
+        try:
+            _deploy_destination_policy(self._target)
+        except RemoteDeployError as exc:
+            return {"success": False, "error": str(exc),
                     "backend": "ssh-rsync"}
         source = Path(source_dir)
         if not source.is_dir():

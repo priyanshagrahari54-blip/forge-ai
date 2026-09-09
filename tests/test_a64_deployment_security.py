@@ -4,11 +4,16 @@ Level 1: fail-closed destination parsing and allowlisting.
 Level 2: the rsync command line never contains --delete without an
          approved flag, SSH options are strict, and post-deploy
          verification failures are reported honestly.
+Level 3: destination-IP policy — the deploy host is resolved and
+         every address classified before rsync may start; non-public
+         destinations need FORGE_DEPLOY_SSH_ALLOW_PRIVATE=1;
+         unresolvable hosts fail closed.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -129,7 +134,24 @@ class FakeCompleted:
         self.stderr = stderr
 
 
-def test_delete_requires_approval_flag(tmp_path: Path) -> None:
+def _infos(*ips: str) -> list:
+    records = []
+    for ip in ips:
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        records.append((family, socket.SOCK_STREAM, 6, "", (ip, 0)))
+    return records
+
+
+def _public_deploy_host(monkeypatch) -> None:  # noqa: ANN001
+    """The deploy hostname resolves publicly, so transport tests stay
+    DNS-free and pass the destination-IP policy."""
+    monkeypatch.setattr("forge.compute.remote._host_resolver",
+                        lambda host: _infos("8.8.8.8"))
+
+
+def test_delete_requires_approval_flag(tmp_path: Path,
+                                       monkeypatch) -> None:
+    _public_deploy_host(monkeypatch)
     deployer = SSHDeployer()
     src = tmp_path / "src"
     src.mkdir()
@@ -140,6 +162,7 @@ def test_delete_requires_approval_flag(tmp_path: Path) -> None:
 
 
 def test_command_line_is_strict_and_safe(tmp_path: Path, monkeypatch) -> None:
+    _public_deploy_host(monkeypatch)
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -167,6 +190,7 @@ def test_command_line_is_strict_and_safe(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_delete_flag_only_with_approval(tmp_path: Path, monkeypatch) -> None:
+    _public_deploy_host(monkeypatch)
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -192,6 +216,8 @@ def test_verification_failure_reported_honestly(tmp_path: Path,
     content = b"<h1>hello world</h1>"
     (src / "index.html").write_bytes(content)
     digest = hashlib.sha256(content).hexdigest()
+
+    _public_deploy_host(monkeypatch)
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "rsync":
@@ -220,6 +246,8 @@ def test_verification_success_path(tmp_path: Path, monkeypatch) -> None:
     (src / "index.html").write_bytes(content)
     digest = hashlib.sha256(content).hexdigest()
 
+    _public_deploy_host(monkeypatch)
+
     def fake_run(cmd, **kwargs):
         if cmd[0] == "rsync":
             return FakeCompleted()
@@ -236,6 +264,8 @@ def test_verification_success_path(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_failed_rsync_is_not_success(tmp_path: Path, monkeypatch) -> None:
+    _public_deploy_host(monkeypatch)
+
     def fake_run(cmd, **kwargs):
         return FakeCompleted(returncode=23, stderr="permission denied")
 
@@ -248,3 +278,124 @@ def test_failed_rsync_is_not_success(tmp_path: Path, monkeypatch) -> None:
     result = deployer.deploy(str(src))
     assert result["success"] is False
     assert result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Level 3 — destination-IP policy: every resolved address is classified
+# before rsync may start.
+# ---------------------------------------------------------------------------
+
+def _make_src(tmp_path: Path) -> Path:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
+    return src
+
+
+def test_deploy_refuses_private_resolution_even_when_allowlisted(
+        tmp_path: Path, monkeypatch) -> None:
+    """An allowlisted hostname that resolves privately must be refused —
+    allowlist alone never bypasses the destination-IP policy."""
+    calls: list = []
+    monkeypatch.setattr("forge.compute.remote._host_resolver",
+                        lambda host: _infos("10.0.0.5"))
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr("forge.deployment.production.subprocess.run",
+                        fake_run)
+    deployer = SSHDeployer()
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is False
+    assert "10.0.0.5 (private)" in result["error"]
+    assert "FORGE_DEPLOY_SSH_ALLOW_PRIVATE" in result["error"]
+    assert calls == []  # rsync never started
+
+
+def test_deploy_unresolvable_host_fails_closed(tmp_path: Path,
+                                               monkeypatch) -> None:
+    def _boom(host):  # noqa: ANN001
+        raise socket.gaierror(socket.EAI_NONAME,
+                              "Name or service not known")
+
+    monkeypatch.setattr("forge.compute.remote._host_resolver", _boom)
+    deployer = SSHDeployer()
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is False
+    assert "could not be resolved" in result["error"]
+    assert "fail-closed" in result["error"]
+
+
+def test_deploy_private_opt_in_allows_transport(tmp_path: Path,
+                                                monkeypatch) -> None:
+    """FORGE_DEPLOY_SSH_ALLOW_PRIVATE=1 is the explicit operator
+    exception; rsync may then run against the private destination."""
+    calls: list = []
+    monkeypatch.setattr("forge.compute.remote._host_resolver",
+                        lambda host: _infos("10.0.0.5"))
+    monkeypatch.setenv("FORGE_DEPLOY_SSH_ALLOW_PRIVATE", "1")
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(list(cmd))
+        return FakeCompleted()
+
+    monkeypatch.setattr("forge.deployment.production.subprocess.run",
+                        fake_run)
+    deployer = SSHDeployer()
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is True
+    assert calls and calls[0][0] == "rsync"
+
+
+def test_deploy_metadata_never_allowed_even_with_opt_in(
+        tmp_path: Path, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr("forge.compute.remote._host_resolver",
+                        lambda host: _infos("169.254.169.254"))
+    monkeypatch.setenv("FORGE_DEPLOY_SSH_ALLOW_PRIVATE", "1")
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr("forge.deployment.production.subprocess.run",
+                        fake_run)
+    deployer = SSHDeployer()
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is False
+    assert "never-routed" in result["error"] or "even with" in \
+        result["error"]
+    assert calls == []
+
+
+def test_deploy_literal_private_target_refused(tmp_path: Path,
+                                               monkeypatch) -> None:
+    """A literal private IP as the destination is refused without the
+    opt-in (deterministic, no DNS needed)."""
+    os.environ["FORGE_DEPLOY_SSH_HOST"] = "deploy@10.0.0.9"
+    os.environ["FORGE_DEPLOY_SSH_ALLOWLIST"] = "10.0.0.9,deploy@10.0.0.9"
+    deployer = SSHDeployer()
+    assert deployer.available() is True  # allowlisted…
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is False  # …but refused by IP policy
+    assert "10.0.0.9 (private)" in result["error"]
+
+
+def test_deploy_public_literal_allowed(tmp_path: Path,
+                                       monkeypatch) -> None:
+    os.environ["FORGE_DEPLOY_SSH_HOST"] = "deploy@8.8.8.8"
+    os.environ["FORGE_DEPLOY_SSH_ALLOWLIST"] = "8.8.8.8,deploy@8.8.8.8"
+    calls: list = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(list(cmd))
+        return FakeCompleted()
+
+    monkeypatch.setattr("forge.deployment.production.subprocess.run",
+                        fake_run)
+    deployer = SSHDeployer()
+    result = deployer.deploy(str(_make_src(tmp_path)))
+    assert result["success"] is True
+    assert "deploy@8.8.8.8:/srv/web/" in calls[0]
