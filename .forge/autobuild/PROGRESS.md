@@ -951,3 +951,14 @@ framing controls by default (add at the edge for production).
   typing guards and a "?" help overlay from the server catalog.
 - 5 new tests. Full suite: **1368 passed, 2 skipped** (A67
   baseline: 1363/2).
+
+## A69 — Autonomy Levels
+
+- `forge/autonomy/controller.py`: per-resource autonomy reports
+  evaluated against the live policy (aligned rule probes, most
+  permissive wins, no rule = blocked); stepwise validated
+  transitions; locked profiles refuse overrides; the level selects
+  the run mode for new tasks. API + audit. Never grants beyond
+  policy.
+- 6 new tests. Full suite: **1374 passed, 2 skipped** (A68
+  baseline: 1368/2).

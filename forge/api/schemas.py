@@ -306,3 +306,9 @@ class BackupCreateRequest(BaseModel):
 
 class PluginInstallRequest(BaseModel):
     manifest: dict
+
+
+# -- A69 autonomy levels -------------------------------------------------------------------------
+
+class AutonomyLevelRequest(BaseModel):
+    level: str = Field(min_length=2, max_length=16)

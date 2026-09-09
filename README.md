@@ -557,6 +557,17 @@ only. The cockpit renders a `?` help overlay from it. API at
 See `docs/A68-COCKPIT-NAVIGATION.md`. Full suite after A68: 1368
 passed, 2 skipped.
 
+## Autonomy Levels (A69)
+
+Consultative autonomy: per-resource reports computed from the live
+policy (what runs alone, what needs approval, what is blocked),
+stepwise validated transitions, and a level that genuinely selects
+the run mode for new tasks — never granting beyond the policy.
+API at `/api/v1/autonomy`.
+
+See `docs/A69-AUTONOMY-LEVELS.md`. Full suite after A69: 1374
+passed, 2 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

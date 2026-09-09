@@ -772,7 +772,8 @@ class ControlPlane:
         requirement = requirement.strip()
         if len(requirement) > MAX_REQUIREMENT_CHARS:
             raise InvalidRequest("Requirement is too long.")
-        profile = mode or session.profile
+        profile = mode or self._autonomy_override(session.id) \
+            or session.profile
         try:
             OperationMode(profile)
         except ValueError:
@@ -3389,6 +3390,47 @@ class ControlPlane:
 
 
 
+
+
+
+    # -- autonomy levels (A69) ------------------------------------------------------------------------
+
+    def _autonomy_override(self, session_id: str) -> str:
+        overrides = getattr(self, "_autonomy_overrides", None)
+        if overrides is None:
+            self._autonomy_overrides: dict[str, str] = {}
+            overrides = self._autonomy_overrides
+        return overrides.get(session_id, "")
+
+    def autonomy_report(self, session: Session) -> dict[str, Any]:
+        from forge.autonomy.controller import autonomy_report
+
+        policy = self.policy if self.policy is not None \
+            else PermissionPolicy()
+        return autonomy_report(policy, session.profile,
+                               self._autonomy_override(session.id))
+
+    def autonomy_set_level(self, session: Session, level: str
+                           ) -> dict[str, Any]:
+        from forge.autonomy.controller import (effective_level,
+                                               validate_transition)
+
+        level = (level or "").strip().lower()
+        if session.profile not in ("safe", "assisted", "autonomous"):
+            raise InvalidRequest(
+                f"profile {session.profile!r} manages its own autonomy; "
+                "the level cannot be changed here")
+        current = effective_level(session.profile,
+                                  self._autonomy_override(session.id))
+        try:
+            validate_transition(current, level)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._autonomy_overrides[session.id] = level
+        self._audit(session.actor, "autonomy", "set", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{current} -> {level}")
+        return self.autonomy_report(session)
 
 
     # -- cockpit navigation (A68) ---------------------------------------------------------------------
