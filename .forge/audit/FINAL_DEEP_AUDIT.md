@@ -174,3 +174,23 @@ full regression, static analysis, dependency census, performance suites, and thi
 document set. The repository is green, clean (`git status` empty), and carries exactly one
 final label: **`ARCHITECTURE_COMPLETE`** — with an honest, tested upgrade path to
 **`PRODUCTION_READY`** the moment an operator configures a real provider.
+
+---
+
+## 8. Runnable-build verification (2026-09-09, post-audit smoke)
+
+First-runnable-build instruction executed on HEAD `000d7c9` (PR #12 head; branch contains all
+PR #12 changes). Outcome: **FORGE RUNNABLE: YES — zero code changes required.** The full suite
+passed (1593/3) before any smoke run; the repository tree stayed clean throughout.
+
+| Check | Result |
+|---|---|
+| Canonical startup command | `python -m forge.cli serve --project demo=<root> --db <path> --host 127.0.0.1 --port 8010` — boots without traceback; `/api/v1/health` → `{"status":"ok","worker":true}`; clean SIGTERM shutdown |
+| Mode A — zero-key task (exact read-only inspect/report smoke text over a real demo repo, via CLI server + HTTP API) | Task executed through the real pipeline and **failed honestly**: `FAILED "Model proposed no changes"` (local fallback refuses synthesis by design — not configured stays distinguishable from available). Run row + 12 events persisted in SQLite (`task.created/queued/started`, `run.started`, `agent.selected`, `rollback.completed`, `task.failed`). No traceback; clean exit |
+| Mode B — full SUCCEEDED path (same architecture, deterministic JSON provider registered in the Model Fabric — the repo's canonical CI E2E stand-in; real uvicorn socket + HTTP API + audit JSONL sink) | "Add CSV export functionality" → **SUCCEEDED**: acceptance `accepted=true`, review `APPROVE`, files `app.py` + `tests/test_csv.py`, real git commit `forge: Add CSV export functionality`, 37 persisted events through `git.commit`/`task.completed`; report endpoint returned full report; `plane.close()` clean |
+| Permission system | PASS — every write + the commit passed the A33 gate; 2 approvals created and approved through the real API (`write_file`, `git_commit` REQUIRE_APPROVAL→ALLOW); audit JSONL shows 17 decisions incl. correct fail-closed default-DENY (no memory-read rule → DENY, never bypassed) |
+| Memory/audit | PASS — run summary persisted under project memory (`.forge/memory/runs/<id>`: status/model/provider/attempts/finished_at); audit sink recorded full decision trail |
+| Tests | 1593 passed, 3 skipped (baseline) |
+| Static checks | `compileall forge` OK · `git diff --check` OK · CLI `forge status` / `forge models health` OK |
+| Files changed | None (no blocking defect found; smoke driver kept outside the repo) |
+| Remaining blockers | None for runnability. A *successful code-writing* run requires a real model (Ollama or keyed provider) — inherent, documented architecture behavior; without one Forge boots, executes, and fails distinctly and honestly |
