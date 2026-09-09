@@ -104,12 +104,15 @@ class SimulatedExternalAIConnector:
         return response.to_dict()
 
 
-AVAILABLE_CONNECTORS = ("simulated-external",)
+AVAILABLE_CONNECTORS = ("simulated-external", "openai")
 
 
 def build_connector(name: str) -> ExternalAIConnector:
     if name == "simulated-external":
         return SimulatedExternalAIConnector()
+    if name == "openai":
+        from forge.collaboration.openai_connector import OpenAIConnector
+        return OpenAIConnector()
     raise ValueError(
         f"Unknown external AI connector {name!r}; available: "
         f"{', '.join(AVAILABLE_CONNECTORS)}")

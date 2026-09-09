@@ -184,6 +184,7 @@ class ComputeExecuteRequest(BaseModel):
     code: str = Field(min_length=1, max_length=6000)
     timeout: float | None = Field(default=None, gt=0, le=120)
     approval_id: str = Field(default="", max_length=200)
+    backend: str = Field(default="local", max_length=32)
 
 
 # -- A49 agent creation -------------------------------------------------------------------

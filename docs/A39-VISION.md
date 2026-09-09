@@ -59,17 +59,30 @@ under their own gates — vision NEVER grants permissions)
   data only; it never reads or writes workspace files, and results are
   redacted at the API boundary.
 
+## Real Providers
+
+A39 now includes a real vision provider alongside the simulated one:
+
+| Provider | Location | Requirements |
+|---|---|---|
+| OpenAI Vision | `forge/vision/real.py` | `OPENAI_API_KEY` |
+
+Configure via:
+- `FORGE_VISION_PROVIDER=openai-vision` — real image understanding
+- `FORGE_VISION_MODEL` — Vision model (default: `gpt-4o-mini`)
+
+The real provider carries `simulation=False` and the real model name.
+All A39 security invariants hold: vision input is untrusted, dangerous
+instruction surfacing continues, and the provider never grants
+permissions or writes files.
+
 ## Honesty invariants
 
-The A39 simulated provider has **no OCR and no vision model**. It
-performs real structural analysis (format, dimensions, embedded text
-chunks — all real data from the file) and reports everything with
-`simulation: true`, `model: ""`, and an explicit summary line stating
-the limitation. UI regions are a deterministic layout heuristic with
-zero confidence — never presented as recognized controls. Real
-providers register behind the same `VisionProvider` protocol as
-plugins; `ControlConfig.vision_provider` accepts only `simulated` in
-A39 and fails closed on anything else.
+The simulated provider has **no OCR and no vision model**. It
+performs real structural analysis and reports everything with
+`simulation: true`. The real provider carries `simulation: false`
+and the actual model name. `ControlConfig.vision_provider` accepts
+`simulated` (default) or `openai-vision`; unknown names fail closed.
 
 ## API
 

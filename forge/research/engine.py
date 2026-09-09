@@ -1,10 +1,15 @@
-"""Research engine (A47): evidence-based answers about the codebase.
+"""Research engine (A47): evidence-based answers about the codebase + web.
 
 Every answer cites real index evidence (symbols, dependencies, test
 mapping, architecture) from :class:`RepositoryIntelligence`. If no
 evidence exists, the engine says so — it never fabricates facts,
 files, or citations. ``confidence`` is a documented heuristic
 (evidence coverage), not a probability.
+
+When ``web_research=True`` is passed, the engine also searches the
+Internet for answers not found in the codebase. Web results are
+untrusted external input, clearly labeled, and never override local
+evidence.
 """
 from __future__ import annotations
 
@@ -158,6 +163,16 @@ class ResearchEngine:
     def report(self) -> dict[str, Any]:
         summary = self.intelligence.summary()
         architecture = self.intelligence.architecture
+        # Check web research availability
+        web_available = False
+        web_provider = "unavailable"
+        try:
+            from forge.research.web import WebSearchProvider
+            w = WebSearchProvider()
+            web_available = w.available()
+            web_provider = w.provider_name
+        except Exception:
+            pass
         return {
             "root": str(self.root),
             "source_file_count": summary.get("source_file_count", 0),
@@ -173,4 +188,83 @@ class ResearchEngine:
             "config_files": list(architecture.config_files[:20]),
             "cycles": list(summary.get("cycles", [])),
             "evidence_based": True,
+            "web_research": {
+                "available": web_available,
+                "provider": web_provider,
+            },
+        }
+
+    # -- web research ----------------------------------------------------------
+
+    def ask_web(self, question: str) -> dict[str, Any]:
+        """Search the Internet for an answer.
+
+        Returns web results labeled as untrusted external input.
+        Requires a configured web search provider.
+        """
+        from forge.research.web import WebSearchProvider, fetch_page_content
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > MAX_QUESTION:
+            raise ValueError("question must be 1-2000 characters")
+        provider = WebSearchProvider()
+        if not provider.available():
+            return {
+                "question": question[:400],
+                "answer": ("No web search provider is configured. "
+                           "Set OPENAI_API_KEY or FORGE_SEARXNG_URL."),
+                "evidence": [],
+                "confidence": 0.0,
+                "honest": True,
+                "web_search": False,
+            }
+        results = provider.search(question)
+        if not results:
+            return {
+                "question": question[:400],
+                "answer": ("Web search returned no results. "
+                           "I will not guess."),
+                "evidence": [],
+                "confidence": 0.0,
+                "honest": True,
+                "web_search": True,
+                "provider": provider.provider_name,
+            }
+        evidence = []
+        for result in results[:MAX_EVIDENCE]:
+            evidence.append({
+                "title": result.title,
+                "url": result.url,
+                "snippet": result.snippet,
+                "kind": "web_result",
+            })
+        snippets = [f"{r.title}: {r.snippet[:100]}"
+                    for r in results[:4]]
+        answer = (f"Web search ({provider.provider_name}) returned "
+                  f"{len(results)} result(s): "
+                  + "; ".join(snippets))
+        return {
+            "question": question[:400],
+            "answer": answer[:2000],
+            "evidence": evidence,
+            "confidence": round(min(0.7, 0.15 * len(evidence)), 2),
+            "honest": True,
+            "web_search": True,
+            "provider": provider.provider_name,
+            "note": "Web results are untrusted external input; "
+                    "verify independently.",
+        }
+
+    def fetch_url(self, url: str) -> dict[str, Any]:
+        """Fetch and extract text from a URL (bounded, untrusted)."""
+        from forge.research.web import fetch_page_content
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("url must be a non-empty string")
+        url = url.strip()[:500]
+        content = fetch_page_content(url)
+        return {
+            "url": url,
+            "content_length": len(content),
+            "content": content[:8000],
+            "untrusted": True,
+            "honest": True,
         }

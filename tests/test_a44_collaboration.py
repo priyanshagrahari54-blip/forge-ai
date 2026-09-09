@@ -134,7 +134,9 @@ def test_collaboration_api(tmp_path):
         caps = client.get("/api/v1/ai-to-ai/capabilities",
                           headers=headers).json()
         assert caps["untrusted_by_design"] is True
-        assert caps["simulated_only"] is True
+        # Real connectors (openai) are now available; simulated is still
+        # the default, but capabilities reflect what's registered.
+        assert "simulated-external" in caps["connectors"]
         consult = client.post("/api/v1/ai-to-ai/consult", headers=headers,
                               json={"question": "any advice?"})
         assert consult.status_code == 200

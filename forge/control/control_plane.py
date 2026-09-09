@@ -503,9 +503,8 @@ class ControlConfig:
     orchestration_max_workers: int = 3
     orchestration_max_attempts: int = 2
     orchestration_step_timeout: float | None = 120.0
-    # A39 vision: provider behind the Vision interface. Only the
-    # deterministic simulated provider exists in A39 (honestly labeled,
-    # no OCR/model); real providers register as plugins.
+    # A39 vision: provider behind the Vision interface. Real providers
+    # (openai-vision) require OPENAI_API_KEY.
     vision_provider: str = "simulated"
     # A40 computer use: hard cap on executed actions per task.
     computer_max_actions: int = 20
@@ -548,14 +547,16 @@ class ControlConfig:
             raise ValueError(
                 f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
                 "A35 supports 'fake' only")
+        _VOICE_VALID = {"simulated", "openai-whisper", "openai-tts",
+                        "unconfigured"}
         for key, env_name in (("voice_stt_provider", "FORGE_VOICE_STT_PROVIDER"),
                               ("voice_tts_provider", "FORGE_VOICE_TTS_PROVIDER")):
             name = os.environ.get(env_name, "").strip()
             if name:
-                if name != "simulated":
+                if name not in _VOICE_VALID:
                     raise ValueError(
-                        f"Unknown {env_name} {name!r}; A36 supports "
-                        "'simulated' only")
+                        f"Unknown {env_name} {name!r}; supported: "
+                        f"{', '.join(sorted(_VOICE_VALID))}")
                 setattr(config, key, name)
         for key, value in overrides.items():
             setattr(config, key, value)
@@ -1576,36 +1577,69 @@ class ControlPlane:
     }
 
     def _voice_stack(self) -> Any:
-        """The simulated voice loop (A36 providers only, honestly labeled)."""
+        """Voice loop with configurable providers (simulated by default).
+
+        Real providers (openai-whisper, openai-tts) require
+        OPENAI_API_KEY and are labeled ``simulation=False``.
+        """
         from forge.voice import (SimulatedSpeechSynthesizer,
                                  SimulatedSpeechToText,
                                  SimulatedWakeWordDetector, VoiceInterface,
                                  VoiceSession)
+        from forge.voice.wake import SimulatedWakeWordDetector
 
         if self._voice_session is None:
-            if self.config.voice_stt_provider != "simulated" or \
-                    self.config.voice_tts_provider != "simulated":
-                raise ValueError(
-                    "Only the simulated voice providers exist in A36")
+            # Resolve STT provider
+            stt_name = self.config.voice_stt_provider
+            if stt_name == "openai-whisper":
+                from forge.voice.openai_stt import OpenAISpeechToText
+                transcriber: Any = OpenAISpeechToText()
+            elif stt_name == "simulated":
+                transcriber = SimulatedSpeechToText()
+            else:
+                from forge.voice.transcriber import \
+                    UnconfiguredSpeechToText
+                transcriber = UnconfiguredSpeechToText()
+            # Resolve TTS provider
+            tts_name = self.config.voice_tts_provider
+            if tts_name == "openai-tts":
+                from forge.voice.openai_tts import OpenAISpeechSynthesizer
+                synthesizer: Any = OpenAISpeechSynthesizer()
+            elif tts_name == "simulated":
+                synthesizer = SimulatedSpeechSynthesizer()
+            else:
+                from forge.voice.synthesizer import \
+                    UnconfiguredSpeechSynthesizer
+                synthesizer = UnconfiguredSpeechSynthesizer()
+            wake = SimulatedWakeWordDetector()
             self._voice_session = VoiceSession(
                 VoiceInterface(policy=self.policy,
                                store=self.approval_store,
                                audit=self.audit),
-                transcriber=SimulatedSpeechToText(),
-                synthesizer=SimulatedSpeechSynthesizer(),
-                wake=SimulatedWakeWordDetector())
+                transcriber=transcriber,
+                synthesizer=synthesizer,
+                wake=wake)
         return self._voice_session
 
     def voice_capabilities(self, session: Session) -> dict[str, Any]:
-        """Honest voice capability report for the cockpit."""
-        del session  # provider matrix is not session-specific
+        """Voice capability report: real + simulated providers."""
+        del session
         stack = self._voice_stack()
+        is_simulated = stack.simulation
+        stt_name = stack.transcriber.name
+        tts_name = stack.synthesizer.name
+        if is_simulated:
+            note = ("Voice runs through deterministic simulated speech "
+                    "(tone codec). Real speech recognition/synthesis "
+                    "plug in as providers; the simulated recognizer "
+                    "refuses real audio.")
+        else:
+            note = (f"Voice runs through real providers: "
+                    f"STT={stt_name}, TTS={tts_name}. "
+                    f"Results are real API calls.")
         return {
-            "status": "simulation",
-            "note": "A36 runs the voice loop through deterministic "
-                    "simulated speech (tone codec). Real speech "
-                    "recognition/synthesis plug in as providers; the "
-                    "simulated recognizer refuses real audio.",
+            "status": "simulation" if is_simulated else "real",
+            "note": note,
             **stack.capabilities(),
         }
 
@@ -2709,11 +2743,72 @@ class ControlPlane:
         if definition is None:
             raise InvalidRequest(f"Unknown agent: {agent_name}")
         evolution = self._agent_evolution(session)
+        metrics = evolution.snapshot(agent_name)
+        # Check promotion/retirement readiness
+        training = self._training_pipeline(session)
+        promotion = training.should_promote(
+            agent_name, definition.generation, metrics) if metrics else {}
+        retirement = training.should_retire(
+            agent_name, metrics) if metrics else {}
         return {"agent": agent_name,
                 "generation": definition.generation,
-                "metrics": evolution.snapshot(agent_name),
+                "metrics": metrics,
+                "promotion": promotion,
+                "retirement": retirement,
                 "note": "Metrics come from real recorded run outcomes; "
                         "no outcomes recorded means no metrics."}
+
+    def _training_pipeline(self, session: Session):
+        from forge.agents.training import AgentTrainingPipeline
+        if not hasattr(self, "_training_pipelines"):
+            self._training_pipelines: dict[str, Any] = {}
+        pipeline = self._training_pipelines.get(session.id)
+        if pipeline is None:
+            pipeline = AgentTrainingPipeline(session.id)
+            self._training_pipelines[session.id] = pipeline
+        return pipeline
+
+    def training_collect(self, session: Session, agent_name: str,
+                         runs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Collect training examples from real run outcomes."""
+        factory = self._agent_factory(session)
+        if factory.get(agent_name) is None:
+            raise InvalidRequest(f"Unknown agent: {agent_name}")
+        pipeline = self._training_pipeline(session)
+        result = pipeline.collect_training_data(agent_name, runs)
+        self._audit(session.actor, "training", "collect", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{agent_name} examples={result['examples']}")
+        return result
+
+    def training_export(self, session: Session,
+                        agent_name: str) -> dict[str, Any]:
+        """Export training data in fine-tuning format."""
+        factory = self._agent_factory(session)
+        if factory.get(agent_name) is None:
+            raise InvalidRequest(f"Unknown agent: {agent_name}")
+        pipeline = self._training_pipeline(session)
+        return pipeline.export_dataset(agent_name)
+
+    def training_fine_tune(self, session: Session, agent_name: str,
+                           model: str = "gpt-4o-mini"
+                           ) -> dict[str, Any]:
+        """Start a real fine-tuning job for an agent."""
+        factory = self._agent_factory(session)
+        if factory.get(agent_name) is None:
+            raise InvalidRequest(f"Unknown agent: {agent_name}")
+        pipeline = self._training_pipeline(session)
+        result = pipeline.start_fine_tuning(agent_name, model=model)
+        self._audit(session.actor, "training", "fine_tune",
+                    "error" not in result,
+                    task_id=session.active_task or session.id,
+                    reason=f"{agent_name} model={model}")
+        return result
+
+    def training_status(self, session: Session) -> dict[str, Any]:
+        """Get training pipeline status."""
+        pipeline = self._training_pipeline(session)
+        return pipeline.pipeline_status()
 
 
 
@@ -3798,6 +3893,63 @@ class ControlPlane:
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
 
+    def deployment_backends(self, session: Session) -> dict[str, Any]:
+        """Report available production deployment backends."""
+        from forge.deployment.production import available_backends
+        return available_backends()
+
+    def deployment_docker_build(self, session: Session,
+                                deployment_id: str,
+                                tag: str = "",
+                                dockerfile: str = "Dockerfile"
+                                ) -> dict[str, Any]:
+        """Build a Docker image from a deployment artifact."""
+        from forge.deployment.production import DockerDeployer
+        record = self._deployment_manager(session).get(deployment_id)
+        if not record.get("artifact_path"):
+            raise InvalidRequest(
+                "Deployment must be built before docker build")
+        # Extract to a temp dir for the Docker build context
+        import tempfile
+        import zipfile
+        docker = DockerDeployer()
+        if not docker.available():
+            raise InvalidRequest("Docker is not installed")
+        tag = tag or f"{record['name']}:{record['version']}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(record["artifact_path"], "r") as z:
+                z.extractall(tmpdir)
+            result = docker.build(tmpdir, tag, dockerfile)
+        self._audit(session.actor, "deployment", "docker_build",
+                    result.get("success", False),
+                    task_id=session.active_task or session.id,
+                    reason=f"{deployment_id} tag={tag}")
+        return result
+
+    def deployment_ssh_deploy(self, session: Session,
+                              deployment_id: str) -> dict[str, Any]:
+        """Deploy via rsync to a remote SSH server."""
+        from forge.deployment.production import SSHDeployer
+        import tempfile
+        import zipfile
+        record = self._deployment_manager(session).get(deployment_id)
+        if not record.get("artifact_path"):
+            raise InvalidRequest(
+                "Deployment must be built before SSH deploy")
+        ssh = SSHDeployer()
+        if not ssh.available():
+            raise InvalidRequest(
+                "No FORGE_DEPLOY_SSH_HOST/PATH configured")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(record["artifact_path"], "r") as z:
+                z.extractall(tmpdir)
+            result = ssh.deploy(tmpdir)
+        self._audit(session.actor, "deployment", "ssh_deploy",
+                    result.get("success", False),
+                    task_id=session.active_task or session.id,
+                    reason=f"{deployment_id}")
+        return result
+
 
     # -- performance (A63) ---------------------------------------------------------------------------
 
@@ -4271,8 +4423,14 @@ class ControlPlane:
 
     def compute_execute(self, session: Session, code: str, *,
                         timeout: float | None = None,
-                        approval_id: str = "") -> dict[str, Any]:
-        """Run a compute cell — TERMINAL/execute policy first."""
+                        approval_id: str = "",
+                        backend: str = "local") -> dict[str, Any]:
+        """Run a compute cell — TERMINAL/execute policy first.
+
+        ``backend`` can be "local" (default, subprocess) or "remote"
+        (Colab/SSH/Modal when configured). Remote execution requires
+        the same policy gate.
+        """
         from forge.security.approvals import enforce_with_token
         from forge.security.policy import (PermissionEvaluation,
                                            PermissionRequest)
@@ -4285,7 +4443,7 @@ class ControlPlane:
             agent="forge-compute", resource=Resource.TERMINAL,
             operation="execute", scope="python",
             task_id=session.active_task or session.id,
-            reason="compute cell execution",
+            reason=f"compute cell execution ({backend})",
             details=(("args", ("-c", code.strip()[:6000])),))
         policy = self.policy if self.policy is not None else PermissionPolicy()
         evaluation = policy.evaluate(permission)
@@ -4310,6 +4468,28 @@ class ControlPlane:
             return {"allowed": False, "approval_required": False,
                     "approval_request_id": "", "cell": None,
                     "reason": evaluation.reason or "denied by policy"}
+        if backend == "remote":
+            from forge.compute.remote import RemoteComputeBackend
+            remote = RemoteComputeBackend()
+            if not remote.available():
+                return {"allowed": True, "approval_required": False,
+                        "approval_request_id": "", "cell": {
+                            "status": "refused",
+                            "output": "No remote compute backend "
+                                      "is configured. Set "
+                                      "FORGE_COLAB_URL, "
+                                      "FORGE_COMPUTE_SSH_HOST, "
+                                      "or MODAL_TOKEN_ID.",
+                            "backend": "unavailable"}}
+            cell = remote.execute(
+                code, timeout=timeout or 30.0)
+            self._audit(session.actor, "compute", "execute_remote",
+                        cell["status"] == "succeeded",
+                        task_id=session.active_task or session.id,
+                        reason=f"backend={cell.get('backend', '?')}, "
+                               f"status={cell['status']}")
+            return {"allowed": True, "approval_required": False,
+                    "approval_request_id": "", "cell": cell}
         engine = self._compute_engine(session)
         try:
             cell = engine.execute(code, timeout=timeout)
@@ -4396,6 +4576,32 @@ class ControlPlane:
         self._audit(session.actor, "research", "report", True,
                     task_id=session.active_task or session.id,
                     reason=f"sources={result['source_file_count']}")
+        return result
+
+    def research_web(self, session: Session,
+                     question: str) -> dict[str, Any]:
+        """Search the Internet for research; untrusted external input."""
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > 2000:
+            raise InvalidRequest("Question must be 1-2000 characters.")
+        engine = self._research_engine(session)
+        result = engine.ask_web(question)
+        self._audit(session.actor, "research", "web_search", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"provider={result.get('provider', 'N/A')}, "
+                           f"evidence={len(result['evidence'])}")
+        return result
+
+    def research_fetch(self, session: Session,
+                       url: str) -> dict[str, Any]:
+        """Fetch and extract text from a URL (untrusted)."""
+        if not isinstance(url, str) or not url.strip():
+            raise InvalidRequest("url must be a non-empty string")
+        engine = self._research_engine(session)
+        result = engine.fetch_url(url)
+        self._audit(session.actor, "research", "fetch", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"url={result['url'][:200]}")
         return result
 
 
@@ -4583,12 +4789,23 @@ class ControlPlane:
         del session
         from forge.collaboration.connectors import AVAILABLE_CONNECTORS
 
+        openai_available = False
+        try:
+            from forge.collaboration.openai_connector import OpenAIConnector
+            openai_available = OpenAIConnector().available()
+        except Exception:
+            pass
         return {
             "connectors": list(AVAILABLE_CONNECTORS),
             "untrusted_by_design": True,
-            "simulated_only": True,
+            "simulated_only": False,
+            "real_connectors": {
+                "openai": {"available": openai_available,
+                           "configured": openai_available},
+            },
             "note": "External AI responses are marked untrusted and "
-                    "can never authorize actions.",
+                    "can never authorize actions. Real connectors "
+                    "require API keys in environment variables.",
         }
 
     def collaboration_consult(self, session: Session, question: str, *,
