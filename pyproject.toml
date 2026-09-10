@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "forge-ai"
 version = "0.1.0"
 description = "Forge AI - autonomous software engineering foundation"
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 dependencies = [
     "pydantic>=2.0",
     "PyYAML>=6.0",

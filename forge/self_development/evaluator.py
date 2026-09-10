@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path

@@ -6,6 +6,7 @@ Invariant under test:
     UNAUTHORIZED CHANGESET -> NO FILE WRITES
     VALID + AUTHORIZED     -> CHECKPOINT -> APPLY
 """
+from __future__ import annotations
 import hashlib
 
 import pytest

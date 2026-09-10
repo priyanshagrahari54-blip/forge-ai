@@ -112,7 +112,7 @@ class VoiceInterface:
             if match:
                 return VoiceIntent(
                     name=name,
-                    slots=dict(zip(slots, match.groups(), strict=False)),
+                    slots=dict(zip(slots, match.groups())),
                     confidence=1.0, raw=command.text)
         return VoiceIntent(name="unknown", confidence=0.0, raw=command.text)
 

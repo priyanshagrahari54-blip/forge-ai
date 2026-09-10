@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from forge.runtime.runtime import ToolDefinition
 from forge.tools.filesystem import FileSystemTool
 from forge.tools.terminal import TerminalTool

@@ -5,9 +5,10 @@ Python with stdlib Tkinter. **Zero extra dependencies**: if Python runs,
 the app runs. No server, no browser, no port to configure.
 
 > **Python version note.** There is no "Python 8" — CPython releases go
-> 3.9 → 3.10 → 3.11 → 3.12 → 3.13. Forge (including this app) requires
-> **Python 3.11+** (`pyproject.toml`). On Windows install Python 3.11 or
-> newer from python.org and tick "Add python.exe to PATH".
+> 3.8 → 3.9 → … → 3.13 → 3.14. Forge (including this app) supports
+> **Python 3.8+** (`pyproject.toml`, CI-tested on 3.8 and 3.11). On
+> Windows install Python 3.8 or newer from python.org and tick
+> "Add python.exe to PATH".
 
 This package (`forge/desktop_app/`) is the *application you run*. It is
 separate from `forge/desktop/`, which is the *desktop-control agent*

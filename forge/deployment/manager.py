@@ -243,7 +243,11 @@ class DeploymentManager:
                 f"cannot deploy a deployment in status "
                 f"{record['status']!r}")
         target_path = Path(target).resolve()
-        if target_path.is_relative_to(self.root):
+        try:
+            target_path.relative_to(self.root)
+        except ValueError:
+            pass  # outside the source project: allowed
+        else:
             raise ValueError("deploy target must live outside the "
                              "source project")
         self._extract_verified(record, target_path)
