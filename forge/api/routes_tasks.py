@@ -1,6 +1,8 @@
 """Task, run, event, report, and checkpoint routes (A34)."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 
 from forge.api.deps import (
@@ -49,7 +51,7 @@ async def get_task(task_id: str,
 
 
 @router.post("/tasks/{task_id}/pause")
-async def pause_task(task_id: str, body: TaskActionRequest | None = None,
+async def pause_task(task_id: str, body: Optional[TaskActionRequest] = None,
                      current: Authed = Depends(authed_mutation),
                      plane: ControlPlane = Depends(get_plane)):
     run = plane.pause_task(
@@ -59,7 +61,7 @@ async def pause_task(task_id: str, body: TaskActionRequest | None = None,
 
 
 @router.post("/tasks/{task_id}/resume")
-async def resume_task(task_id: str, body: TaskActionRequest | None = None,
+async def resume_task(task_id: str, body: Optional[TaskActionRequest] = None,
                       current: Authed = Depends(authed_mutation),
                       plane: ControlPlane = Depends(get_plane)):
     run = plane.resume_task(
@@ -69,7 +71,7 @@ async def resume_task(task_id: str, body: TaskActionRequest | None = None,
 
 
 @router.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str, body: TaskActionRequest | None = None,
+async def cancel_task(task_id: str, body: Optional[TaskActionRequest] = None,
                       current: Authed = Depends(authed_mutation),
                       plane: ControlPlane = Depends(get_plane)):
     run = plane.cancel_task(
@@ -127,7 +129,7 @@ async def task_checkpoints(task_id: str,
 
 
 @router.post("/tasks/{task_id}/rollback")
-async def task_rollback(task_id: str, body: RollbackRequest | None = None,
+async def task_rollback(task_id: str, body: Optional[RollbackRequest] = None,
                         current: Authed = Depends(authed_mutation),
                         plane: ControlPlane = Depends(get_plane)):
     result = plane.rollback_task(

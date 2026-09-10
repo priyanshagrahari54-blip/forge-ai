@@ -1,9 +1,12 @@
 """Launch the Forge AI Cockpit with a demo project."""
-from forge.api.server import create_app
+import sys
+from pathlib import Path
+
+import uvicorn
+
+from forge.api.app import create_app
 from forge.control.control_plane import ControlPlane, ControlConfig
 from forge.security.policy import PermissionPolicy, PermissionRule, Resource
-from pathlib import Path
-import uvicorn
 
 # Set up demo project
 proj = Path('/tmp/forge-demo-project')
@@ -27,10 +30,18 @@ def test_add():
 (proj / 'README.md').write_text('# Demo Project\nA sample project for Forge AI.\n')
 (proj / '.git').mkdir(exist_ok=True)
 
-# Full permissions for demo
+# Full permissions for demo.
+#
+# r1 allows exactly the repository test command Forge runs
+# ([sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"]).
+# The scope is matched against the executable basename and the args must
+# match exactly, so targeted runs (extra test paths appended) and every
+# other command still fall through to the normal approval flow.
+_test_executable = Path(sys.executable).name
+_test_args = ("-B", "-m", "pytest", "-q", "-p", "no:cacheprovider")
 policy = PermissionPolicy(rules=[
-    PermissionRule(id='r1', resource=Resource.TERMINAL, operation='execute', scope='python',
-                   args=('python3', '-c', 'x'), effect='ALLOW'),
+    PermissionRule(id='r1', resource=Resource.TERMINAL, operation='execute',
+                   scope=_test_executable, args=_test_args, effect='ALLOW'),
     PermissionRule(id='r2', resource=Resource.MODEL, operation='call', scope='', effect='ALLOW'),
     PermissionRule(id='r3', resource=Resource.VISION, operation='analyze', scope='image', effect='ALLOW'),
     PermissionRule(id='r4', resource=Resource.VOICE, operation='command', scope='', effect='ALLOW'),
@@ -49,6 +60,7 @@ plane = ControlPlane(config)
 plane.start()
 
 app = create_app(plane)
-print("Starting Forge AI Cockpit on http://0.0.0.0:8080")
+# Local-dev auth has no passwords: never bind beyond loopback here.
+print("Starting Forge AI Cockpit on http://127.0.0.1:8080")
 print("Demo project: /tmp/forge-demo-project")
-uvicorn.run(app, host='0.0.0.0', port=8080)
+uvicorn.run(app, host='127.0.0.1', port=8080)

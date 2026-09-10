@@ -14,13 +14,12 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Dict
 
 from fastapi import Depends, Request
 
-from forge.api.errors import error_body
 from forge.control.control_plane import ControlError, ControlPlane
 from forge.control.sessions import Session
-from starlette.responses import JSONResponse
 
 SESSION_COOKIE = "forge_session"
 CSRF_HEADER = "x-requested-with"
@@ -149,6 +148,6 @@ def rate_limit(group: str):
     return Depends(dependency)
 
 
-def pagination_params(limit: int = 50, offset: int = 0) -> dict[str, int]:
+def pagination_params(limit: int = 50, offset: int = 0) -> Dict[str, int]:
     return {"limit": max(1, min(200, limit)),
             "offset": max(0, min(100000, offset))}

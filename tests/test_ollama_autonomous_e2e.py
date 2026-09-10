@@ -17,6 +17,7 @@ benchmark -> explicit commit — for a tiny deterministic requirement, and then
 verifies the actual repository behavior. No model response is faked, no
 caller-supplied changes and no modifier function are used.
 """
+from __future__ import annotations
 import importlib.util
 import os
 import socket

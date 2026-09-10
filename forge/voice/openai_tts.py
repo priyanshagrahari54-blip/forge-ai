@@ -8,14 +8,11 @@ All existing security invariants hold.
 """
 from __future__ import annotations
 
-import io
 import os
 import struct
-from typing import Any
 
 from forge.voice.audio import AudioChunk
 from forge.voice.synthesizer import (
-    TextToSpeechProvider,
     SynthesisError,
 )
 

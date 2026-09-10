@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import pytest  # noqa: E402
 
 from forge.cockpit_palette import (  # noqa: E402
-    VIEWS,
     palette_entries,
     palette_payload,
     validate_entries,

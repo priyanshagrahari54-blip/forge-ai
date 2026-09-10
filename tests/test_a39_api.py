@@ -6,8 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from helpers_a34 import login, make_client, make_plane, make_repo, \
-    wait_for  # noqa: E402
+from helpers_a34 import login, make_client, make_plane, make_repo  # noqa: E402
 from helpers_a39 import b64, make_png  # noqa: E402
 
 from forge.security.policy import (  # noqa: E402
@@ -40,6 +39,8 @@ def test_capabilities_and_analyze(tmp_path):
                           headers=headers).json()
         assert "simulated" in caps["providers"]
         assert "png" in caps["formats"]
+        assert caps["active_provider"] == "simulated"
+        assert caps["simulated_only"] is True
         result = client.post("/api/v1/vision/analyze", headers=headers,
                              json={"image_b64": b64(make_png())}).json()
         assert result["allowed"] is True
@@ -128,3 +129,20 @@ def test_approval_decision_conflicts(tmp_path):
                            headers=headers, json={}).status_code == 404
         assert client.get("/api/v1/vision/approvals",
                           headers=headers).status_code == 200
+
+
+def test_capabilities_reflect_real_provider(tmp_path):
+    from forge.control.control_plane import ControlConfig, ControlPlane
+
+    root = tmp_path / "demo"
+    root.mkdir()
+    plane = ControlPlane(ControlConfig(
+        db_path=str(tmp_path / "cockpit.db"),
+        projects={"demo": str(root)}, vision_provider="openai-vision"))
+    try:
+        caps = plane.vision_capabilities()
+        assert caps["active_provider"] == "openai-vision"
+        assert caps["simulated_only"] is False
+        assert "openai-vision" in caps["providers"]
+    finally:
+        plane.stop()

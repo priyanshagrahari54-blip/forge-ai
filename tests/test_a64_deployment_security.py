@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from forge.deployment.production import (
-    MAX_DEPLOY_OUTPUT,
     RemoteDeployError,
     SSHDeployer,
     available_backends,

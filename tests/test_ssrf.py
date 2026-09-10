@@ -13,7 +13,6 @@ import os
 import socket
 import threading
 import http.server
-from http.client import HTTPResponse
 
 import pytest
 

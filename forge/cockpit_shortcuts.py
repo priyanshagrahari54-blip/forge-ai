@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from forge.cockpit_palette import VIEWS, validate_entries
+from forge.cockpit_palette import VIEWS
 
 _CHORD = re.compile(r"^[a-z0-9+? ]{1,16}$")
 

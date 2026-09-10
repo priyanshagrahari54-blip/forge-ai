@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import hashlib
 
-from forge.vision.base import (VisionFinding, VisionProvider,
-                               VisionResult)
+from forge.vision.base import (VisionFinding, VisionResult)
 from forge.vision.image_io import (DANGER_MARKERS,
                                    extract_png_text_chunks, sniff_image)
 

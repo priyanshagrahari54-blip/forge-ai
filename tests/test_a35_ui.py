@@ -70,9 +70,6 @@ def test_desktop_renderer_only_talks_to_desktop_endpoints():
         "\n/* ----------", 1)[0]
     calls = re.findall(r'api\("(/api/v1/[^"]+)"', renderer)
     assert calls, "renderer must call the API"
-    allowed = DESKTOP_ENDPOINTS + tuple(
-        f"/api/v1/desktop/approvals/{suffix}"
-        for suffix in ("approve", "deny"))
     for call in calls:
         assert call in DESKTOP_ENDPOINTS or call.startswith(
             "/api/v1/desktop/approvals/"), call

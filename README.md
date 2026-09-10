@@ -678,6 +678,11 @@ A provider can be registered with `ModelInfo(provider=...)` (legacy router) or `
 ## Commands
 
 ```bash
+forge doctor                   # diagnose why tasks would fail (exit 0 when ready)
+forge run "add CSV export"     # run one autonomous task end to end
+forge run "fix login bug" --mode autonomous --approve --root /path/to/repo
+forge desktop                  # native desktop app (Tkinter, no server needed)
+forge serve --project demo=/path/to/repo   # browser cockpit on 127.0.0.1:8000
 forge plan "add CSV export"
 forge analyze
 forge models                   # list models (same as: forge models list)
@@ -703,7 +708,7 @@ python -m pytest -q
 
 ## Continuous integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request: it checks out the repository, installs the project with test dependencies (`pip install -e ".[dev]"`), runs `python -m pytest -q`, compiles the package (`python -m compileall forge`), and checks the diff (`git diff --check`). The job fails if any step fails; it never depends on a local Ollama server, so it is fully deterministic and offline. The opt-in live-model tests are skipped by default (see below).
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request across Python 3.8 and 3.11: it checks out the repository, installs the project with test dependencies (`pip install -e ".[dev]"`), runs `python -m pytest -q`, compiles the package (`python -m compileall forge`), and checks the diff (`git diff --check`). The job fails if any step fails; it never depends on a local Ollama server, so it is fully deterministic and offline. The opt-in live-model tests are skipped by default (see below).
 
 Live Ollama integration tests are opt-in and auto-skip when no Ollama endpoint is reachable, so normal CI never fails merely because Ollama is not installed:
 
@@ -714,3 +719,11 @@ Live Ollama integration tests are opt-in and auto-skip when no Ollama endpoint i
 Status of live integration: **implemented and opt-in tested** where an Ollama endpoint is available; **not available** in environments without one (the suite remains fully runnable offline).
 
 Known limitation: a useful autonomous run needs an available capable model provider (Ollama or an API provider); the dependency-free local fallback refuses to invent source code. This is a safe failure, not a deterministic fake implementation. Proprietary models are never fabricated: `OpenAIProvider` only works with a legitimate, operator-supplied `OPENAI_API_KEY`, and Forge makes no claim that any proprietary model is freely available.
+
+When every task fails, it is almost always the missing-model chain: Ollama
+not running (or the model not pulled) and no API key configured, so routing
+falls through to the placeholder. Run `forge doctor` first — it names the
+broken link and the fix — then see `docs/AUDIT-TASK-FAILURES.md` for the
+full audit (root causes, fixes, and recovery behavior) and
+`docs/DESKTOP-APP.md` for the native desktop app, including how to build a
+standalone `.exe` with PyInstaller.

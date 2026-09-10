@@ -35,7 +35,7 @@ import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -487,8 +487,10 @@ class ControlConfig:
     fabric: Any = None
     checkpoint_retention: int = 10
     local_dev_mode: bool = True
-    # A35 desktop: the provider behind the Desktop Bridge. Only the
-    # deterministic fake exists in A35; real providers arrive as plugins.
+    # A35 desktop: the provider behind the Desktop Bridge. Defaults to
+    # the deterministic fake (safe for dev/tests/sandboxes); pass a
+    # LocalDesktopProvider (forge.desktop.local_provider) to drive the
+    # real local machine through the same policy/approval/audit gates.
     desktop_provider: Any = None
     desktop_bridge_ttl: float = 3600.0
     # A36 voice: provider names for speech-to-text / text-to-speech.
@@ -652,6 +654,7 @@ class ControlPlane:
         self._checkpoints: dict[str, Any] = {}
         self._checkpoints_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
+        self._pending_futures: set[Future] = set()
         self._dispatcher: threading.Thread | None = None
         self._dispatch_event = threading.Event()
         self._stopping = threading.Event()
@@ -679,6 +682,17 @@ class ControlPlane:
             target=self._dispatch_loop, name="forge-dispatch", daemon=True)
         self._dispatcher.start()
 
+    def _submit_tracked(self, fn, *args):
+        """Submit background work, tracking it so stop() can cancel it.
+
+        Explicit tracking (instead of ``shutdown(cancel_futures=True)``,
+        which is 3.9+) keeps stop() semantics identical on 3.8+.
+        """
+        future = self._executor.submit(fn, *args)
+        self._pending_futures.add(future)
+        future.add_done_callback(self._pending_futures.discard)
+        return future
+
     def stop(self, *, wait: bool = True) -> None:
         """Stop background work. In-flight runs keep their threads only."""
         self._stopping.set()
@@ -689,7 +703,10 @@ class ControlPlane:
             self._dispatcher.join(timeout=5.0)
             self._dispatcher = None
         if self._executor is not None:
-            self._executor.shutdown(wait=wait, cancel_futures=True)
+            for future in list(self._pending_futures):
+                future.cancel()
+            self._pending_futures.clear()
+            self._executor.shutdown(wait=wait)
             self._executor = None
 
     @property
@@ -1372,6 +1389,28 @@ class ControlPlane:
         return {"models": state["health"],
                 "providers": state["provider_health"]}
 
+    def model_readiness(self, *, probe_network: bool = True,
+                        timeout: float = 3.0) -> dict[str, Any]:
+        """Probe whether coding tasks can currently succeed.
+
+        Returns the readiness report as a dict (``ready``,
+        ``fallback_only``, ``usable_models``, ``checks``). Live endpoint
+        probes use short timeouts and never raise; an unreachable Ollama
+        is reported as a failed check with a remediation, not an error.
+        """
+        from forge.models.readiness import check_fabric_readiness
+
+        try:
+            report = check_fabric_readiness(
+                self.fabric, probe_network=probe_network, timeout=timeout)
+        except Exception as exc:
+            return {"ready": False, "fallback_only": True,
+                    "usable_models": [],
+                    "checks": [{"name": "readiness_probe", "ok": False,
+                                "detail": f"Readiness probe failed: {exc}",
+                                "remediation": "Run `forge doctor` locally."}]}
+        return report.to_dict()
+
     # -- permission views (read-only) -----------------------------------------------
 
     def get_permission_state(self, session: Session) -> dict[str, Any]:
@@ -1594,7 +1633,6 @@ class ControlPlane:
                                  SimulatedSpeechToText,
                                  SimulatedWakeWordDetector, VoiceInterface,
                                  VoiceSession)
-        from forge.voice.wake import SimulatedWakeWordDetector
 
         if self._voice_session is None:
             # Resolve STT provider
@@ -1777,7 +1815,6 @@ class ControlPlane:
                              approved: bool) -> dict[str, Any]:
         """Decide a voice approval through the same A33 store (single-use
         tokens on approve)."""
-        from forge.security.approvals import ApprovalStatus
 
         validate_id(approval_id, kind="approval id")
         request = self.approval_store.get_request(approval_id)
@@ -2014,7 +2051,6 @@ class ControlPlane:
         passes policy, risk invariants, profile, and approval gates.
         """
         from forge.desktop.agent import GrantScopeChecker
-        from forge.desktop.actions import DesktopActionKind
 
         if not isinstance(task_id, str) or not task_id.strip() \
                 or len(task_id) > 128:
@@ -2079,7 +2115,6 @@ class ControlPlane:
         A33 :class:`ApprovalStore` — distinct approver, single
         transition, scoped single-use tokens.
         """
-        from forge.security.approvals import ApprovalStatus
 
         validate_id(approval_id, kind="approval id")
         request = self.approval_store.get_request(approval_id)
@@ -3160,7 +3195,7 @@ class ControlPlane:
 
         governor.begin(name)
         if self._executor is not None:
-            self._executor.submit(tracked_worker)
+            self._submit_tracked(tracked_worker)
         else:
             tracked_worker()
         return {"allowed": True, "approval_required": False,
@@ -3360,7 +3395,7 @@ class ControlPlane:
                                    f"error={str(exc)[:300]}")
 
         if self._executor is not None:
-            self._executor.submit(worker)
+            self._submit_tracked(worker)
         else:
             worker()
         return {"allowed": True, "approval_required": False,
@@ -5347,6 +5382,17 @@ class ControlPlane:
         return {"allowed": True, "approval_required": False,
                 "approval_request_id": ""}, result
 
+    def vision_capabilities(self) -> dict[str, Any]:
+        """Vision provider report computed from the active provider."""
+        from forge.vision.pipeline import AVAILABLE_PROVIDERS
+
+        active = getattr(self.vision_provider, "name", "simulated")
+        return {"providers": list(AVAILABLE_PROVIDERS),
+                "active_provider": active,
+                "simulated_only": active == "simulated",
+                "max_image_bytes": 5_000_000,
+                "formats": ["png", "jpeg", "bmp", "gif"]}
+
     def vision_propose(self, session: Session,
                        image_b64: str) -> dict[str, Any]:
         """Analyze a screenshot and return policy-filtered proposals.
@@ -5455,14 +5501,18 @@ class ControlPlane:
         """Build the default coordinated team for one orchestration.
 
         Every executor performs its real job over the project root:
-        planner (capability planning), architect (deterministic
-        structure proposal), researcher (bounded repository inventory),
-        coder/debugger (model-driven change sets through the permissioned
-        runtime), tester (bounded real test collection), reviewer
-        (deterministic findings), security (bounded secret-pattern
-        scan), performance (measured import timings), documentation
-        (docs inventory), and git (real repository status).
+        planner (capability planning), architect (model-backed structure
+        proposal with a labeled deterministic fallback), researcher
+        (bounded repository inventory with optional model synthesis),
+        coder/debugger (model-driven
+        change sets through the permissioned runtime), tester (bounded
+        real test collection), reviewer (deterministic ReviewGate
+        findings plus optional model review), security (bounded
+        secret-pattern scan), performance (measured import timings),
+        documentation (docs inventory plus AST docstring coverage), and
+        git (real repository status).
         """
+        import ast as _ast
         import json as _json
         import importlib.util
         import os
@@ -5475,7 +5525,10 @@ class ControlPlane:
         from forge.agents.execution import CallableAgentExecutor
         from forge.agents.planner import CapabilityAgentPlanner
         from forge.agents.registry import AgentRegistration, AgentRegistry
+        from forge.agents.reviewer import ReviewerAgent
+        from forge.models.request import ModelRequest
         from forge.runtime.defaults import create_default_runtime
+        from forge.security.review import ReviewGate
         from forge.tools.git import GitTool
 
         root = str(project.root)
@@ -5509,30 +5562,134 @@ class ControlPlane:
             return _json.dumps({"capabilities": list(team_plan.capabilities),
                                 "agents": list(team_plan.names)})
 
-        def architect_worker(request):
-            requirement = request.task.description.lower()
+        def _architect_heuristic(requirement: str) -> list[str]:
+            lowered = requirement.lower()
             proposals = []
-            if "api" in requirement:
+            if "api" in lowered:
                 proposals.append(
                     "one endpoint per concern, shared validation layer")
-            if "export" in requirement or "csv" in requirement:
+            if "export" in lowered or "csv" in lowered:
                 proposals.append(
                     "separate writer module, used by the entry point")
-            if "test" in requirement:
+            if "test" in lowered:
                 proposals.append("tests live beside each new module")
             if not proposals:
                 proposals.append("keep the change minimal and local")
-            return _json.dumps(
-                {"requirement": request.task.description[:400],
-                 "proposal": proposals})
+            return proposals
+
+        def architect_worker(request):
+            requirement = request.task.description
+            heuristic = _architect_heuristic(requirement)
+            if self.fabric is None:
+                return _json.dumps({
+                    "requirement": requirement[:400],
+                    "proposal": heuristic, "source": "heuristic",
+                    "warning": ("no model fabric attached; deterministic "
+                                "keyword triage only")})
+            inventory = bounded_files((".py",), limit=40)
+            prompt = (
+                "You are a software architect. Propose a concrete module "
+                "structure for the requirement below given the repository "
+                "layout. Return ONLY JSON: "
+                "{proposal:[str], risks:[str]}. Each proposal item names "
+                "concrete modules/files, not platitudes.\n"
+                f"REQUIREMENT: {requirement[:1500]}\n"
+                f"REPOSITORY PYTHON FILES ({len(inventory)} shown): "
+                f"{', '.join(inventory)}")
+            try:
+                response = self.fabric.generate(ModelRequest(
+                    prompt=prompt, capability="planning",
+                    required_capabilities=("planning",),
+                    task=requirement[:1500], prefer_local=True,
+                    prefer_free=True, max_output_tokens=1500))
+            except Exception as exc:
+                return _json.dumps({
+                    "requirement": requirement[:400],
+                    "proposal": heuristic, "source": "heuristic-fallback",
+                    "warning": f"model call failed ({exc}); heuristic used"})
+            if not response.success:
+                return _json.dumps({
+                    "requirement": requirement[:400],
+                    "proposal": heuristic, "source": "heuristic-fallback",
+                    "warning": ("no planning model available "
+                                f"({response.error or 'routing failed'}); "
+                                "heuristic used")})
+            try:
+                data = _json.loads(response.text.strip())
+                proposal = [str(item) for item in data.get("proposal", [])]
+                risks = [str(item) for item in data.get("risks", [])]
+                if not proposal:
+                    raise ValueError("empty proposal")
+            except (ValueError, AttributeError) as exc:
+                return _json.dumps({
+                    "requirement": requirement[:400],
+                    "proposal": heuristic, "source": "heuristic-fallback",
+                    "warning": f"model output unparseable ({exc}); "
+                               "heuristic used"})
+            return _json.dumps({
+                "requirement": requirement[:400], "proposal": proposal,
+                "risks": risks, "source": "model",
+                "model": response.model, "provider": response.provider})
 
         def researcher_worker(request):
-            del request
+            requirement = request.task.description
             python_files = bounded_files((".py",))
             test_files = [path for path in python_files if "test" in path]
-            return _json.dumps({"python_files": len(python_files),
-                                "test_files": len(test_files),
-                                "sample": python_files[:20]})
+            payload: dict[str, Any] = {
+                "python_files": len(python_files),
+                "test_files": len(test_files),
+                "sample": python_files[:20]}
+            if self.fabric is None:
+                payload["synthesis"] = {
+                    "available": False,
+                    "reason": "no model fabric attached; stats only"}
+                return _json.dumps(payload)
+            prompt = (
+                "You are a research analyst. Given the repository stats and "
+                "file sample, summarize what this codebase most likely does "
+                "and where the requested work should focus. Return ONLY "
+                "JSON: {summary:str, hotspots:[str], risks:[str]}.\n"
+                f"REQUIREMENT: {requirement[:800]}\n"
+                f"PYTHON FILES: {len(python_files)} "
+                f"({len(test_files)} test files)\n"
+                f"SAMPLE: {', '.join(python_files[:20])}")
+            try:
+                response = self.fabric.generate(ModelRequest(
+                    prompt=prompt, capability="research",
+                    required_capabilities=("research",),
+                    task=requirement[:800], prefer_local=True,
+                    prefer_free=True, max_output_tokens=800))
+            except Exception as exc:
+                payload["synthesis"] = {
+                    "available": False,
+                    "reason": f"model call failed ({exc}); stats only"}
+                return _json.dumps(payload)
+            if not response.success:
+                payload["synthesis"] = {
+                    "available": False,
+                    "reason": ("no research model available "
+                               f"({response.error or 'routing failed'}); "
+                               "stats only")}
+                return _json.dumps(payload)
+            try:
+                data = _json.loads(response.text.strip())
+                summary = str(data.get("summary", "")).strip()
+                hotspots = [str(item) for item in
+                            data.get("hotspots", [])][:10]
+                risks = [str(item) for item in data.get("risks", [])][:10]
+                if not summary:
+                    raise ValueError("empty summary")
+            except (ValueError, AttributeError) as exc:
+                payload["synthesis"] = {
+                    "available": False,
+                    "reason": (f"model output unparseable ({exc}); "
+                               "stats only")}
+                return _json.dumps(payload)
+            payload["synthesis"] = {
+                "available": True, "summary": summary,
+                "hotspots": hotspots, "risks": risks,
+                "model": response.model, "provider": response.provider}
+            return _json.dumps(payload)
 
         def coder_worker(request):
             agent = CoderAgent(
@@ -5570,17 +5727,28 @@ class ControlPlane:
             return response.output
 
         def reviewer_worker(request):
-            python_files = bounded_files((".py",))
-            findings = [
-                f"repository exposes {len(python_files)} python files"]
-            if not any("test" in name for name in python_files):
-                findings.append("no test files found")
-            requirement = request.task.description.lower()
-            for capability in ("coding", "testing", "security"):
-                if capability in requirement:
-                    findings.append(
-                        f"requirement mentions {capability}")
-            return _json.dumps({"findings": findings})
+            gate = ReviewGate(root)
+            files = bounded_files((".py",), limit=50)
+            requirement = request.task.description
+            decision = gate.review(
+                changed_files=files, requirement=requirement[:400])
+            payload = decision.to_dict()
+            payload["model_reviewed"] = False
+            if self.fabric is not None:
+                try:
+                    model_findings = ReviewerAgent(self.fabric).review(
+                        requirement, changed_files=tuple(files))
+                except Exception:
+                    model_findings = None
+                if model_findings:
+                    merged = gate.review(
+                        changed_files=files,
+                        requirement=requirement[:400],
+                        model_findings=model_findings)
+                    payload = merged.to_dict()
+                    payload["model_reviewed"] = True
+                    payload["model_finding_count"] = len(model_findings)
+            return _json.dumps(payload)
 
         _SECRET_RE = re.compile(
             r"(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*"
@@ -5631,8 +5799,43 @@ class ControlPlane:
         def documentation_worker(request):
             del request
             markdown = bounded_files((".md", ".rst"), limit=50)
-            return _json.dumps({"docs_files": markdown,
-                                "readme": "README.md" in markdown})
+            # Real docstring coverage via AST (parsed, never imported or
+            # executed): every module/class/function counts, documented
+            # ones score. Files that do not parse are reported, not hidden.
+            scored = 0
+            documented = 0
+            unparseable: list[str] = []
+            worst: list[dict[str, Any]] = []
+            for path in bounded_files((".py",), limit=60):
+                try:
+                    tree = _ast.parse(Path(root, path).read_text(
+                        encoding="utf-8", errors="ignore"))
+                except (OSError, SyntaxError, ValueError):
+                    unparseable.append(path)
+                    continue
+                nodes = [tree, *[node for node in _ast.walk(tree)
+                                 if isinstance(node, (_ast.ClassDef,
+                                                     _ast.FunctionDef,
+                                                     _ast.AsyncFunctionDef))]]
+                total = len(nodes)
+                have = sum(1 for node in nodes
+                           if _ast.get_docstring(node))
+                scored += total
+                documented += have
+                if total:
+                    worst.append({"file": path, "coverage": round(
+                        have / total, 3), "missing": total - have})
+            worst.sort(key=lambda item: (item["coverage"],
+                                         -item["missing"]))
+            coverage = round(documented / scored, 3) if scored else 0.0
+            return _json.dumps({
+                "docs_files": markdown,
+                "readme": "README.md" in markdown,
+                "coverage": {
+                    "documented": documented, "total": scored,
+                    "ratio": coverage,
+                    "unparseable": unparseable[:20],
+                    "worst_files": worst[:10]}})
 
         def git_worker(request):
             del request
@@ -5703,7 +5906,7 @@ class ControlPlane:
                     task_id=record.id,
                     reason=f"project {project.id}, chain={bool(chain)}")
         if self._executor is not None:
-            self._executor.submit(
+            self._submit_tracked(
                 self._execute_orchestration, record.id, bool(chain))
         return record
 
@@ -5905,7 +6108,6 @@ class ControlPlane:
 
     def _execute_orchestration(self, orchestration_id: str,
                                chain: bool = False) -> None:
-        from forge.control.orchestrations import TERMINAL as ORCH_TERMINAL
         from forge.core.orchestrator import (MultiAgentOrchestrator,
                                              ReportStatus)
 

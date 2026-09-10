@@ -19,7 +19,7 @@ secrets; snapshots carry simulation metadata.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from forge.desktop.actions import DesktopRequest
@@ -133,8 +133,9 @@ class DesktopBridge:
         """Explicitly reconfigure the fake provider (never a real one)."""
         self.session(bridge_id)  # must be authenticated
         provider = self.agent.provider
-        if type(provider).__name__ != "FakeDesktopProvider":
-            raise DesktopBridgeError("simulate() requires a fake provider")
+        if getattr(provider, "simulation", False) is not True:
+            raise DesktopBridgeError(
+                "simulate() requires a simulation provider")
         if width is not None:
             provider.screen_width = width
         if height is not None:

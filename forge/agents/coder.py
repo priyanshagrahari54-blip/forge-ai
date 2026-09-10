@@ -11,6 +11,12 @@ if TYPE_CHECKING:
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.intelligence.agent_context import AgentContext, AgentContextBuilder
 from forge.intelligence.repository import RepositoryIntelligence
+from forge.models.readiness import (
+    check_fabric_readiness,
+    describe_no_model_error,
+    fabric_has_real_model,
+    is_fallback_response,
+)
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
@@ -33,6 +39,128 @@ _MAX_FILE_BYTES = 2 * 1024 * 1024
 #: Response-level risk labels the coder schema accepts (A32.3). Anything else
 #: is malformed model output and rejects the whole response.
 RISK_LEVELS = frozenset({"NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
+
+#: Marker fragments identifying the offline placeholder's refusal payload.
+_FALLBACK_EXPLANATION_MARKERS = (
+    "no safe local synthesis engine is configured",
+)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove Markdown code fences while preserving the inner payload."""
+    cleaned = text.strip()
+    if "```" in cleaned:
+        cleaned = re.sub(r"```(?:json)?", "", cleaned).replace("```", "").strip()
+    return cleaned
+
+
+def _balanced_json_candidates(text: str) -> list[str]:
+    """Yield candidate JSON objects from text with balanced braces.
+
+    Small/local models often wrap the required JSON object in explanatory
+    prose ("Here is the change: {...} hope this helps"). Candidates are the
+    balanced ``{...}`` spans, longest first, so extraction prefers the most
+    complete object. String literals and escapes are honored while scanning.
+    """
+    spans: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                spans.append(text[start:index + 1])
+                start = -1
+    # Longest first: prefer the most complete object.
+    spans.sort(key=len, reverse=True)
+    return spans
+
+
+def _remove_trailing_commas(payload: str) -> str:
+    """Drop ``,`` before ``}``/``]`` outside string literals (one repair pass)."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(payload):
+        char = payload[index]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            rest = payload[index + 1:].lstrip()
+            if rest.startswith(("}", "]")):
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def loads_model_json(text: str) -> tuple[dict, bool]:
+    """Parse model output into a JSON object, tolerating common wrapping.
+
+    Returns ``(data, extracted)`` where ``extracted`` is True when the payload
+    was recovered from surrounding prose or repaired (trailing commas),
+    rather than parsing verbatim. Raises ``ValueError`` naming the failure
+    when nothing parses; callers surface the message to operators.
+    """
+    cleaned = _strip_code_fences(text)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = None
+    else:
+        if isinstance(data, dict):
+            return data, False
+        raise ValueError("Model response must be a JSON object")
+    for candidate in _balanced_json_candidates(cleaned):
+        for attempt in (candidate, _remove_trailing_commas(candidate)):
+            try:
+                data = json.loads(attempt)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data, True
+    # Last resort: a single trailing-comma repair over the whole payload.
+    try:
+        data = json.loads(_remove_trailing_commas(cleaned))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Model returned invalid JSON: {exc}. "
+            "The model must return ONLY the JSON change object."
+        ) from exc
+    if isinstance(data, dict):
+        return data, True
+    raise ValueError("Model response must be a JSON object")
 
 
 class CoderAgent(AgentExecutor):
@@ -136,15 +264,10 @@ class CoderAgent(AgentExecutor):
         ``old_content`` guards, threaded into the ChangeSet engine. Deletions
         are rejected: autonomous runs never delete files implicitly.
         """
-        cleaned = text.strip()
-        if "```" in cleaned:
-            cleaned = re.sub(r"```(?:json)?", "", cleaned).replace("```", "").strip()
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Model returned invalid JSON: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ValueError("Model response must be a JSON object")
+        data, extracted = loads_model_json(text)
+        if extracted:
+            # Recovery is observable: operators can see the model needed help.
+            pass
 
         summary = data.get("summary", "")
         reasoning = data.get("reasoning_summary", "")
@@ -211,6 +334,11 @@ class CoderAgent(AgentExecutor):
             "tests_to_run": list(tests_list),
             "risk_level": risk_level,
             "change_meta": change_meta,
+            # True when the JSON was recovered from surrounding prose or a
+            # trailing-comma repair instead of parsing verbatim. Operators
+            # can see the model needed help; validation after recovery is
+            # identical to the verbatim path.
+            "extracted_from_prose": extracted,
         }
         return validated, extra
 
@@ -285,6 +413,78 @@ class CoderAgent(AgentExecutor):
         if "\\" in path:
             raise ValueError(f"Model path must use repository-relative POSIX separators: {path!r}")
 
+    def _fabric_failure_error(self, response) -> str:
+        """Explain a fabric-level failure, diagnosing a missing model first."""
+        try:
+            if self.fabric is not None and not fabric_has_real_model(self.fabric):
+                return describe_no_model_error(fabric=self.fabric)
+        except Exception:
+            pass
+        return (response.error
+                or "No available coding model provider; configure Ollama or another provider")
+
+    def _fallback_refusal_error(self, response) -> str | None:
+        """Return an actionable error when the placeholder refused synthesis.
+
+        Returns ``None`` when the empty change set came from a *real* model
+        (which keeps the legacy ``"Model proposed no changes"`` message).
+        Detection is twofold: the response is attributed to a fallback
+        model/provider, or the payload carries the placeholder's refusal
+        marker. A short live probe distinguishes "Ollama down" from "model
+        not pulled" so the remediation names the actual broken link.
+        """
+        provider = str(getattr(response, "provider", "") or "")
+        model = str(getattr(response, "model", "") or "")
+        text = str(getattr(response, "text", "") or "").lower()
+        try:
+            attributed = bool(self.fabric is not None and is_fallback_response(
+                self.fabric, model, provider))
+        except Exception:
+            attributed = False
+        marked = any(marker in text for marker in _FALLBACK_EXPLANATION_MARKERS)
+        if not (attributed or marked):
+            return None
+        try:
+            report = check_fabric_readiness(
+                self.fabric, probe_network=True, timeout=3.0)
+        except Exception:
+            report = None
+        return describe_no_model_error(report)
+
+    def _repair_parse_once(self, model_request, raw_text: str,
+                           parse_error: ValueError) -> tuple[dict[str, str], dict] | None:
+        """Re-prompt once after unparseable model output; None when hopeless."""
+        from forge.models.request import ModelRequest
+
+        if self.fabric is None:
+            return None
+        snippet = raw_text.strip().replace("\n", " ")[:500]
+        repair = ModelRequest(
+            prompt=(
+                "Your previous response could not be parsed as JSON "
+                f"({parse_error}). Return ONLY the JSON change object, with no "
+                "prose before or after it, no Markdown fences, and no "
+                "trailing commas. Previous output for reference: " + snippet
+            ),
+            capability="coding",
+            required_capabilities=("coding",),
+            context=model_request.context,
+            task=model_request.task,
+            prefer_local=True,
+            prefer_free=True,
+            max_output_tokens=4000,
+        )
+        try:
+            response = self.fabric.generate(repair)
+        except Exception:
+            return None
+        if not response.success:
+            return None
+        try:
+            return self._parse_changes(response.text)
+        except ValueError:
+            return None
+
     def _execute_via_fabric(self, request: AgentRequest) -> AgentResponse:
         """Code through the centralized Model Fabric.
 
@@ -312,13 +512,33 @@ class CoderAgent(AgentExecutor):
         if not response.success:
             return AgentResponse(
                 False,
-                error=response.error or "No available coding model provider; configure Ollama or another provider",
+                error=self._fabric_failure_error(response),
                 agent=self.name,
                 stage=request.stage,
             )
         try:
-            changes, extra = self._parse_changes(response.text)
+            try:
+                changes, extra = self._parse_changes(response.text)
+            except ValueError as parse_error:
+                # Bounded recovery: small/local models sometimes emit
+                # prose-wrapped or slightly malformed JSON. One repair
+                # re-prompt is attempted; a second failure is reported
+                # honestly with the original parse error intact.
+                repaired = self._repair_parse_once(
+                    model_request, response.text, parse_error)
+                if repaired is None:
+                    raise
+                changes, extra = repaired
+                extra["repair_attempted"] = True
             if not changes:
+                refusal = self._fallback_refusal_error(response)
+                if refusal is not None:
+                    return AgentResponse(
+                        False, error=refusal, agent=self.name,
+                        stage=request.stage,
+                        metadata={"files": [], "fallback_refusal": True,
+                                  "model": response.model,
+                                  "provider": response.provider})
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
             token_id = str(request.metadata.get("approval_token_id", "") or "")
@@ -355,6 +575,16 @@ class CoderAgent(AgentExecutor):
                 raise
             changes, extra = self._parse_changes(result.text)
             if not changes:
+                provider_name = ""
+                try:
+                    provider_name = str(getattr(getattr(model, "provider", None), "name", "") or "")
+                except Exception:
+                    provider_name = ""
+                if provider_name.strip().lower() == "local":
+                    return AgentResponse(
+                        False, error=describe_no_model_error(),
+                        agent=self.name, stage=request.stage,
+                        metadata={"files": [], "fallback_refusal": True})
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
             token_id = str(request.metadata.get("approval_token_id", "") or "")

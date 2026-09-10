@@ -121,7 +121,9 @@ class ResearchEngine:
     def _name_forms(candidate: str) -> list[str]:
         forms = [candidate]
         if "/" in candidate or candidate.endswith(".py"):
-            bare = candidate.replace("/", ".").removesuffix(".py")
+            bare = candidate.replace("/", ".")
+            if bare.endswith(".py"):
+                bare = bare[:-len(".py")]
             forms.append(bare)
         elif "." in candidate:
             path = candidate.replace(".", "/")

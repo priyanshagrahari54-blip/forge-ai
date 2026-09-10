@@ -24,8 +24,6 @@ Honesty invariants:
 
 from __future__ import annotations
 
-import json
-import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -539,7 +537,11 @@ class MultiAgentOrchestrator:
             pool = ThreadPoolExecutor(max_workers=1)
             future = pool.submit(registration.executor.execute, request)
             done, _ = wait((future,), timeout=self.step_timeout)
-            pool.shutdown(wait=False, cancel_futures=True)
+            if not done:
+                # shutdown(cancel_futures=True) is 3.9+; with a single
+                # held future, cancelling it directly is equivalent.
+                future.cancel()
+            pool.shutdown(wait=False)
             if not done:
                 raise StepTimeoutError(step.id, self.step_timeout)
             response = future.result()

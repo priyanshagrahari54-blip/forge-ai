@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse
 
 from forge.api.deps import (
     SESSION_COOKIE,
@@ -15,7 +14,6 @@ from forge.api.deps import (
 from forge.api.schemas import CreateSessionRequest
 from forge.control.control_plane import (
     ControlPlane,
-    InvalidRequest,
     ProjectNotFound,
 )
 

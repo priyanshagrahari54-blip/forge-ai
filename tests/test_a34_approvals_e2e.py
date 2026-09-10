@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -18,7 +17,6 @@ from helpers_a34 import (  # noqa: E402
     make_client,
     make_plane,
     make_repo,
-    task_state,
     wait_for,
     wait_for_status,
 )

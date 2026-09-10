@@ -77,7 +77,6 @@ def external_provider_report(
     """
     records = records or {}
     ttl = verification_ttl()
-    now = time.time()
     report: dict[str, dict[str, Any]] = {}
 
     def verification_block(name: str) -> dict[str, Any] | None:

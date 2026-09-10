@@ -6,6 +6,8 @@ credentials, or free-form commands.
 """
 from __future__ import annotations
 
+from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 PROFILE_VALUES = ("safe", "assisted", "autonomous", "locked")
@@ -25,12 +27,12 @@ class CreateTaskRequest(BaseModel):
 
 
 class TaskActionRequest(BaseModel):
-    expected_version: int | None = Field(default=None, ge=1)
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class RollbackRequest(BaseModel):
     checkpoint_id: str = Field(default="", max_length=128)
-    expected_version: int | None = Field(default=None, ge=1)
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class CommandRequest(BaseModel):
@@ -38,7 +40,7 @@ class CommandRequest(BaseModel):
     task_id: str = Field(default="", max_length=128)
     approval_id: str = Field(default="", max_length=128)
     requirement: str = Field(default="", max_length=8000)
-    expected_version: int | None = Field(default=None, ge=1)
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class InterpretRequest(BaseModel):
@@ -103,7 +105,7 @@ class DesktopActRequest(BaseModel):
 
 class DesktopGrantRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=128)
-    scopes: list[str] = Field(min_length=1, max_length=32)
+    scopes: List[str] = Field(min_length=1, max_length=32)
 
 
 class DesktopDecisionRequest(BaseModel):
@@ -182,7 +184,7 @@ class ResearchQuestionRequest(BaseModel):
 
 class ComputeExecuteRequest(BaseModel):
     code: str = Field(min_length=1, max_length=6000)
-    timeout: float | None = Field(default=None, gt=0, le=120)
+    timeout: Optional[float] = Field(default=None, gt=0, le=120)
     approval_id: str = Field(default="", max_length=200)
     backend: str = Field(default="local", max_length=32)
 
@@ -192,15 +194,15 @@ class ComputeExecuteRequest(BaseModel):
 class AgentCreateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=48)
     role: str = Field(min_length=2, max_length=32)
-    capabilities: list[str] = Field(min_length=1, max_length=12)
+    capabilities: List[str] = Field(min_length=1, max_length=12)
     description: str = Field(default="", max_length=500)
     bind: bool = Field(default=False)
 
 
 class AgentUpdateRequest(BaseModel):
     role: str = Field(default="", max_length=32)
-    capabilities: list[str] | None = Field(default=None, max_length=12)
-    description: str | None = Field(default=None, max_length=500)
+    capabilities: Optional[List[str]] = Field(default=None, max_length=12)
+    description: Optional[str] = Field(default=None, max_length=500)
 
 
 # -- A50 agent evolution -------------------------------------------------------------------
@@ -220,7 +222,7 @@ class AgentRunRequest(BaseModel):
 
 class TeamCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=48)
-    members: list[str] = Field(min_length=1, max_length=6)
+    members: List[str] = Field(min_length=1, max_length=6)
 
 
 class TeamExecuteRequest(BaseModel):
@@ -283,7 +285,7 @@ class FailureRecordRequest(BaseModel):
 # -- A60 model benchmarking ---------------------------------------------------------------------
 
 class BenchmarkRequest(BaseModel):
-    models: list[str] | None = None
+    models: Optional[List[str]] = None
 
 
 # -- A64 deployment ----------------------------------------------------------------------------

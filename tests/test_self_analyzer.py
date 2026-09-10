@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from forge.self_development import ForgeSelfAnalyzer, Finding, FindingCategory
 

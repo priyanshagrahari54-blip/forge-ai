@@ -9,7 +9,7 @@ internal paths.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,8 +20,8 @@ from forge.control.control_plane import ControlError
 
 
 def error_body(code: str, message: str, request_id: str,
-               details: dict[str, Any] | None = None) -> dict[str, Any]:
-    body: dict[str, Any] = {
+               details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
         "error": {"code": code, "message": message,
                   "request_id": request_id},
     }

@@ -1,6 +1,6 @@
 """Real model-contract E2E: the test supplies a provider, not pre-written changes to Forge."""
-import json, subprocess, sys
-from pathlib import Path
+import json
+import subprocess
 from forge.agents.coder import CoderAgent
 from forge.agents.execution import AgentRequest
 from forge.core.task_engine import TaskEngine, TaskStatus
