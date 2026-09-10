@@ -104,27 +104,21 @@ class RepositoryIntelligence:
     def _direct_dependency_paths(self, source: str) -> list[str]:
         """Return direct dependency file paths for a source file."""
 
-        result: list[str] = []
-
-        for dependency in self.dependencies.dependencies:
-            if dependency.source != source:
-                continue
-
-            if dependency.resolved_path is not None:
-                result.append(dependency.resolved_path)
-
-        return result
+        # Performance optimization (Bolt ⚡): Use O(1) indexed lookup on DependencyGraph
+        return [
+            dependency.resolved_path
+            for dependency in self.dependencies._by_source.get(source, [])
+            if dependency.resolved_path is not None
+        ]
 
     def _direct_dependent_paths(self, source: str) -> list[str]:
         """Return files that directly depend on a source file."""
 
-        result: list[str] = []
-
-        for dependency in self.dependencies.dependencies:
-            if dependency.resolved_path == source:
-                result.append(dependency.source)
-
-        return result
+        # Performance optimization (Bolt ⚡): Use O(1) indexed lookup on DependencyGraph
+        return [
+            dependency.source
+            for dependency in self.dependencies._by_resolved_path.get(source, [])
+        ]
 
     def _transitive_dependency_paths(self, source: str) -> list[str]:
         """Walk dependencies using resolved repository file paths."""
