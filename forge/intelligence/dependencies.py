@@ -32,6 +32,10 @@ class DependencyGraph:
     _by_target: dict[str, list[Dependency]] = field(
         default_factory=lambda: defaultdict(list), init=False, repr=False
     )
+    # Performance optimization (Bolt ⚡): Maintain O(1) lookup index by resolved_path
+    _by_resolved_path: dict[str, list[Dependency]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
 
     def add(
         self,
@@ -52,6 +56,8 @@ class DependencyGraph:
             self.dependencies.append(dependency)
             self._by_source[source].append(dependency)
             self._by_target[target].append(dependency)
+            if resolved_path is not None:
+                self._by_resolved_path[resolved_path].append(dependency)
 
     def dependencies_of(self, source: str) -> list[str]:
         return [
