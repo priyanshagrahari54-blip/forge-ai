@@ -16,10 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a34 import login, make_client, make_plane, make_repo  # noqa: E402
+from helpers_a34 import login, make_client, make_repo  # noqa: E402
 
 from forge.control.control_plane import ControlConfig, ControlPlane  # noqa: E402
-from forge.control.memory import SessionMemoryStore  # noqa: E402
 from forge.models.fabric import ModelFabric  # noqa: E402
 from forge.security.policy import (  # noqa: E402
     PermissionPolicy,

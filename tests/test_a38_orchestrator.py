@@ -79,7 +79,6 @@ def test_empty_plan_is_rejected_not_fabricated():
 
 def test_plan_validation_rejects_malformed_plans():
     registry = _registry()
-    orchestrator = MultiAgentOrchestrator(registry)
     with pytest.raises(ValueError):
         _plan(OrchestrationStep("s", "nobody", "r", "c", "do it")).validate(
             registry)
@@ -103,7 +102,6 @@ def test_plan_validation_rejects_malformed_plans():
 
 def test_dependency_order_and_failure_skip():
     order: list[str] = []
-    lock = threading.Lock()
     workers = {
         "coder": lambda request: order.append("coder") or "ok",
         "tester": lambda request: order.append("tester") or "ok",

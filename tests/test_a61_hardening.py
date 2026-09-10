@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import pytest  # noqa: E402
 
 from forge.security.hardening import audit_policy  # noqa: E402
 from forge.security.policy import (  # noqa: E402

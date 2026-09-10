@@ -2,7 +2,6 @@ from forge.self_development import (
     Finding,
     FindingCategory,
     FindingSeverity,
-    ImprovementCandidate,
     ImprovementGenerator,
     ImprovementPriority,
 )

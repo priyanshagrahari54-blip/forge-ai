@@ -37,7 +37,6 @@ from typing import Any
 
 from forge.agents.evolution import promotion_eligible, retirement_eligible
 from forge.security.classification import (
-    DataClassification,
     classify_text,
 )
 

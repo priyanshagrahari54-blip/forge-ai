@@ -12,6 +12,8 @@ Modules:
 - :mod:`forge.desktop.actions` — structured action vocabulary + validation
 - :mod:`forge.desktop.provider` — backend-agnostic provider protocol and a
   deterministic, scriptable fake desktop for tests/dev
+- :mod:`forge.desktop.local_provider` — the real local-machine provider
+  (system/process/file/launch always; GUI via detected backends)
 - :mod:`forge.desktop.risk` — risk classification and hard security
   invariants no profile can override
 - :mod:`forge.desktop.profiles` — SAFE / ASSISTED / AUTONOMOUS / CUSTOM
@@ -26,6 +28,7 @@ action — including pure observations — passes the A33 permission system.
 from forge.desktop.actions import DesktopActionKind, DesktopRequest
 from forge.desktop.agent import DesktopAgent, DesktopActionResult
 from forge.desktop.bridge import DesktopBridge, DesktopBridgeError
+from forge.desktop.local_provider import LocalDesktopProvider
 from forge.desktop.profiles import DesktopProfile
 from forge.desktop.provider import (
     DesktopProvider,
@@ -41,6 +44,7 @@ __all__ = [
     "DesktopActionResult",
     "DesktopBridge",
     "DesktopBridgeError",
+    "LocalDesktopProvider",
     "DesktopProfile",
     "DesktopProvider",
     "DesktopProviderError",

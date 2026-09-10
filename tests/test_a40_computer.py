@@ -7,9 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import pytest  # noqa: E402
 
-from helpers_a39 import b64, make_png  # noqa: E402
+from helpers_a39 import make_png  # noqa: E402
 
 from forge.computer.engine import ComputerUseEngine  # noqa: E402
 from forge.computer.elements import build_element_tree  # noqa: E402

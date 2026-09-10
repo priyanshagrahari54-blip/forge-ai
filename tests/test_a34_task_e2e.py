@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -23,7 +22,6 @@ from helpers_a34 import (  # noqa: E402
     make_plane,
     make_repo,
     task_state,
-    wait_for,
     wait_for_status,
 )
 

@@ -25,7 +25,7 @@ import pytest  # noqa: E402
 
 from forge.final.gate import external_provider_report  # noqa: E402
 from forge.final.provider_verification import (  # noqa: E402
-    DEFAULT_VERIFICATION_TTL, ProviderVerificationStore, run_verifications,
+    DEFAULT_VERIFICATION_TTL, run_verifications,
     verify_provider)
 from helpers_a34 import (login, make_client, make_plane,  # noqa: E402
                          make_repo)

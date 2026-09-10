@@ -24,8 +24,6 @@ Honesty invariants:
 
 from __future__ import annotations
 
-import json
-import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait

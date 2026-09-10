@@ -17,7 +17,6 @@ from forge.agents.training import (
     AgentTrainingPipeline,
     TrainingDataPolicy,
     TrainingDataset,
-    TrainingExample,
     scan_text,
 )
 

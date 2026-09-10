@@ -14,7 +14,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
 
 from forge.models.capabilities import is_capability
 

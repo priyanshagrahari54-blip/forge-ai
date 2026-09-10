@@ -1,5 +1,4 @@
 """Permission operation-mode tests (A32.17)."""
-import pytest
 
 from forge.runtime.defaults import create_default_runtime
 from forge.security.permissions import OperationMode, PermissionManager

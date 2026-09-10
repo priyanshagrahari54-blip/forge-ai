@@ -6,7 +6,6 @@ proves it can never bypass the permission system.
 """
 from __future__ import annotations
 
-import pytest
 
 from forge.voice import VoiceInterface, VoiceSession
 from forge.voice.audio import AudioChunk

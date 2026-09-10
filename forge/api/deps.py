@@ -17,10 +17,8 @@ from dataclasses import dataclass
 
 from fastapi import Depends, Request
 
-from forge.api.errors import error_body
 from forge.control.control_plane import ControlError, ControlPlane
 from forge.control.sessions import Session
-from starlette.responses import JSONResponse
 
 SESSION_COOKIE = "forge_session"
 CSRF_HEADER = "x-requested-with"

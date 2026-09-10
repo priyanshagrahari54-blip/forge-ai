@@ -6,7 +6,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import pytest  # noqa: E402
 
 from helpers_a34 import login, make_client, make_plane, make_repo  # noqa: E402
 

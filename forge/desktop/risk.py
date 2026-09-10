@@ -9,10 +9,10 @@ and approval token; they cannot be loosened by configuration.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from forge.desktop.actions import DesktopActionKind, DesktopRequest
+from forge.desktop.actions import DesktopRequest
 
 #: Risk labels shared with the policy gate (forge.security.policy_gate).
 RiskLevel = str  # NONE | LOW | MEDIUM | HIGH | CRITICAL

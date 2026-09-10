@@ -201,7 +201,6 @@ def test_orchestrations_survive_restart(tmp_path):
         assert record.status.value == "SUCCEEDED"
     # Fresh plane over the same database still serves the record.
     from forge.control.control_plane import ControlConfig, ControlPlane
-    from forge.models.fabric import ModelFabric
     from helpers_a34 import ScriptedProvider, make_fabric
 
     config = ControlConfig(

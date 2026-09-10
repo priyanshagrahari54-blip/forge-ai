@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from forge.core.agent_executor import (
-    AgentExecutionResult,
     CallableAgentExecutor,
 )
 from forge.core.task_coordinator import TaskExecutionCoordinator

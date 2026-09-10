@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a39 import b64, make_jpeg, make_png  # noqa: E402
+from helpers_a39 import make_jpeg, make_png  # noqa: E402
 
 from forge.vision.base import (ImageFormatError,  # noqa: E402
                                UnconfiguredVisionProvider, VisionUnavailable)

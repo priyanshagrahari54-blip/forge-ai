@@ -20,7 +20,6 @@ import os
 import shlex
 import socket
 import stat
-import subprocess
 import sys
 from pathlib import Path
 

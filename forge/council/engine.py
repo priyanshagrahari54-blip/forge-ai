@@ -3,11 +3,13 @@ consensus with disagreements flagged and minorities preserved.
 
 Honesty rules:
 
-* The A45 council runs over *simulated* model members — deterministic,
-  distinct stances, every opinion labeled ``simulation=True`` with its
-  member/model name. Real model providers plug in behind the same
-  ``CouncilMember`` protocol later; this build never pretends real
-  models were consulted.
+* The default A45 council runs over *simulated* model members —
+  deterministic, distinct stances, every opinion labeled
+  ``simulation=True`` with its member/model name. Real models deliberate
+  through :class:`FabricCouncilMember` (same ``CouncilMember`` protocol,
+  ``simulation=False``); callers choose explicitly, and the engine
+  reports ``simulation=True`` only when *every* opinion is simulated.
+  This build never pretends real models were consulted.
 * Agreement is computed from actual opinion stances — the lead never
   invents unanimity. Disagreements are always flagged, minority
   opinions are preserved verbatim, and final confidence is the honest
@@ -19,9 +21,8 @@ Honesty rules:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
-from uuid import uuid4
 
 MAX_MEMBERS = 5
 MAX_QUESTION = 4000
@@ -88,6 +89,102 @@ class SimulatedCouncilModel:
             confidence=0.5, simulation=True).to_dict()
 
 
+class FabricCouncilMember:
+    """A council member backed by a real model via the Model Fabric.
+
+    Each deliberation asks the fabric (capability ``reasoning``) for a
+    structured opinion under this member's role. Opinions carry
+    ``simulation=False`` with the answering model name. When no model can
+    serve the request — or its answer is unparseable — the member
+    abstains honestly (stance ``abstain``, confidence ``0.0``, cause in
+    the reasoning) instead of inventing a stance.
+    """
+
+    def __init__(self, name: str, fabric, *, role: str = "",
+                 stance_hint: str = "") -> None:
+        if not name or not name.strip():
+            raise ValueError("member name must be non-empty")
+        if fabric is None:
+            raise ValueError("a fabric-backed member needs a fabric")
+        self.name = name.strip()
+        self.fabric = fabric
+        self.role = role.strip() or f"council member {self.name}"
+        self.model = "fabric/pending"
+        self.stance = stance_hint.strip() or "undecided"
+        self.stance_label = self.role
+
+    def deliberate(self, question: str) -> dict[str, Any]:
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("question must be non-empty")
+        from forge.models.request import ModelRequest
+
+        prompt = (
+            f"You are {self.role} on an AI advisory council. Read the "
+            "question and return ONLY JSON: "
+            "{stance:approve|reject|abstain, stance_label:str, "
+            "reasoning:str, confidence:0..1}. Be decisive when the "
+            "question warrants it; abstain only when it is unanswerable.\n"
+            f"QUESTION: {question.strip()[:MAX_QUESTION]}"
+        )
+        try:
+            response = self.fabric.generate(ModelRequest(
+                prompt=prompt, capability="reasoning",
+                required_capabilities=("reasoning",),
+                task=question.strip()[:MAX_QUESTION],
+                prefer_local=True, prefer_free=True,
+                max_output_tokens=800))
+        except Exception as exc:
+            return self._abstain(f"model call failed: {exc}")
+        if not response.success:
+            return self._abstain(
+                f"no reasoning model available: "
+                f"{response.error or 'routing failed'}")
+        try:
+            data = _parse_json_object(response.text)
+            stance = str(data.get("stance", "")).strip().lower()
+            if stance not in ("approve", "reject", "abstain"):
+                raise ValueError(f"unknown stance {stance!r}")
+            confidence = float(data.get("confidence", 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+            reasoning = str(data.get("reasoning", "")).strip()
+            if not reasoning:
+                raise ValueError("empty reasoning")
+            label = str(data.get("stance_label", "")).strip() or self.role
+        except (ValueError, AttributeError, TypeError) as exc:
+            return self._abstain(f"model answer unparseable: {exc}")
+        self.model = str(response.model or "fabric/unknown")
+        self.stance = stance
+        self.stance_label = label
+        return MemberOpinion(
+            member=self.name, model=self.model, stance=stance,
+            stance_label=label, reasoning=reasoning[:MAX_OPINION],
+            confidence=round(confidence, 3),
+            simulation=False).to_dict()
+
+    def _abstain(self, cause: str) -> dict[str, Any]:
+        self.stance = "abstain"
+        return MemberOpinion(
+            member=self.name, model=self.model, stance="abstain",
+            stance_label=f"{self.role} (abstained)",
+            reasoning=f"Abstained: {cause}"[:MAX_OPINION],
+            confidence=0.0, simulation=False).to_dict()
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Parse model output, tolerating Markdown fences."""
+    import json
+    import re
+
+    cleaned = (text or "").strip()
+    if "```" in cleaned:
+        cleaned = re.sub(r"```(?:json)?", "", cleaned).replace(
+            "```", "").strip()
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("model response must be a JSON object")
+    return data
+
+
 DEFAULT_MEMBERS = (
     SimulatedCouncilModel("alpha", stance="approve",
                           stance_label="risk-averse: proceed only with "
@@ -151,7 +248,8 @@ class AICouncilEngine:
             "stance": majority,
             "consensus": consensus,
             "confidence": confidence,
-            "simulation": True,
+            "simulation": all(bool(opinion.get("simulation", True))
+                              for opinion in opinions),
             "members": len(self.members),
             "elapsed_ms": round((time.time() - started) * 1000, 1),
         }

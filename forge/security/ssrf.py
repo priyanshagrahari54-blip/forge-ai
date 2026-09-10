@@ -32,12 +32,11 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
-import re
 import socket
 import ssl
 import urllib.parse
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # classification tables

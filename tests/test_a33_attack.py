@@ -174,7 +174,6 @@ def test_coder_write_file_path_enforces_approval(tmp_path):
 
 
 def test_direct_terminal_tool_is_not_agent_reachable(tmp_path):
-    from forge.tools.terminal import TerminalTool
     runtime = create_default_runtime(_manager(), str(tmp_path))
     blocked = runtime.execute("terminal", approved=False,
                               command=["echo", "hi"])

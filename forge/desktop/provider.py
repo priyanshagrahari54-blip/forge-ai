@@ -77,6 +77,9 @@ class FakeDesktopProvider:
     ``disconnect`` exist to exercise the agent's failure/recovery paths.
     """
 
+    name = "fake"
+    simulation = True
+
     def __init__(self, **kwargs: Any) -> None:
         self.screen_width = 1920
         self.screen_height = 1080
@@ -378,7 +381,7 @@ class FakeDesktopProvider:
         with self._lock:
             if self._fail_all:
                 raise DesktopProviderError(
-                    "unavailable", f"desktop provider failing all actions")
+                    "unavailable", "desktop provider failing all actions")
             if self._fail_next and self._fail_next[0] == action:
                 self._fail_next.pop(0)
                 raise DesktopProviderError(

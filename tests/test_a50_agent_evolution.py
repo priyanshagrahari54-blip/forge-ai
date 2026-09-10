@@ -124,7 +124,7 @@ def test_evolution_api(tmp_path):
         task_id = task.json()["task"]["task_id"]
         drive_to_terminal(client, headers, task_id)
         recorded = client.post(
-            f"/api/v1/agents/worker/outcomes", headers=headers,
+            "/api/v1/agents/worker/outcomes", headers=headers,
             json={"task_id": task_id})
         assert recorded.status_code == 200
         assert recorded.json()["generation"] == 2

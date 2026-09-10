@@ -13,6 +13,7 @@ from helpers_a34 import (  # noqa: E402
     make_plane,
     make_repo,
     task_state,
+    wait_for,
     wait_for_status,
 )
 
@@ -314,8 +315,12 @@ def test_checkpoints_listed_for_task(tmp_path):
                         ("RUNNING", "WAITING_APPROVAL", "PAUSED",
                          "SUCCEEDED", "FAILED", "CANCELLED"),
                         timeout=60.0)
-        checkpoints = client.get(
-            f"/api/v1/tasks/{task_id}/checkpoints", headers=headers)
-        assert checkpoints.status_code == 200
-        assert checkpoints.json()["checkpoints"]
-        assert checkpoints.json()["checkpoints"][0]["checkpoint_id"]
+        # The pre-run checkpoint is registered just after the RUNNING
+        # flip, so poll for it instead of asserting on one racy read.
+        def _checkpoints():
+            response = client.get(
+                f"/api/v1/tasks/{task_id}/checkpoints", headers=headers)
+            assert response.status_code == 200
+            return response.json()["checkpoints"]
+
+        assert wait_for(_checkpoints, timeout=60.0)[0]["checkpoint_id"]

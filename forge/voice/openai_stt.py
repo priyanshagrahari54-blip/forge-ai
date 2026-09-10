@@ -11,15 +11,10 @@ as untrusted input.
 """
 from __future__ import annotations
 
-import io
 import os
-import struct
-import time
-from typing import Any
 
 from forge.voice.audio import AudioChunk, validate_chunk
 from forge.voice.transcriber import (
-    SpeechToTextProvider,
     Transcription,
     TranscriptionError,
 )

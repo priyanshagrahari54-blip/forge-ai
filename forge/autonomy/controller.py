@@ -15,7 +15,6 @@ from typing import Any
 from forge.security.policy import (
     PermissionPolicy,
     PermissionRequest,
-    PolicyDecision,
     RESOURCE_OPERATIONS,
     Resource,
 )

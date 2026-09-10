@@ -89,7 +89,7 @@ def test_cross_project_approval_is_404(tmp_path):
                                     project_id="other")
         created = client.post("/api/v1/tasks", headers=other_headers,
                               json={"requirement": "Other task"})
-        task_id = created.json()["task"]["task_id"]
+        assert created.json()["task"]["task_id"]
 
         def pending():
             approvals = client.get("/api/v1/approvals",
@@ -118,7 +118,7 @@ def test_approval_replay_and_double_decision(tmp_path):
         _, _, headers = login(client)
         created = client.post("/api/v1/tasks", headers=headers, json={
             "requirement": "Add CSV export functionality"})
-        task_id = created.json()["task"]["task_id"]
+        assert created.json()["task"]["task_id"]
 
         def pending():
             approvals = client.get("/api/v1/approvals",
@@ -152,7 +152,7 @@ def test_agent_cannot_self_authorize(tmp_path):
         _, _, headers = login(client)
         created = client.post("/api/v1/tasks", headers=headers, json={
             "requirement": "Add CSV export functionality"})
-        task_id = created.json()["task"]["task_id"]
+        assert created.json()["task"]["task_id"]
 
         def pending():
             approvals = client.get("/api/v1/approvals",
@@ -177,7 +177,7 @@ def test_expired_approval_cannot_be_used(tmp_path):
         _, _, headers = login(client)
         created = client.post("/api/v1/tasks", headers=headers, json={
             "requirement": "Add CSV export functionality"})
-        task_id = created.json()["task"]["task_id"]
+        assert created.json()["task"]["task_id"]
 
         def pending():
             approvals = client.get("/api/v1/approvals",

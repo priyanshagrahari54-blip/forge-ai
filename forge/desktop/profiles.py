@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from forge.desktop.actions import DesktopActionKind, OBSERVATION_KINDS
-from forge.desktop.risk import MEDIUM, NONE, LOW, risk_rank
+from forge.desktop.risk import LOW, risk_rank
 
 
 class ProfileVerdict(str):

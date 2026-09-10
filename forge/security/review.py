@@ -119,6 +119,9 @@ class ReviewGate:
     INCOMPLETE_IMPL = re.compile(r"^\+\s*pass\s*$", re.M)
     DYNAMIC_EXEC = re.compile(r"\b(?:eval|exec)\s*\(")
     SHELL_EXEC = re.compile(r"subprocess\.(?:run|Popen|call)\([^\n]*shell\s*=\s*True", re.I)
+    OS_EXEC = re.compile(r"\bos\.(?:system|popen)\s*\(")
+    SHELL_C = re.compile(r"(?:^|[\s\"'])sh\s+-c(?:[\s\"'])")
+    BASH_C = re.compile(r"(?:^|[\s\"'])bash\s+-c(?:[\s\"'])")
     TEST_WEAKENING = re.compile(r"\b(?:assert\s+True|pytest\.skip)\b", re.I)
     TRAVERSAL = re.compile(r"(?:^|[\s\"'])(?:\.\.(?:[/\\])|os\.path\.join\([^\n]*\.\.)")
     NETWORK_ACCESS = re.compile(r"\b(?:requests\.(?:get|post|put|delete|patch)|urllib\.request\.urlopen|socket\.socket)\s*\(")
@@ -156,6 +159,12 @@ class ReviewGate:
             findings.append(ReviewFinding(FindingSeverity.HIGH, "dynamic code execution", rule="dynamic-exec"))
         if self.SHELL_EXEC.search(material):
             findings.append(ReviewFinding(FindingSeverity.HIGH, "shell execution with shell=True", rule="shell-exec"))
+        if self.OS_EXEC.search(material):
+            findings.append(ReviewFinding(FindingSeverity.HIGH, "os shell execution (os.system/os.popen)", rule="os-exec"))
+        if self.SHELL_C.search(material):
+            findings.append(ReviewFinding(FindingSeverity.HIGH, "shell execution via sh -c", rule="shell-c"))
+        if self.BASH_C.search(material):
+            findings.append(ReviewFinding(FindingSeverity.HIGH, "shell execution via bash -c", rule="bash-c"))
         if self.TRAVERSAL.search(material):
             findings.append(ReviewFinding(FindingSeverity.HIGH, "path traversal in changed material", rule="traversal"))
         if self.NETWORK_ACCESS.search(material):

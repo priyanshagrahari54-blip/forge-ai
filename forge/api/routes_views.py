@@ -24,6 +24,12 @@ async def models_health(_: Authed = Depends(authed),
     return plane.model_health()
 
 
+@router.get("/models/readiness")
+async def models_readiness(_: Authed = Depends(authed),
+                           plane: ControlPlane = Depends(get_plane)):
+    return plane.model_readiness()
+
+
 @router.get("/providers")
 async def list_providers(_: Authed = Depends(authed),
                          plane: ControlPlane = Depends(get_plane)):

@@ -1,5 +1,4 @@
 """Policy engine tests (A33): rules, precedence, scopes, simulation, config."""
-import time
 
 import pytest
 

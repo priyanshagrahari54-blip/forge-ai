@@ -8,7 +8,6 @@ from forge.models.provider import ModelResult, ProviderRegistry
 from forge.models.registry import Model, ModelRegistry
 from forge.models.request import ModelRequest
 from forge.models.router import ModelRouter
-from forge.models.telemetry import Telemetry
 
 
 class ScriptedProvider:

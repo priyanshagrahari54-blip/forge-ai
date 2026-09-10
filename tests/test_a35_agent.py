@@ -183,7 +183,7 @@ def test_task_scope_grants_enforced():
 
 
 def test_grant_expiry_and_revocation():
-    import time
+    pass
 
     clock = [1000.0]
     checker = GrantScopeChecker(ttl=60.0, clock=lambda: clock[0])

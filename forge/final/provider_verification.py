@@ -30,8 +30,6 @@ from typing import Any
 
 from forge.compute.remote import RemoteComputeError
 from forge.security.provider_states import (
-    PROVIDER_STATUS_LADDER,
-    ProviderState,
     ProviderStatus,
     classify_http_status,
 )
@@ -405,10 +403,14 @@ def _colab_verify() -> dict[str, Any]:
 
 def _modal_verify() -> dict[str, Any]:
     """Modal verification is best-effort: the client is an optional
-    lazy import, so absence of the SDK is an honest PROVIDER_ERROR."""
+    dependency, so absence of the SDK is an honest PROVIDER_ERROR."""
+    from importlib.util import find_spec
+
     try:
-        import modal  # noqa: F401
+        has_modal = find_spec("modal") is not None
     except Exception:
+        has_modal = False
+    if not has_modal:
         return {"state": "PROVIDER_ERROR",
                 "error": ("modal client is not installed in this "
                           "environment; verification unavailable"),

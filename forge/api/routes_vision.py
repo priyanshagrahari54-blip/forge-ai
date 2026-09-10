@@ -17,18 +17,15 @@ from forge.control.control_plane import (ApprovalConflictError,
                                          ControlPlane, InvalidRequest,
                                          TaskNotFound)
 from forge.vision.base import VisionUnavailable
-from forge.vision.pipeline import AVAILABLE_PROVIDERS
 
 router = APIRouter()
 
 
 @router.get("/vision/capabilities")
-async def vision_capabilities(current: Authed = Depends(authed)):
+async def vision_capabilities(current: Authed = Depends(authed),
+                              plane: ControlPlane = Depends(get_plane)):
     del current
-    return {"providers": list(AVAILABLE_PROVIDERS),
-            "simulated_only": True,
-            "max_image_bytes": 5_000_000,
-            "formats": ["png", "jpeg", "bmp", "gif"]}
+    return plane.vision_capabilities()
 
 
 @router.post("/vision/analyze", dependencies=[rate_limit("vision")])

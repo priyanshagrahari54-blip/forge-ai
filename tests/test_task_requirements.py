@@ -63,3 +63,27 @@ def test_empty_task_has_no_requirements():
 
     assert requirements.capabilities == ()
     assert requirements.roles == ()
+
+
+def test_substring_lookalikes_do_not_match():
+    extractor = TaskRequirementExtractor()
+
+    assert extractor.extract(
+        "Update the latest news and contest pages.").capabilities == ()
+    assert extractor.extract(
+        "Show a legitimate digit on the address prefix.").capabilities == ()
+
+
+def test_inflections_still_match():
+    extractor = TaskRequirementExtractor()
+
+    requirements = extractor.extract(
+        "Fixing crashes in committed branches while staging deploys.")
+    assert requirements.capabilities == ("debugging", "git")
+
+
+def test_phrase_keyword_matches():
+    extractor = TaskRequirementExtractor()
+
+    requirements = extractor.extract("Check the repository status.")
+    assert "git" in requirements.capabilities

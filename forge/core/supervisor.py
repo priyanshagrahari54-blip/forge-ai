@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -37,6 +38,48 @@ def _history_token_usage(history) -> dict[str, int | None]:
         return {"input": None, "output": None}
     return {"input": sum(value or 0 for value in inputs),
             "output": sum(value or 0 for value in outputs)}
+
+
+def build_reviewer_executor(root: str, fabric=None):
+    """Build the supervisor's reviewer: deterministic gate + model input."""
+    from forge.agents.execution import CallableAgentExecutor
+    from forge.agents.reviewer import ReviewerAgent
+    from forge.security.review import ReviewGate
+
+    reviewer_agent = ReviewerAgent(fabric=fabric)
+
+    def _review_worker(request):
+        gate = ReviewGate(root)
+        items = request.context.items if request.context else []
+        files = [item.path for item in items]
+        model_findings = reviewer_agent.review(
+            request.task.description,
+            changed_files=tuple(files)) or []
+        decision = gate.review(
+            changed_files=files,
+            requirement=request.task.description,
+            model_findings=model_findings)
+        return json.dumps(decision.to_dict())
+
+    return CallableAgentExecutor("reviewer", _review_worker)
+
+
+def build_security_executor(root: str):
+    """Build the supervisor's security agent: the real security gate."""
+    from forge.agents.execution import CallableAgentExecutor
+    from forge.security.verification import VerificationPipeline
+
+    def _security_worker(request):
+        del request
+        gate_result = VerificationPipeline(root).security()
+        return json.dumps({
+            "gate": gate_result.name,
+            "passed": gate_result.passed,
+            "details": gate_result.details,
+            "evidence": gate_result.evidence,
+        }, default=str)
+
+    return CallableAgentExecutor("security", _security_worker)
 
 
 class Supervisor:
@@ -119,10 +162,11 @@ class Supervisor:
         """
         from forge.agents.coder import CoderAgent
         from forge.agents.debugger import DebuggerAgent, TestDebugLoop
-        from forge.agents.execution import AgentRequest, CallableAgentExecutor
+        from forge.agents.execution import AgentRequest
         from forge.agents.registry import AgentRegistration, AgentRegistry
         from forge.agents.planner import CapabilityAgentPlanner
         from forge.agents.reviewer import ReviewerAgent
+        from forge.agents.tester import TesterAgent
         from forge.core.acceptance import AcceptanceEngine, GateOutcome
         from forge.core.report import TaskReport
         from forge.core.task_engine import TaskEngine, TaskStatus
@@ -135,7 +179,6 @@ class Supervisor:
         from forge.security.review import ReviewGate
         from forge.security.verification import VerificationPipeline
         from forge.tools.change_applier import (
-            ApprovalCallback,
             ApprovalItem,
             ApprovalQuery,
         )
@@ -231,12 +274,17 @@ class Supervisor:
             debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric,
                                      approval_store=approval_store, model_policy=model_policy,
                                      approval_callback=approval_callback)
+            # Every registered executor is real: the reviewer runs the
+            # deterministic ReviewGate over the request context (plus
+            # optional model findings when a fabric is available), the
+            # tester executes pytest, and security runs the verification
+            # pipeline's security gate. Nothing here returns canned text.
             registry = AgentRegistry([
                 AgentRegistration("coder", "coding", coder, ("coding",)),
                 AgentRegistration("debugger", "debugging", debugger, ("debugging",)),
-                AgentRegistration("reviewer", "reviewing", CallableAgentExecutor("reviewer", lambda request: "independent review"), ("review",)),
-                AgentRegistration("tester", "testing", CallableAgentExecutor("tester", lambda request: "test execution is performed by TestDebugLoop"), ("testing",)),
-                AgentRegistration("security", "security", CallableAgentExecutor("security", lambda request: "security verification is performed by VerificationPipeline"), ("security",)),
+                AgentRegistration("reviewer", "reviewing", build_reviewer_executor(str(self.root), fabric), ("review",)),
+                AgentRegistration("tester", "testing", TesterAgent(str(self.root)), ("testing",)),
+                AgentRegistration("security", "security", build_security_executor(str(self.root)), ("security",)),
             ])
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
@@ -248,6 +296,24 @@ class Supervisor:
             event("agents_selected", {"agents": list(agent_plan.names)})
             stage("AGENTS")
             stage("MODEL")
+            # Pre-flight gate: when the fabric has no real (non-fallback)
+            # model registered, the run cannot produce code. Fail fast with
+            # an actionable diagnosis instead of running a doomed pipeline
+            # that would end in "Model proposed no changes".
+            coder_fabric = getattr(coder, "fabric", None)
+            if coder_fabric is not None:
+                from forge.models.readiness import (
+                    describe_no_model_error as _describe_no_model,
+                    fabric_has_real_model as _has_real_model,
+                )
+                try:
+                    has_real = _has_real_model(coder_fabric)
+                except Exception:
+                    has_real = True
+                if not has_real:
+                    event("model_unavailable", {"fallback_only": True})
+                    raise RuntimeError(
+                        _describe_no_model(fabric=coder_fabric))
             code_started = perf_counter()
             task.status = TaskStatus.CODING
             context = coder.build_context(intelligence, requirement)

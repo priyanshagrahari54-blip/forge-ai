@@ -1,7 +1,6 @@
 """Backup & recovery (A65): verified snapshots, drift, restore."""
 from __future__ import annotations
 
-import json
 import sys
 import zipfile
 from pathlib import Path

@@ -1,11 +1,10 @@
 import subprocess
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from forge.self_development.acceptance import AcceptanceEvaluator, AcceptancePolicy
-from forge.self_development.benchmark import BenchmarkRunner, BenchmarkResult
+from forge.self_development.benchmark import BenchmarkRunner
 
 
 @dataclass

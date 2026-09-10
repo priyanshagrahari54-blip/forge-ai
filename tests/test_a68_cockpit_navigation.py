@@ -1,7 +1,6 @@
 """Cockpit navigation (A68): canonical keyboard shortcuts."""
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -12,7 +11,6 @@ import pytest  # noqa: E402
 from forge.cockpit_palette import VIEWS  # noqa: E402
 from forge.cockpit_shortcuts import (  # noqa: E402
     CHORDS,
-    KEYS,
     shortcut_entries,
     shortcut_payload,
     validate_shortcuts,
