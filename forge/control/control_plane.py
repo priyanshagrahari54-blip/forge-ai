@@ -35,7 +35,7 @@ import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -654,6 +654,7 @@ class ControlPlane:
         self._checkpoints: dict[str, Any] = {}
         self._checkpoints_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
+        self._pending_futures: set[Future] = set()
         self._dispatcher: threading.Thread | None = None
         self._dispatch_event = threading.Event()
         self._stopping = threading.Event()
@@ -681,6 +682,17 @@ class ControlPlane:
             target=self._dispatch_loop, name="forge-dispatch", daemon=True)
         self._dispatcher.start()
 
+    def _submit_tracked(self, fn, *args):
+        """Submit background work, tracking it so stop() can cancel it.
+
+        Explicit tracking (instead of ``shutdown(cancel_futures=True)``,
+        which is 3.9+) keeps stop() semantics identical on 3.8+.
+        """
+        future = self._executor.submit(fn, *args)
+        self._pending_futures.add(future)
+        future.add_done_callback(self._pending_futures.discard)
+        return future
+
     def stop(self, *, wait: bool = True) -> None:
         """Stop background work. In-flight runs keep their threads only."""
         self._stopping.set()
@@ -691,7 +703,10 @@ class ControlPlane:
             self._dispatcher.join(timeout=5.0)
             self._dispatcher = None
         if self._executor is not None:
-            self._executor.shutdown(wait=wait, cancel_futures=True)
+            for future in list(self._pending_futures):
+                future.cancel()
+            self._pending_futures.clear()
+            self._executor.shutdown(wait=wait)
             self._executor = None
 
     @property
@@ -3180,7 +3195,7 @@ class ControlPlane:
 
         governor.begin(name)
         if self._executor is not None:
-            self._executor.submit(tracked_worker)
+            self._submit_tracked(tracked_worker)
         else:
             tracked_worker()
         return {"allowed": True, "approval_required": False,
@@ -3380,7 +3395,7 @@ class ControlPlane:
                                    f"error={str(exc)[:300]}")
 
         if self._executor is not None:
-            self._executor.submit(worker)
+            self._submit_tracked(worker)
         else:
             worker()
         return {"allowed": True, "approval_required": False,
@@ -5891,7 +5906,7 @@ class ControlPlane:
                     task_id=record.id,
                     reason=f"project {project.id}, chain={bool(chain)}")
         if self._executor is not None:
-            self._executor.submit(
+            self._submit_tracked(
                 self._execute_orchestration, record.id, bool(chain))
         return record
 

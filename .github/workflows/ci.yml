@@ -37,17 +37,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run tests
-        # TEMP DEBUG (revert after 3.8 diagnosis): echo failing test
-        # names as workflow annotations so they are visible via the API.
-        run: |
-          set +e
-          python -m pytest -q --tb=no -rf > /tmp/pytest_out.txt 2>&1
-          code=$?
-          grep -E "^(FAILED|ERROR)" /tmp/pytest_out.txt | head -n 40 | while IFS= read -r line; do
-            echo "::error title=pytest-failure::$line"
-          done
-          tail -n 4 /tmp/pytest_out.txt
-          exit $code
+        run: python -m pytest -q
 
       - name: Compile the package
         run: python -m compileall forge

@@ -72,6 +72,13 @@ BANNED_KWARGS = {
     "dataclass": frozenset({"slots", "kw_only"}),
     "field": frozenset({"slots", "kw_only"}),
     "zip": frozenset({"strict"}),
+    # Executor.shutdown(cancel_futures=) is 3.9+; TypeError on 3.8.
+    "shutdown": frozenset({"cancel_futures"}),
+}
+
+#: First version supporting each banned kwarg (default: 3.10).
+BANNED_KWARGS_SINCE = {
+    ("shutdown", "cancel_futures"): "3.9",
 }
 
 
@@ -172,12 +179,15 @@ def _check_file(path: Path) -> list[str]:
             problems.append(
                 f"{path}:{node.lineno}: {node.id} needs 3.11+")
         if isinstance(node, ast.Call):
-            banned = BANNED_KWARGS.get(_callee_name(node), frozenset())
+            callee = _callee_name(node)
+            banned = BANNED_KWARGS.get(callee, frozenset())
             for keyword in node.keywords:
                 if keyword.arg in banned:
+                    since = BANNED_KWARGS_SINCE.get((callee, keyword.arg),
+                                                    "3.10")
                     problems.append(
                         f"{path}:{node.lineno}: "
-                        f"{_callee_name(node)}({keyword.arg}=) needs 3.10+")
+                        f"{callee}({keyword.arg}=) needs {since}+")
         if not future:
             anns: list[ast.AST] = []
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
