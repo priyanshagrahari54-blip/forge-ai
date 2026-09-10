@@ -105,7 +105,7 @@ class DesktopActRequest(BaseModel):
 
 class DesktopGrantRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=128)
-    scopes: list[str] = Field(min_length=1, max_length=32)
+    scopes: List[str] = Field(min_length=1, max_length=32)
 
 
 class DesktopDecisionRequest(BaseModel):
@@ -194,7 +194,7 @@ class ComputeExecuteRequest(BaseModel):
 class AgentCreateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=48)
     role: str = Field(min_length=2, max_length=32)
-    capabilities: list[str] = Field(min_length=1, max_length=12)
+    capabilities: List[str] = Field(min_length=1, max_length=12)
     description: str = Field(default="", max_length=500)
     bind: bool = Field(default=False)
 
@@ -222,7 +222,7 @@ class AgentRunRequest(BaseModel):
 
 class TeamCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=48)
-    members: list[str] = Field(min_length=1, max_length=6)
+    members: List[str] = Field(min_length=1, max_length=6)
 
 
 class TeamExecuteRequest(BaseModel):

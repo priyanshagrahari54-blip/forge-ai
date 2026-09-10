@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Dict, Optional
 
 from forge.api.app import ApiConfig, create_app
 from forge.control.control_plane import ControlConfig, ControlPlane
 
 
-def build_plane(projects: dict[str, str] | None = None,
+def build_plane(projects: Optional[Dict[str, str]] = None,
                 db_path: str = "") -> ControlPlane:
     config = ControlConfig.from_env()
     resolved = dict(projects or {})
@@ -21,8 +22,8 @@ def build_plane(projects: dict[str, str] | None = None,
     return ControlPlane(config)
 
 
-def build_app(plane: ControlPlane | None = None,
-              projects: dict[str, str] | None = None,
+def build_app(plane: Optional[ControlPlane] = None,
+              projects: Optional[Dict[str, str]] = None,
               db_path: str = ""):
     plane = plane or build_plane(projects, db_path)
     origins = [origin.strip()
@@ -36,7 +37,7 @@ def build_app(plane: ControlPlane | None = None,
 
 
 def run(host: str = "127.0.0.1", port: int = 8000,
-        projects: dict[str, str] | None = None,
+        projects: Optional[Dict[str, str]] = None,
         db_path: str = "") -> None:  # pragma: no cover - thin runner
     import uvicorn
 

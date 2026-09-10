@@ -8,7 +8,7 @@ session-scoped at this boundary.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
 
@@ -23,7 +23,7 @@ from forge.control.control_plane import (ApprovalConflictError,
 router = APIRouter()
 
 
-def _record(record: Any) -> dict[str, Any]:
+def _record(record: Any) -> Dict[str, Any]:
     return record.to_dict(include_report=True)
 
 
@@ -108,7 +108,7 @@ async def deny(orchestration_id: str, approval_id: str,
 
 
 def _decide(plane: ControlPlane, session: Any, orchestration_id: str,
-            approval_id: str, approved: bool) -> dict[str, Any]:
+            approval_id: str, approved: bool) -> Dict[str, Any]:
     from fastapi import HTTPException
 
     try:

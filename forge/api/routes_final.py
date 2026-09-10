@@ -1,6 +1,8 @@
 """Final acceptance arc API (A71-A80): loops and go/no-go gates."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from forge.api.deps import Authed, authed_mutation, get_plane, rate_limit
@@ -85,7 +87,7 @@ async def final_gate(current: Authed = Depends(authed_mutation),
 
 @router.post("/final/gate/verify", dependencies=[rate_limit("final")])
 async def final_gate_verify(
-        body: FinalGateVerifyRequest | None = None,
+        body: Optional[FinalGateVerifyRequest] = None,
         current: Authed = Depends(authed_mutation),
         plane: ControlPlane = Depends(get_plane)):
     """Explicit provider capability verification for the A80 gate.

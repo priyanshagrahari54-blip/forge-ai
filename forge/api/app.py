@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import List, Optional, Union
 from pathlib import Path
 from uuid import uuid4
 
@@ -51,10 +52,10 @@ from forge.control.control_plane import ControlPlane
 
 @dataclass
 class ApiConfig:
-    allowed_origins: list[str] = field(default_factory=list)
+    allowed_origins: List[str] = field(default_factory=list)
     secure_cookies: bool = False
     max_body_bytes: int = 1024 * 1024
-    web_dir: str | Path | None = None
+    web_dir: Optional[Union[str, Path]] = None
 
 
 class _RequestContextMiddleware(BaseHTTPMiddleware):
@@ -118,7 +119,7 @@ class _BodyLimitMiddleware(BaseHTTPMiddleware):
 
 
 def create_app(plane: ControlPlane,
-               config: ApiConfig | None = None) -> FastAPI:
+               config: Optional[ApiConfig] = None) -> FastAPI:
     """Build the cockpit API over an existing control plane."""
     config = config or ApiConfig()
     if "*" in config.allowed_origins:

@@ -210,3 +210,43 @@ def test_tree_is_python38_compatible():
         problems.extend(_check_file(path))
     assert checked > 400, f"compat walk found too few files: {checked}"
     assert not problems, "\n".join(problems[:20])
+
+
+def test_api_annotations_evaluate_on_python38():
+    """forge/api uses only typing-style annotations.
+
+    FastAPI resolves endpoint/dependency annotations and pydantic
+    resolves model fields by evaluating them at import time. With the
+    future import the annotations are strings, and evaluating
+    ``X | Y`` or ``list[X]`` raises TypeError on 3.8 — a collection
+    failure. So the API layer must spell them ``Optional/List/...``.
+    """
+    problems: list[str] = []
+    checked = 0
+    for path in sorted((ROOT / "forge" / "api").rglob("*.py")):
+        if "__pycache__" in str(path):
+            continue
+        checked += 1
+        tree = ast.parse(path.read_text(encoding="utf-8"),
+                         filename=str(path))
+        for node in ast.walk(tree):
+            anns: list[ast.AST] = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = list(node.args.args) + list(node.args.kwonlyargs)
+                if node.args.vararg:
+                    args.append(node.args.vararg)
+                if node.args.kwarg:
+                    args.append(node.args.kwarg)
+                anns = [arg.annotation for arg in args if arg.annotation]
+                if node.returns:
+                    anns.append(node.returns)
+            elif isinstance(node, ast.AnnAssign):
+                anns = [node.annotation]
+            for ann in anns:
+                if _annotation_uses_new_syntax(ann):
+                    problems.append(
+                        f"{path}:{node.lineno}: new-style annotation "
+                        "evaluated by FastAPI/pydantic (use typing.*)")
+                    break
+    assert checked > 25, f"API walk found too few files: {checked}"
+    assert not problems, "\n".join(problems[:20])
