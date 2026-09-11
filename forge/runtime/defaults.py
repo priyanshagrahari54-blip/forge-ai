@@ -160,4 +160,19 @@ def create_default_runtime(permission_manager, root: str = "."):
         )
     )
 
+    runtime.register(
+        ToolDefinition(
+            name="git_diff",
+            description="Inspect unstaged Git working tree changes.",
+            handler=lambda: __import__(
+                "forge.runtime.runtime",
+                fromlist=["ToolResult"],
+            ).ToolResult.ok(
+                "git_diff",
+                git.diff(),
+            ),
+            permission="git_diff",
+        )
+    )
+
     return runtime

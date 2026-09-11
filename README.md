@@ -607,6 +607,25 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Agent Creation Engine (A81)
+
+First-party engine that creates specialized software agents from
+structured specifications. A specification carries nine fields — name,
+purpose, capabilities, tools, permissions, model requirements, memory
+policy, verification requirements, and resource limits — and is
+validated fail-closed. The factory generates structured, immutable,
+versioned agent packages under `.forge/agents`; the manager owns the
+lifecycle (`created → validated → tested → enabled ⇄ paused`,
+`disabled → retired`); benchmarks gate the `tested` state; and agents
+execute only through the Model Fabric, PolicyGate, Tool Runtime,
+Memory, Verification, and Checkpoints. No agent may self-grant
+permissions (escalations require explicit operator confirmation and
+are audited) or self-enable. Six built-in templates: coding, research,
+security, game-dev, os-dev, documentation. CLI at `forge agents`
+(create/test/enable/disable/…); the desktop app adds an Agent Manager.
+
+See `docs/A81-AGENT-CREATION-ENGINE.md`.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -694,6 +713,17 @@ forge models --capability vision
 forge models --json
 forge self-analyze
 forge self-improve --iterations 1
+forge agents                            # list created agents
+forge agents create NAME --template coding
+forge agents create NAME --spec spec.json
+forge agents templates
+forge agents test NAME                  # run the benchmark suite
+forge agents enable NAME                # only from tested
+forge agents pause|resume|disable|retire NAME
+forge agents show NAME
+forge agents versions NAME
+forge agents export NAME
+forge agents update NAME --spec spec.json [--confirm-escalation]
 ```
 
 Writes, command execution, commits, pushes, repository deletion, and secret exposure remain permission-controlled. Forge is intentionally not an unattended deployment system.
