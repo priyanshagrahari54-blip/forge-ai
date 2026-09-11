@@ -350,6 +350,100 @@ class DesktopBackend:
         return {"path": rel_path, "content": text, "truncated": truncated,
                 "size": candidate.stat().st_size}
 
+    # -- agents (Agent Creation Engine) --------------------------------------
+
+    def _agent_manager(self, project_id: str):
+        """Agent Manager bound to one project's store and workspace."""
+        from forge.agent_engine.manager import AgentManager
+
+        plane = self._require_plane()
+        try:
+            project = plane.get_project(project_id)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        root = Path(project.root)
+        return AgentManager(root=str(root / ".forge" / "agents"),
+                            workspace=str(root))
+
+    def list_agents(self, project_id: str) -> list[dict[str, Any]]:
+        try:
+            return self._agent_manager(project_id).list_agents()
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agent_templates(self) -> list[dict[str, Any]]:
+        try:
+            from forge.agent_engine.templates import template_catalog
+
+            return template_catalog()
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def create_agent(self, project_id: str, name: str, *,
+                     template: str = "coding",
+                     purpose: str = "") -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).create(
+                name, template=template, purpose=purpose,
+                created_by=self.actor)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def validate_agent(self, project_id: str,
+                       name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).validate(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def test_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).test(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def enable_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).enable(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def disable_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).disable(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def pause_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).pause(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def resume_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).resume(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def retire_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).retire(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def show_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).show(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def export_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._agent_manager(project_id).export_package(name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
     # -- polling snapshot ----------------------------------------------------
 
     def poll_snapshot(self, project_id: str, selected_task_id: str = "",

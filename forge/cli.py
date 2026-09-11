@@ -563,6 +563,11 @@ def main() -> None:
     higgsfield_parser.add_argument("--api-timeout", type=float,
                                    default=30.0)
 
+    # Agent Creation Engine commands
+    from forge.agent_engine.cli import add_agents_parser
+
+    add_agents_parser(subparsers)
+
     # Self-development commands
     subparsers.add_parser("self-analyze")
 
@@ -651,6 +656,11 @@ def main() -> None:
 
     elif args.command == "higgsfield":
         raise SystemExit(_run_higgsfield(args))
+
+    elif args.command == "agents":
+        from forge.agent_engine.cli import _run_agents
+
+        raise SystemExit(_run_agents(args))
 
     elif args.command == "self-analyze":
         analyzer = ForgeSelfAnalyzer(".")
