@@ -607,6 +607,64 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Agent Creation Engine (A81)
+
+Forge creates specialized software agents from **structured
+specifications** — a first-party engine, not a plugin. A spec carries
+nine operator-authored fields (name, purpose, capabilities, tools,
+permissions, model requirements, memory policy, verification
+requirements, resource limits), validates against the canonical
+capability/permission/tool vocabularies, and requires every tool to be
+covered by its mapped permission scope. The `AgentCreationFactory`
+turns a validated spec into a structured **agent package**
+(`forge-agent-package` v1) with a stable id, immutable append-only
+version history (updates reset the lifecycle — changed agents never
+inherit old clearance), and persistent storage under
+`.forge/agents/`.
+
+The lifecycle is explicit — `created → validated → tested → enabled ⇄
+paused → disabled → retired` (terminal) — and `enabled` is the single
+runnable state. Advancing to `tested` requires passing the **agent
+benchmark**: nine deterministic, code-judged checks that prove
+isolation (tool allowlist, memory namespaces, lifecycle gating) and
+permission boundaries (the spec ceiling is a hard refusal approval can
+never expand; the PolicyGate still rules inside it; no agent may
+self-grant, self-approve, or mutate any package).
+
+Once enabled, an agent operates strictly through the six subsystems
+every Forge agent shares — **Model Fabric** (routing under the spec's
+model requirements), **PolicyGate** (every write/tool/permission
+decision under the agent's identity), **Tool Runtime** (permissioned
+execution), **Memory** (per-agent namespaces), **Verification** (the
+spec's gates over exactly the files the agent wrote), and
+**Checkpoints** (exact rollback of the agent's files on failure).
+Model output is untrusted: proposals outside the ceiling refuse the
+whole run, and protected paths (`.git`, `.forge`, `.env`,
+credentials) are refused by the shared change layer.
+
+Six reviewed templates ship built in: **Coding**, **Research**
+(read-only), **Security** (audit-only), **Game Development**,
+**OS Development** (most conservative budgets), and **Documentation**.
+
+```bash
+forge agents                                  # list agent packages
+forge agents templates
+forge agents create --template coding --name my-coder
+forge agents validate my-coder && forge agents test my-coder
+forge agents enable my-coder
+forge agents run my-coder "add a csv export" --approve
+forge agents disable my-coder
+```
+
+The desktop app gains an **Agent Manager** tab (create from a
+template, drive the lifecycle, run tasks, inspect manifests,
+versions, and benchmark results), backed by control-plane methods
+audited under `agent-packages` — agent-shaped actors are refused for
+every mutation.
+
+See `docs/A81-AGENT-CREATION-ENGINE.md`. Full suite after A81: 1876
+passed, 3 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -686,6 +744,11 @@ forge serve --project demo=/path/to/repo   # browser cockpit on 127.0.0.1:8000
 forge plan "add CSV export"
 forge analyze
 forge models                   # list models (same as: forge models list)
+forge agents                   # list created agent packages
+forge agents create --template coding --name my-coder
+forge agents test my-coder     # benchmark suite (isolation + permissions)
+forge agents enable my-coder   # operator lifecycle action
+forge agents disable my-coder
 forge models health            # model/provider health
 forge models providers         # registered providers
 forge models capabilities      # capability vocabulary

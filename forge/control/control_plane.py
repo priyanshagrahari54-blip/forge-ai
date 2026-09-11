@@ -4574,6 +4574,256 @@ class ControlPlane:
                            for definition in factory.list()]}
 
 
+    # -- agent creation engine (A81) ------------------------------------------------------
+
+    def _agent_engine(self, session: Session):
+        """Per-project engine: factory + runtime over the plane fabric."""
+        if not hasattr(self, "_agent_engines"):
+            self._agent_engines: dict[str, Any] = {}
+        engine = self._agent_engines.get(session.project_id)
+        if engine is None:
+            from forge.agents.engine import (
+                AgentCreationFactory,
+                EngineBundle,
+                EngineRuntime,
+            )
+            from forge.security.permissions import OperationMode
+
+            project = self.get_project(session.project_id)
+            factory = AgentCreationFactory(root=project.root)
+            bundle = EngineBundle.build(
+                project.root, fabric=self.fabric,
+                mode=OperationMode.ASSISTED, policy=self.policy,
+                approval_store=self.approval_store)
+            runtime = EngineRuntime(bundle)
+            engine = {"factory": factory, "bundle": bundle,
+                      "runtime": runtime}
+            self._agent_engines[session.project_id] = engine
+        return engine
+
+    def _engine_guarded(self, session: Session, action: str, call, *,
+                        resource: str = "agent-packages"):
+        """Run an engine mutation; agent actors are refused + audited.
+
+        The factory itself refuses agent actors (no self-grant); this
+        wrapper maps that refusal to an audited ``InvalidRequest`` so
+        callers see the plane's normal error shape.
+        """
+        try:
+            return call()
+        except PermissionError as exc:
+            self._audit(session.actor, resource, action, False,
+                        task_id=session.active_task or session.id,
+                        reason=str(exc))
+            raise InvalidRequest(str(exc)) from exc
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+
+    def agent_packages(self, session: Session) -> dict[str, Any]:
+        """List agent packages for this project."""
+        engine = self._agent_engine(session)
+        return {"agents": [package.summary()
+                           for package in engine["factory"].list()]}
+
+    def agent_package_templates(self, session: Session) -> dict[str, Any]:
+        from forge.agents.engine import template_summaries
+
+        return {"templates": template_summaries()}
+
+    def agent_package_get(self, session: Session, name: str,
+                          version: int | None = None) -> dict[str, Any]:
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+        if version is not None:
+            return factory.get_version(name, int(version)).manifest()
+        return factory.get(name).manifest()
+
+    def agent_package_versions(self, session: Session,
+                               name: str) -> dict[str, Any]:
+        engine = self._agent_engine(session)
+        package = engine["factory"].get(name)
+        return {"name": name, "current_version": package.version,
+                "versions": package.history.snapshot()}
+
+    def agent_package_create(self, session: Session,
+                             payload: dict[str, Any], *,
+                             template: str = "", name: str = "",
+                             purpose: str = "") -> dict[str, Any]:
+        """Create an agent package from a spec payload or a template."""
+        from forge.agents.engine import spec_from_template
+
+        if not payload:
+            if not template:
+                raise InvalidRequest(
+                    "Provide a specification payload or a template")
+            try:
+                spec = spec_from_template(
+                    template, name=name or "", purpose=purpose)
+            except ValueError as exc:
+                raise InvalidRequest(str(exc)) from exc
+        else:
+            data = dict(payload)
+            if template:
+                data.setdefault("template", template)
+            if name:
+                data["name"] = name
+            if purpose:
+                data["purpose"] = purpose
+            from forge.agents.engine import AgentSpecification
+
+            try:
+                spec = AgentSpecification.from_dict(data)
+            except ValueError as exc:
+                raise InvalidRequest(str(exc)) from exc
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+
+        def create():
+            package = factory.create(spec, created_by=session.actor)
+            self._audit(session.actor, "agent-packages", "create", True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{spec.name} v{package.version}")
+            return package
+
+        package = self._engine_guarded(session, "create", create)
+        return package.manifest()
+
+    def agent_package_update(self, session: Session, name: str,
+                             payload: dict[str, Any], *,
+                             note: str = "") -> dict[str, Any]:
+        from forge.agents.engine import AgentSpecification
+
+        try:
+            spec = AgentSpecification.from_dict(dict(payload))
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+
+        def update():
+            package = factory.update(name, spec, actor=session.actor,
+                                     note=note)
+            self._audit(session.actor, "agent-packages", "update", True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{name} -> v{package.version}")
+            return package
+
+        package = self._engine_guarded(session, "update", update)
+        return package.manifest()
+
+    def agent_package_rollback(self, session: Session, name: str,
+                               version: int) -> dict[str, Any]:
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+
+        def rollback():
+            package = factory.rollback(name, int(version),
+                                       actor=session.actor)
+            self._audit(session.actor, "agent-packages", "rollback", True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{name} -> v{version}")
+            return package
+
+        package = self._engine_guarded(session, "rollback", rollback)
+        return package.manifest()
+
+    def agent_package_validate(self, session: Session,
+                               name: str) -> dict[str, Any]:
+        engine = self._agent_engine(session)
+
+        def validate():
+            package = engine["factory"].validate(name,
+                                                 actor=session.actor)
+            self._audit(session.actor, "agent-packages", "validate", True,
+                        task_id=session.active_task or session.id,
+                        reason=name)
+            return package
+
+        package = self._engine_guarded(session, "validate", validate)
+        return package.manifest()
+
+    def agent_package_test(self, session: Session,
+                           name: str) -> dict[str, Any]:
+        """Run the agent benchmark suite and advance on a pass."""
+        from forge.agents.engine import run_agent_benchmark
+
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+        runtime = engine["runtime"]
+        package = factory.get(name)
+        benchmark = run_agent_benchmark(package, runtime, factory)
+
+        def mark():
+            marked = factory.mark_tested(
+                name, actor=session.actor, benchmark=benchmark)
+            self._audit(session.actor, "agent-packages", "test", True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{name} passed={benchmark['passed']}")
+            return marked
+
+        try:
+            package = self._engine_guarded(session, "test", mark)
+            status = package.status
+        except InvalidRequest:
+            status = factory.get(name).status
+        return {"benchmark": benchmark, "status": status,
+                "advanced": status == "tested"}
+
+    def agent_package_transition(self, session: Session, name: str,
+                                 action: str) -> dict[str, Any]:
+        """Operator lifecycle action: enable/disable/pause/resume/retire."""
+        actions = ("enable", "disable", "pause", "resume", "retire")
+        action = (action or "").strip().lower()
+        if action not in actions:
+            raise InvalidRequest(
+                f"Unknown lifecycle action {action!r}; choose from "
+                f"{', '.join(actions)}")
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+
+        def apply_action():
+            package = getattr(factory, action)(name, actor=session.actor)
+            self._audit(session.actor, "agent-packages", action, True,
+                        task_id=session.active_task or session.id,
+                        reason=f"{name} -> {package.status}")
+            return package
+
+        package = self._engine_guarded(session, action, apply_action)
+        return package.manifest()
+
+    def agent_package_delete(self, session: Session,
+                             name: str) -> dict[str, Any]:
+        engine = self._agent_engine(session)
+
+        def delete():
+            removed = engine["factory"].delete(name,
+                                               actor=session.actor)
+            self._audit(session.actor, "agent-packages", "delete", True,
+                        task_id=session.active_task or session.id,
+                        reason=name)
+            return removed
+
+        removed = self._engine_guarded(session, "delete", delete)
+        return {"deleted": removed}
+
+    def agent_package_run(self, session: Session, name: str, task: str, *,
+                          approved: bool = False) -> dict[str, Any]:
+        """Run one task through an enabled agent package."""
+        engine = self._agent_engine(session)
+        factory = engine["factory"]
+        runtime = engine["runtime"]
+        package = factory.get(name)
+        try:
+            report = runtime.run(package, task, approved=approved)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "agent-packages", "run",
+                    report.success,
+                    task_id=session.active_task or session.id,
+                    reason=f"{name} success={report.success}")
+        return report.to_dict()
+
+
     # -- compute (A48) --------------------------------------------------------------------
 
     def _compute_engine(self, session: Session):
