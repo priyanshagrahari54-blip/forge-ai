@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,38 +104,23 @@ class RepositoryIntelligence:
 
     def _direct_dependency_paths(self, source: str) -> list[str]:
         """Return direct dependency file paths for a source file."""
-
-        result: list[str] = []
-
-        for dependency in self.dependencies.dependencies:
-            if dependency.source != source:
-                continue
-
-            if dependency.resolved_path is not None:
-                result.append(dependency.resolved_path)
-
-        return result
+        # Performance optimization (Bolt ⚡): O(1) index lookup replacing linear search
+        return self.dependencies.resolved_dependencies_of(source)
 
     def _direct_dependent_paths(self, source: str) -> list[str]:
         """Return files that directly depend on a source file."""
-
-        result: list[str] = []
-
-        for dependency in self.dependencies.dependencies:
-            if dependency.resolved_path == source:
-                result.append(dependency.source)
-
-        return result
+        # Performance optimization (Bolt ⚡): O(1) index lookup replacing linear search
+        return self.dependencies.dependents_of_resolved(source)
 
     def _transitive_dependency_paths(self, source: str) -> list[str]:
         """Walk dependencies using resolved repository file paths."""
 
         visited: set[str] = set()
-        queue = self._direct_dependency_paths(source)
+        queue = deque(self._direct_dependency_paths(source))
         result: list[str] = []
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
 
             if current == source or current in visited:
                 continue
@@ -149,11 +135,11 @@ class RepositoryIntelligence:
         """Walk dependents using resolved repository file paths."""
 
         visited: set[str] = set()
-        queue = self._direct_dependent_paths(source)
+        queue = deque(self._direct_dependent_paths(source))
         result: list[str] = []
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
 
             if current == source or current in visited:
                 continue
