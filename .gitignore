@@ -25,3 +25,4 @@ dist/
 .forge/*.db-journal
 .forge/audit.jsonl
 .forge/self/history/
+.forge/research_cache/

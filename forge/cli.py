@@ -247,6 +247,115 @@ def _build_fabric(args) -> "object":
     return ModelFabric.from_defaults(config)
 
 
+def _run_research(args) -> int:
+    """CLI entry for the secure research engine (``forge research``)."""
+    from forge.research.secure_engine import SecureResearchEngine
+
+    root = getattr(args, "root", ".") or "."
+    subcommand = getattr(args, "research_subcommand", "status") or "status"
+    as_json = bool(getattr(args, "json", False))
+
+    if subcommand == "cache-clear":
+        engine = SecureResearchEngine(root, build_intelligence=False)
+        removed = engine.cache.clear()
+        if as_json:
+            _emit_json({"cleared": removed})
+        else:
+            print(f"Cleared {removed} cached research entr"
+                  f"{'y' if removed == 1 else 'ies'}.")
+        return 0
+
+    if subcommand == "plan":
+        engine = SecureResearchEngine(root, build_intelligence=False)
+        plan = engine.plan(args.question, allow_web=not args.no_web)
+        if as_json:
+            _emit_json(plan.to_dict())
+        else:
+            print(f"Intent: {plan.intent}")
+            print(f"Terms: {', '.join(plan.terms)}")
+            print(f"Identifiers: {', '.join(plan.identifiers) or '-'}")
+            print(f"Libraries: {', '.join(plan.libraries) or '-'}")
+            print(f"Sources: {' -> '.join(plan.source_order)}")
+            print("Sub-queries:")
+            for query in plan.sub_queries:
+                print(f"  - {query}")
+        return 0
+
+    if subcommand == "query":
+        engine = SecureResearchEngine(root)
+        report = engine.research(
+            args.question,
+            allow_web=not args.no_web,
+            sources=tuple(args.sources or ()),
+            user_notes=tuple(args.note or ()),
+            user_files=tuple(args.file or ()),
+            allow_model_knowledge=bool(args.allow_model_knowledge) or None,
+            max_results=args.limit,
+            use_cache=not args.no_cache,
+        )
+        if as_json:
+            _emit_json(report)
+        else:
+            print(f"Question: {report['question']}")
+            print(f"Intent: {report['plan']['intent']}   "
+                  f"Confidence (coverage heuristic): {report['confidence']}")
+            print()
+            print(report["answer"])
+            print()
+            counts = report["provenance_counts"]
+            print("Provenance: " + ", ".join(
+                f"{key}={value}" for key, value in counts.items()))
+            print("Sources:")
+            for outcome in report["sources"]:
+                line = (f"  {outcome['source']:<20} {outcome['state']:<14} "
+                        f"results={outcome['result_count']}")
+                if outcome.get("error"):
+                    line += f"  ({outcome['error'][:80]})"
+                print(line)
+            if report["results"]:
+                print("Results:")
+                for index, item in enumerate(report["results"], start=1):
+                    flag = "" if item["verified"] else " [UNVERIFIED]"
+                    print(f"  [{index}] {item['provenance']}{flag} "
+                          f"{item['cite']}")
+                    print(f"      {item['title'][:100]}")
+                    print(f"      {item['snippet'][:200]}")
+            if report["web_failed"]:
+                print("WARNING: web research failed; nothing was invented "
+                      "to fill the gap.")
+        return 0 if (report["results"] or not report["web_failed"]) else 1
+
+    engine = SecureResearchEngine(root, build_intelligence=False)
+    status = engine.status()
+    if as_json:
+        _emit_json(status)
+    else:
+        print("Forge Research Engine")
+        print(f"Root: {status['root']}")
+        print(f"Web research: {'enabled' if status['config']['web_enabled'] else 'disabled'}"
+              f" (https_only={status['security']['https_only']}, "
+              f"timeout={status['security']['timeout_seconds']}s, "
+              f"max_bytes={status['security']['max_bytes']}, "
+              f"max_redirects={status['security']['max_redirects']})")
+        print(f"Allowed hosts: {len(status['security']['host_allowlist'])}")
+        print(f"Model knowledge: configured={status['model_knowledge']['configured']} "
+              f"allowed={status['model_knowledge']['allowed_by_config']} — "
+              f"{status['model_knowledge']['policy']}")
+        print("Sources:")
+        for name, info in status["sources"].items():
+            print(f"  {name:<20} available={info['available']!s:<5} "
+                  f"provenance={info['provenance']}")
+        cache = status["cache"]
+        print(f"Cache: {cache['entries']} entries, ttl={cache['ttl_seconds']}s, "
+              f"dir={cache['directory'] or '(memory only)'}")
+        if status["config"]["rejected"]:
+            print("Rejected config entries:")
+            for item in status["config"]["rejected"]:
+                print(f"  - {item}")
+        print("Usage: forge research query \"<question>\" [--no-web] [--json]")
+    return 0
+
+
 def _run_doctor(args) -> int:
     """Diagnose why tasks would fail; exit 0 when ready, 1 otherwise."""
     from forge.models import check_fabric_readiness
@@ -563,6 +672,52 @@ def main() -> None:
     higgsfield_parser.add_argument("--api-timeout", type=float,
                                    default=30.0)
 
+    research_parser = subparsers.add_parser(
+        "research",
+        help="Secure, provenance-tracked research over project + web",
+        description="Research technical topics, APIs, docs, libraries, "
+        "errors and project questions. Every result is labeled "
+        "LOCAL_SOURCE / REAL_WEB_RESULT / USER_PROVIDED / MODEL_KNOWLEDGE; "
+        "web access is HTTPS-only and SSRF-guarded; failed web research "
+        "is reported, never replaced by model knowledge.",
+    )
+    research_parser.add_argument("--root", default=".",
+                                 help="Project root (default: cwd)")
+    research_parser.add_argument("--json", action="store_true",
+                                 help="Emit machine-readable JSON")
+    research_subs = research_parser.add_subparsers(dest="research_subcommand")
+    research_subs.add_parser("status", help="Show sources, policy, cache")
+    research_subs.add_parser("cache-clear", help="Clear the research cache")
+    research_plan_parser = research_subs.add_parser(
+        "plan", help="Show the query plan without running sources")
+    research_plan_parser.add_argument("question")
+    research_plan_parser.add_argument("--no-web", action="store_true")
+    research_query_parser = research_subs.add_parser(
+        "query", help="Run a research query")
+    research_query_parser.add_argument("question")
+    research_query_parser.add_argument("--no-web", action="store_true",
+                                       help="Local sources only")
+    research_query_parser.add_argument(
+        "--source", dest="sources", action="append", default=[],
+        help="Restrict to a source (repeatable): project_files, "
+             "local_docs, repository_metadata, official_docs, "
+             "configured_web, user_provided")
+    research_query_parser.add_argument(
+        "--note", action="append", default=[],
+        help="User-provided note (repeatable); labeled USER_PROVIDED")
+    research_query_parser.add_argument(
+        "--file", action="append", default=[],
+        help="User-provided file inside the project (repeatable)")
+    research_query_parser.add_argument(
+        "--allow-model-knowledge", action="store_true",
+        help="Also include clearly-labeled MODEL_KNOWLEDGE (opt-in)")
+    research_query_parser.add_argument("--limit", type=int, default=None)
+    research_query_parser.add_argument("--no-cache", action="store_true")
+    for _sub in (research_plan_parser, research_query_parser):
+        _sub.add_argument("--json", action="store_true",
+                          default=argparse.SUPPRESS,
+                          help="Emit machine-readable JSON")
+
     # Self-development commands
     subparsers.add_parser("self-analyze")
 
@@ -631,12 +786,12 @@ def main() -> None:
         except ImportError as exc:
             print(f"The desktop app needs stdlib tkinter: {exc}",
                   file=sys.stderr)
-            raise SystemExit(2)
+            raise SystemExit(2) from None
         except Exception as exc:  # Tk raises TclError without a display
             print(f"Cannot open the desktop window: {exc}\n"
                   f"Headless machine? Use `forge serve` (browser) or "
                   f"`forge run` (terminal) instead.", file=sys.stderr)
-            raise SystemExit(2)
+            raise SystemExit(2) from None
 
     elif args.command == "analyze":
         analyzer = ProjectAnalyzer(".")
@@ -651,6 +806,9 @@ def main() -> None:
 
     elif args.command == "higgsfield":
         raise SystemExit(_run_higgsfield(args))
+
+    elif args.command == "research":
+        raise SystemExit(_run_research(args))
 
     elif args.command == "self-analyze":
         analyzer = ForgeSelfAnalyzer(".")
