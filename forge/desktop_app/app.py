@@ -106,6 +106,11 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_models_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
+        agents_menu = tk.Menu(menubar, tearoff=False)
+        agents_menu.add_command(label="Agent Manager...",
+                                command=self._open_agent_manager)
+        menubar.add_cascade(label="Agents", menu=agents_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Setup guide", command=self._show_setup)
         help_menu.add_command(label="About", command=self._show_about)
@@ -640,6 +645,27 @@ class ForgeDesktopApp(tk.Tk):
         text.insert(tk.END, "\n".join(lines))
         text.configure(state=tk.DISABLED)
 
+    # -- agent manager ---------------------------------------------------------
+
+    def _open_agent_manager(self) -> None:
+        if not self.backend.running:
+            messagebox.showinfo(APP_TITLE, "Start the backend first (open a project folder).")
+            return
+        project_id = self._current_project_id()
+        if not project_id:
+            messagebox.showinfo(APP_TITLE, "Select a project first.")
+            return
+        existing = getattr(self, "_agent_manager", None)
+        if existing is not None:
+            try:
+                existing.lift()
+                existing.focus_force()
+                return
+            except tk.TclError:
+                self._agent_manager = None
+        self._agent_manager = AgentManagerWindow(self, self.backend,
+                                                 project_id)
+
     # -- dialogs ----------------------------------------------------------------------
 
     def _first_run(self) -> None:
@@ -695,6 +721,199 @@ class ForgeDesktopApp(tk.Tk):
                             "Tasks run through the same guarded pipeline\n"
                             "as the browser cockpit: plan, code, test,\n"
                             "review, acceptance - with approvals for writes.")
+
+
+class AgentManagerWindow(tk.Toplevel):
+    """Agent Manager: create, benchmark, and lifecycle created agents.
+
+    Thin view over ``DesktopBackend.agents_*``: every backend call runs in
+    a worker thread and the result is applied on the main thread via
+    ``after()``. Creation grants nothing — grants are recorded by the
+    operator through the backend, never by an agent.
+    """
+
+    OPERATIONS = ("validate", "test", "enable", "pause", "resume",
+                  "disable", "retire")
+
+    def __init__(self, parent: tk.Tk, backend: DesktopBackend,
+                 project_id: str) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.project_id = project_id
+        self.title(f"Agent Manager - {project_id}")
+        self.geometry("760x560")
+        self.minsize(620, 460)
+        self._agents: list[dict[str, Any]] = []
+        self._templates: list[dict[str, Any]] = []
+
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill=tk.X)
+        ttk.Label(top, text="Template:").pack(side=tk.LEFT)
+        self._template = tk.StringVar()
+        self._template_box = ttk.Combobox(top,
+                                          textvariable=self._template,
+                                          state="readonly", width=18)
+        self._template_box.pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(top, text="Name:").pack(side=tk.LEFT)
+        self._name = tk.StringVar()
+        ttk.Entry(top, textvariable=self._name, width=22).pack(
+            side=tk.LEFT, padx=(4, 8))
+        ttk.Button(top, text="Create",
+                   command=self._create_async).pack(side=tk.LEFT)
+
+        middle = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        middle.pack(fill=tk.BOTH, expand=True, padx=8)
+        left = ttk.Frame(middle)
+        self._list = tk.Listbox(left, activestyle="dotbox", width=34)
+        self._list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._list.bind("<<ListboxSelect>>", self._on_selected)
+        scroll = ttk.Scrollbar(left, command=self._list.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._list.configure(yscrollcommand=scroll.set)
+        middle.add(left, weight=1)
+        right = ttk.Frame(middle)
+        self._details = tk.Text(right, wrap=tk.WORD, state=tk.DISABLED,
+                                width=40)
+        self._details.pack(fill=tk.BOTH, expand=True)
+        middle.add(right, weight=2)
+
+        buttons = ttk.Frame(self, padding=8)
+        buttons.pack(fill=tk.X)
+        for operation in self.OPERATIONS:
+            ttk.Button(buttons, text=operation.capitalize(),
+                       command=lambda op=operation: self._operate_async(
+                           op)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(buttons, text="Refresh",
+                   command=self._refresh_async).pack(side=tk.LEFT,
+                                                     padx=(8, 2))
+
+        self._status = tk.StringVar(value="Loading agents...")
+        ttk.Label(self, textvariable=self._status,
+                  padding=(8, 0)).pack(fill=tk.X)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._refresh_async()
+
+    # -- worker plumbing -------------------------------------------------
+
+    def _run_async(self, label: str, call) -> None:
+        self._status.set(f"{label}...")
+
+        def work() -> None:
+            try:
+                result = call()
+            except BackendError as exc:
+                self.after(0, lambda: self._failed(label, str(exc)))
+                return
+            except Exception as exc:  # never strand the UI thread
+                self.after(0, lambda: self._failed(label, str(exc)))
+                return
+            self.after(0, lambda: self._done(label, result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _failed(self, label: str, error: str) -> None:
+        self._status.set(f"{label} failed: {error}")
+        messagebox.showerror(APP_TITLE, f"{label} failed:\n{error}", parent=self)
+
+    def _done(self, label: str, result: Any) -> None:
+        if isinstance(result, dict) and "agents" in result \
+                and "templates" in result:
+            self._agents = result["agents"]
+            self._templates = result["templates"]
+            self._template_box.configure(
+                values=[t["id"] for t in self._templates])
+            if self._templates and not self._template.get():
+                self._template.set(self._templates[0]["id"])
+            self._render_list()
+            self._status.set(f"{len(self._agents)} agent(s) in "
+                             f"{self.project_id}")
+        else:
+            self._show_result(label, result)
+            self._refresh_async(silent=True)
+
+    # -- actions ----------------------------------------------------------
+
+    def _refresh_async(self, silent: bool = False) -> None:
+        def call():
+            return {"agents": self.backend.agents_list(self.project_id),
+                    "templates": self.backend.agents_templates()}
+
+        if silent:
+            def work() -> None:
+                try:
+                    result = call()
+                except Exception:
+                    return
+                self.after(0, lambda: self._done("Refresh", result))
+
+            threading.Thread(target=work, daemon=True).start()
+        else:
+            self._run_async("Refresh", call)
+
+    def _selected_name(self) -> str:
+        selection = self._list.curselection()
+        if not selection or selection[0] >= len(self._agents):
+            return ""
+        return str(self._agents[selection[0]].get("name", ""))
+
+    def _create_async(self) -> None:
+        template = self._template.get().strip()
+        name = self._name.get().strip()
+        if not template or not name:
+            messagebox.showinfo(APP_TITLE, "Pick a template and a name first.",
+                                parent=self)
+            return
+        self._run_async(
+            "Create",
+            lambda: self.backend.agents_create(self.project_id, template,
+                                               name))
+
+    def _operate_async(self, operation: str) -> None:
+        name = self._selected_name()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.",
+                                parent=self)
+            return
+        action = getattr(self.backend, "agents_%s" % operation)
+        self._run_async(operation.capitalize(),
+                         lambda: action(self.project_id, name))
+
+    def _on_selected(self, _event=None) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+
+        def work() -> None:
+            try:
+                package = self.backend.agents_show(self.project_id, name)
+            except Exception as exc:
+                self.after(0, lambda: self._status.set(str(exc)))
+                return
+            self.after(0, lambda: self._show_result("Agent", package))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # -- rendering --------------------------------------------------------
+
+    def _render_list(self) -> None:
+        self._list.delete(0, tk.END)
+        for agent in self._agents:
+            self._list.insert(tk.END,
+                              f"{agent.get('name')} "
+                              f"v{agent.get('version')} "
+                              f"[{agent.get('state')}]")
+
+    def _show_result(self, label: str, result: Any) -> None:
+        self._details.configure(state=tk.NORMAL)
+        self._details.delete("1.0", tk.END)
+        self._details.insert(tk.END, f"{label}\n\n"
+                             + json.dumps(result, indent=2, default=str))
+        self._details.configure(state=tk.DISABLED)
+        if isinstance(result, dict) and result.get("name"):
+            self._status.set(f"{label}: {result['name']} "
+                             f"[{result.get('state', '?')}]")
+        else:
+            self._status.set(f"{label} finished")
 
 
 def launch(projects: dict[str, str] | None = None,

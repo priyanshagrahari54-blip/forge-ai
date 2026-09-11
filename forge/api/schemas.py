@@ -341,3 +341,32 @@ class FinalGateVerifyRequest(BaseModel):
 
 class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
+
+
+# -- agent creation engine (first-party) ----------------------------------------------------------
+
+class EngineCreateRequest(BaseModel):
+    template: str = Field(default="", max_length=32)
+    name: str = Field(default="", max_length=48)
+    spec: Optional[dict] = None
+    overrides: Optional[dict] = None
+    bind: bool = Field(default=True)
+
+
+class EngineGrantRequest(BaseModel):
+    index: int = Field(ge=0, le=100)
+
+
+class EngineVersionRequest(BaseModel):
+    notes: str = Field(default="", max_length=280)
+    kind: str = Field(default="patch", max_length=16)
+
+
+class EngineRunRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=4000)
+    approval_token_id: str = Field(default="", max_length=200)
+    test_command: str = Field(default="", max_length=256)
+
+
+class EngineImportRequest(BaseModel):
+    payload: dict
