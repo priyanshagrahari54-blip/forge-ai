@@ -48,6 +48,14 @@ forge doctor   # diagnose the model layer
   `WAITING_APPROVAL` is paused, not stuck.
 * **Files & report** — double-click a changed file to view it (bounded,
   secret-redacted); the Report tab shows the outcome or the error.
+* **Agent Manager (A81)** — the Agents tab creates specialized agents
+  from the six built-in templates (coding, research, security,
+  game-dev, os-dev, documentation), drives their lifecycle (validate →
+  test → enable ⇄ pause → disable → retire), runs tasks through an
+  enabled agent (optionally pre-approving writes), and shows the full
+  package manifest, version history, and benchmark results. Every
+  action goes through the control plane — agent-shaped actors are
+  refused for package mutations.
 * **Model readiness pill** — green `READY: ...` when a code model can
   serve tasks, red `NO MODEL - tasks will fail` when not. `Models >
   Model readiness` runs Doctor; the Setup guide walks through Ollama.

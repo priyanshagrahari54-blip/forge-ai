@@ -295,6 +295,80 @@ class DesktopBackend:
         except Exception as exc:
             raise BackendError(str(exc)) from exc
 
+    # -- agent manager (A81) -----------------------------------------------
+
+    def list_agents(self, project_id: str) -> list[dict[str, Any]]:
+        """Agent packages for one project (name, version, status, …)."""
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            payload = plane.agent_packages(session)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [dict(item) for item in payload.get("agents", [])]
+
+    def agent_templates(self) -> list[dict[str, Any]]:
+        """The built-in agent templates (no session needed)."""
+        from forge.agents.engine import template_summaries
+
+        return template_summaries()
+
+    def create_agent(self, project_id: str, template: str, name: str,
+                     purpose: str = "") -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.agent_package_create(
+                session, {}, template=template, name=name,
+                purpose=purpose))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def get_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.agent_package_get(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agent_versions(self, project_id: str,
+                       name: str) -> list[dict[str, Any]]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            payload = plane.agent_package_versions(session, name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [dict(item) for item in payload.get("versions", [])]
+
+    def agent_action(self, project_id: str, name: str,
+                     action: str) -> dict[str, Any]:
+        """Validate / test / enable / pause / resume / disable / retire."""
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            if action == "validate":
+                return dict(plane.agent_package_validate(session, name))
+            if action == "test":
+                return dict(plane.agent_package_test(session, name))
+            return dict(plane.agent_package_transition(session, name,
+                                                       action))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def run_agent(self, project_id: str, name: str, task: str, *,
+                  approve: bool = False) -> dict[str, Any]:
+        """Run one task through an enabled agent package."""
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.agent_package_run(session, name, task,
+                                                approved=approve))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+
     # -- models ------------------------------------------------------------
 
     def model_readiness(self) -> dict[str, Any]:
