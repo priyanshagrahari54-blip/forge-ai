@@ -607,6 +607,64 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Agent Creation Engine (A81)
+
+Forge creates new specialized software agents from structured
+specifications. A created agent is a validated, content-addressed
+**package** — not a prompt string — with an explicit permission
+envelope, a derived runtime plan, a lifecycle, a version, and a
+code-judged benchmark record (`forge.agent_engine`).
+
+- **Specification** (`forge.agent_engine.spec`): name, purpose,
+  capabilities, tools, permissions, model requirements, memory policy,
+  verification requirements, and resource limits — strictly validated
+  and fingerprinted. Escalation tools, traversing scopes, secret-bearing
+  memory, unknown capabilities, and out-of-range limits are refused at
+  parse time; the `security` gate is mandatory.
+- **Factory** (`forge.agent_engine.factory`): deterministic, side-effect
+  free. It derives the runtime plan (`model_fabric`, `policy_gate`,
+  `tool_runtime`, `memory`, `verification`, `checkpoints`,
+  `resource_limits`) from the spec alone, refuses tools that need power
+  the spec did not grant, and reports unrecognized tools instead of
+  silently granting them. `PackageValidator` then re-checks the built
+  package against its own spec.
+- **Lifecycle** (`forge.agent_engine.lifecycle`): `created → validated →
+  tested → enabled ⇄ paused`, plus `disabled` (must be re-validated and
+  re-tested) and terminal `retired`. Only a tested package with a
+  passing validation and benchmark may be enabled, only an operator may
+  enable or retire, and an agent may never change its own state.
+- **Operates through the platform** (`forge.agent_engine.runtime`):
+  `BoundAgent` routes every model call through the Model Fabric, every
+  action through the PolicyGate, every side effect through the Tool
+  Runtime, uses namespaced/bounded/secret-free Memory, runs the declared
+  Verification gates, and checkpoints before its first write.
+- **No self-grant**, enforced five independent ways: refused at spec
+  parse, refused by the factory, flagged by the validator,
+  `request_grant()` always raises, and any widening is classified
+  `MAJOR` — which resets the lifecycle to `created`.
+- **Templates**: Coding, Research, Security, Game Development, OS
+  Development, and Documentation — all conservative by default.
+- **Benchmark** (`forge.agent_engine.benchmark`): ten static checks
+  (validity, self-grant refusal, scope isolation, undeclared-tool
+  refusal, write-scope enforcement, memory namespacing and secret
+  refusal, mandatory security gate, bounded limits, honest prompt) plus
+  two behavioural checks when a fabric is bound. Judged by code, never
+  by a model; the threshold is every check.
+- **Versioning** (`forge.agent_engine.version`): `MAJOR.MINOR.PATCH`
+  derived from the spec diff, never declared by the caller.
+- **CLI**: `forge agents`, `forge agents create`, `forge agents test`,
+  `forge agents enable`, `forge agents disable` (plus `templates`,
+  `show`, `validate`, `pause`, `retire`, `versions`), all with `--json`
+  and a shared JSON store.
+- **Desktop**: an **Agents** tab backed by the headless
+  `forge.desktop_app.agent_manager.AgentManager`, sharing the CLI store.
+
+See `docs/A81-AGENT-CREATION-ENGINE.md`. A81 adds 107 tests, including
+`tests/test_a81_agent_isolation.py`, which drives a real bound agent
+against a real PolicyGate, ToolRuntime, CheckpointManager, and
+VerificationPipeline to prove isolation and permission boundaries. Full
+suite after A81: 1930 passed, 3 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

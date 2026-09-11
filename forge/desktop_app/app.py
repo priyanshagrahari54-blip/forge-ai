@@ -19,6 +19,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from forge.desktop_app.agent_manager import AgentManager, AgentManagerError
 from forge.desktop_app.backend import BackendError, DesktopBackend
 
 APP_TITLE = "Forge AI Desktop"
@@ -74,6 +75,11 @@ class ForgeDesktopApp(tk.Tk):
         self._mode = tk.StringVar(value="assisted")
         self._readiness: dict[str, Any] = {}
         self._debug = False
+        self._agents = AgentManager()
+        self._agent_names: list[str] = []
+        self._selected_agent = ""
+        self._agent_template = tk.StringVar()
+        self._agent_name = tk.StringVar()
 
         self._build_menu()
         self._build_toolbar()
@@ -196,7 +202,150 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+
+        self._build_agent_tab()
         paned.add(right, weight=3)
+
+    def _build_agent_tab(self) -> None:
+        """Agent Manager (A81): create, test, and gate specialized agents."""
+        tab = ttk.Frame(self._notebook, padding=4)
+
+        create = ttk.LabelFrame(tab, text="Create agent", padding=6)
+        create.pack(fill=tk.X)
+        ttk.Label(create, text="Template:").pack(side=tk.LEFT)
+        templates = [item["template"] for item in self._agents.templates()]
+        self._agent_template.set(templates[0] if templates else "")
+        ttk.Combobox(create, textvariable=self._agent_template,
+                     values=templates, state="readonly",
+                     width=16).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(create, text="Name:").pack(side=tk.LEFT)
+        ttk.Entry(create, textvariable=self._agent_name,
+                  width=22).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(create, text="Create",
+                   command=self._agent_create).pack(side=tk.LEFT)
+
+        body = ttk.Frame(tab)
+        body.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        left = ttk.Frame(body)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        self._agent_list = tk.Listbox(left, width=32, activestyle="dotbox")
+        self._agent_list.pack(fill=tk.BOTH, expand=True)
+        self._agent_list.bind("<<ListboxSelect>>", self._on_agent_selected)
+
+        actions = ttk.Frame(left)
+        actions.pack(fill=tk.X, pady=(4, 0))
+        for label, action in (("Validate", self._agent_validate),
+                              ("Test", self._agent_test),
+                              ("Enable", self._agent_enable),
+                              ("Pause", self._agent_pause),
+                              ("Disable", self._agent_disable),
+                              ("Refresh", self._refresh_agents)):
+            ttk.Button(actions, text=label,
+                       command=action).pack(side=tk.LEFT, padx=1)
+
+        self._agent_detail = tk.Text(body, wrap=tk.WORD, state=tk.DISABLED,
+                                     height=20, bg="#f6f8fa")
+        self._agent_detail.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                                padx=(6, 0))
+
+        self._notebook.add(tab, text="Agents")
+        self._refresh_agents()
+
+    # -- agent manager ---------------------------------------------------
+
+    def _set_agent_detail(self, text: str) -> None:
+        self._agent_detail.configure(state=tk.NORMAL)
+        self._agent_detail.delete("1.0", tk.END)
+        self._agent_detail.insert(tk.END, text)
+        self._agent_detail.configure(state=tk.DISABLED)
+
+    def _refresh_agents(self) -> None:
+        try:
+            rows = self._agents.list_agents()
+        except AgentManagerError as exc:
+            self._set_status(f"Agents: {exc}")
+            return
+        self._agent_names = [row["name"] for row in rows]
+        self._agent_list.delete(0, tk.END)
+        for row in rows:
+            self._agent_list.insert(
+                tk.END, f"{row['name']}  v{row['version']}  "
+                        f"[{row['state']}]")
+        if self._selected_agent in self._agent_names:
+            index = self._agent_names.index(self._selected_agent)
+            self._agent_list.selection_set(index)
+            self._render_agent(self._selected_agent)
+        elif not rows:
+            self._selected_agent = ""
+            self._set_agent_detail(
+                "No agents yet. Pick a template above and press Create.")
+
+    def _render_agent(self, name: str) -> None:
+        try:
+            self._set_agent_detail(self._agents.summary(name))
+        except AgentManagerError as exc:
+            self._set_agent_detail(f"Cannot show {name}: {exc}")
+
+    def _on_agent_selected(self, _event=None) -> None:
+        selection = self._agent_list.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if index < len(self._agent_names):
+            self._selected_agent = self._agent_names[index]
+            self._render_agent(self._selected_agent)
+
+    def _agent_create(self) -> None:
+        template = self._agent_template.get().strip()
+        if not template:
+            messagebox.showinfo(APP_TITLE, "Pick a template first.")
+            return
+        try:
+            result = self._agents.create(
+                template, name=self._agent_name.get().strip())
+        except AgentManagerError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._selected_agent = result["agent"]
+        self._set_status(
+            f"Created {result['agent']} v{result['version']} "
+            f"({result['state']})")
+        self._refresh_agents()
+
+    def _agent_action(self, action: str, verb: str) -> None:
+        if not self._selected_agent:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+        try:
+            result = getattr(self._agents, action)(self._selected_agent)
+        except AgentManagerError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        if action == "test":
+            self._set_status(
+                f"{self._selected_agent}: benchmark "
+                f"{'passed' if result.get('passed') else 'failed'} "
+                f"({result.get('passed_count', 0)}/"
+                f"{result.get('total', 0)})")
+        else:
+            self._set_status(f"{verb} {self._selected_agent}")
+        self._refresh_agents()
+
+    def _agent_validate(self) -> None:
+        self._agent_action("validate", "Validated")
+
+    def _agent_test(self) -> None:
+        self._agent_action("test", "Tested")
+
+    def _agent_enable(self) -> None:
+        self._agent_action("enable", "Enabled")
+
+    def _agent_pause(self) -> None:
+        self._agent_action("pause", "Paused")
+
+    def _agent_disable(self) -> None:
+        self._agent_action("disable", "Disabled")
 
     def _build_statusbar(self) -> None:
         self._status = ttk.Label(self, text="Not started", relief=tk.SUNKEN,

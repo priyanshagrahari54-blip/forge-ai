@@ -441,6 +441,10 @@ def main() -> None:
                                 help="Control-plane database path.")
     desktop_parser.add_argument("--actor", default="desktop")
 
+    from forge.agent_engine import cli as agents_cli
+
+    agents_cli.add_parser(subparsers)
+
     task_parser = subparsers.add_parser("plan")
     task_parser.add_argument("request")
 
@@ -637,6 +641,9 @@ def main() -> None:
                   f"Headless machine? Use `forge serve` (browser) or "
                   f"`forge run` (terminal) instead.", file=sys.stderr)
             raise SystemExit(2)
+
+    elif args.command == "agents":
+        raise SystemExit(agents_cli.run(args))
 
     elif args.command == "analyze":
         analyzer = ProjectAnalyzer(".")
