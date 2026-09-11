@@ -228,6 +228,18 @@ def test_launch_starts_and_stops_backend(gui, tmp_path, monkeypatch):
     assert (tmp_path / "desktop.db").exists()
 
 
+def test_memory_viewer_tab_methods(gui):
+    """The Memory tab's refresh/search/select/delete paths run headless."""
+    app = gui.ForgeDesktopApp(DesktopBackend())
+    # No backend running yet: refresh shows the placeholder, never raises.
+    app._refresh_memory()
+    app._search_memory()
+    # No selection: the handlers return without error.
+    app._on_memory_selected()
+    app._delete_selected_memory()
+    app._on_close()
+
+
 def test_slug_and_short_helpers(gui):
     assert gui._slug("My Project!") == "my-project"
     assert gui._slug("") == "project"

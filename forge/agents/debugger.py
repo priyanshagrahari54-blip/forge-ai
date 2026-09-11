@@ -256,9 +256,21 @@ class TestDebugLoop:
             safe.append(candidate)
         return safe
 
+    @staticmethod
+    def _record_failure_memory(memory, project, task_id: str,
+                               task: str, error: str) -> None:
+        """Optional long-term-memory hook: remember a bounded failure."""
+        if memory is None:
+            return
+        from forge.memory.integrations import remember_failure
+
+        remember_failure(memory, project or "default", error,
+                         task_id=task_id, source="debugger")
+
     def run(self, task: str, context: str = "", approved: bool = True,
             test_paths: list[str] | tuple[str, ...] | None = None,
-            task_id: str = "", approval_token_id: str = "") -> DebugLoopResult:
+            task_id: str = "", approval_token_id: str = "",
+            memory=None, project: str | None = None) -> DebugLoopResult:
         """Run tests, repairing bounded failures with structured reports.
 
         When ``test_paths`` names the tests relevant to the change, only those
@@ -318,6 +330,8 @@ class TestDebugLoop:
                     reason=f"retry bound reached ({self.max_retries} repairs); "
                            f"{scope} tests still failing",
                 ))
+                self._record_failure_memory(
+                    memory, project, task_id, task, diagnosis)
                 return DebugLoopResult(False, attempts, "tests failed", output, failures,
                                        scope)
             reason = (f"attempt {number}: {scope} tests failed with exit "
@@ -343,6 +357,8 @@ class TestDebugLoop:
                     reason=f"{reason}; repair failed: {exc}",
                     failure=report,
                 ))
+                self._record_failure_memory(
+                    memory, project, task_id, task, str(exc))
                 return DebugLoopResult(False, attempts, "repair failed", str(exc), failures,
                                        scope)
             attempts.append(DebugAttempt(

@@ -137,6 +137,149 @@ def _print_higgsfield_report(report, as_json, ok_key) -> int:
     return 1
 
 
+def _open_memory(args):
+    """Open the long-term memory store for CLI use (default local db)."""
+    from forge.control.db import Database
+    from forge.memory import LongTermMemory
+
+    db_path = getattr(args, "db", "") or ".forge/memory.db"
+    project = getattr(args, "project", "") or os.path.basename(
+        os.getcwd().rstrip("/")) or "default"
+    return LongTermMemory(Database(db_path), project=project)
+
+
+def _memory_type_or_none(args):
+    from forge.memory import MemoryType
+
+    raw = getattr(args, "type", "") or getattr(args, "memory_type", "")
+    if not raw:
+        return None
+    return MemoryType.parse(raw)
+
+
+def _run_memory(args) -> int:
+    """CLI entry for the long-term memory store."""
+    from forge.memory import MemoryType
+
+    subcommand = getattr(args, "memory_subcommand", "list") or "list"
+
+    try:
+        if subcommand == "search":
+            memory = _open_memory(args)
+            results = memory.search(
+                args.query,
+                memory_type=_memory_type_or_none(args),
+                k=getattr(args, "limit", 10),
+            )
+            if getattr(args, "json", False):
+                _emit_json({"query": args.query,
+                            "results": [r.to_dict() for r in results]})
+            else:
+                print(f"Memory search: {args.query!r}")
+                for result in results:
+                    record = result.record
+                    print(f"  {record.id[:8]} [{record.memory_type}] "
+                          f"score={result.score:.3f} "
+                          f"conf={record.confidence:.2f} "
+                          f"imp={record.importance:.2f}")
+                    print(f"    {(record.summary or record.content)[:160]}")
+                if not results:
+                    print("  (no matches)")
+            return 0
+
+        if subcommand == "stats":
+            memory = _open_memory(args)
+            stats = memory.stats()
+            if getattr(args, "json", False):
+                _emit_json(stats)
+            else:
+                print("Forge Memory Stats")
+                print(f"  project: {stats['project']}")
+                print(f"  total: {stats['total']}  "
+                      f"active={stats['active']} deleted={stats['deleted']} "
+                      f"expired={stats['expired']} "
+                      f"superseded={stats['superseded']}")
+                print(f"  redactions: {stats['redactions']}  "
+                      f"provenance events: {stats['provenance_events']}")
+                print("  by type:")
+                for memory_type, count in sorted(stats["by_type"].items()):
+                    print(f"    {memory_type}: {count}")
+            return 0
+
+        if subcommand == "add":
+            memory = _open_memory(args)
+            result = memory.remember(
+                _memory_type_or_none(args) or MemoryType.PROJECT,
+                args.content,
+                source=getattr(args, "source", "forge-cli") or "forge-cli",
+                importance=getattr(args, "importance", 0.5),
+                confidence=getattr(args, "confidence", 0.5),
+                retention=getattr(args, "retention", "") or None,
+            )
+            if getattr(args, "json", False):
+                _emit_json(result.to_dict())
+                return 0 if result.stored else 1
+            if result.stored:
+                print(f"Stored {result.record.id} "
+                      f"[{result.record.memory_type}]")
+            else:
+                print(f"Not stored ({result.status}): {result.reason}")
+                return 1
+            return 0
+
+        if subcommand == "correct":
+            memory = _open_memory(args)
+            try:
+                record = memory.correct(
+                    args.memory_id, args.content,
+                    source=getattr(args, "source", "forge-cli")
+                    or "forge-cli",
+                    reason="corrected via forge CLI")
+            except Exception as exc:
+                print(f"Correction failed: {exc}", file=sys.stderr)
+                return 1
+            if getattr(args, "json", False):
+                _emit_json(record.to_dict())
+            else:
+                print(f"Corrected {args.memory_id} -> {record.id} "
+                      f"(version {record.version})")
+            return 0
+
+        if subcommand == "delete":
+            memory = _open_memory(args)
+            deleted = memory.delete(
+                args.memory_id, source="forge-cli",
+                reason="deleted via forge CLI")
+            if getattr(args, "json", False):
+                _emit_json({"deleted": deleted, "id": args.memory_id})
+                return 0 if deleted else 1
+            print(f"{'Deleted' if deleted else 'Not found'}: {args.memory_id}")
+            return 0 if deleted else 1
+
+        # default: list
+        memory = _open_memory(args)
+        records = memory.list(
+            memory_type=_memory_type_or_none(args),
+            limit=getattr(args, "limit", 20),
+        )
+        if getattr(args, "json", False):
+            _emit_json({"records": [r.to_dict() for r in records]})
+        else:
+            print("Forge Memory (newest first)")
+            for record in records:
+                print(f"  {record.id[:8]} [{record.memory_type}] "
+                      f"v{record.version} conf={record.confidence:.2f} "
+                      f"imp={record.importance:.2f} "
+                      f"retention={record.retention} src={record.source}")
+                print(f"    {(record.summary or record.content)[:200]}")
+            if not records:
+                print("  (empty)")
+        return 0
+    except (ValueError, KeyError) as exc:
+        print(f"memory: {exc}", file=sys.stderr)
+        return 2
+
+
 def _run_models(args) -> None:
     """Render the default Model Fabric's registry to stdout."""
     from forge.models import ALL_CAPABILITIES, ModelFabric
@@ -483,6 +626,71 @@ def main() -> None:
         help="Emit machine-readable JSON",
     )
 
+    # Long-term memory
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Inspect and manage long-term memory",
+        description="Project-scoped durable memory across sessions and tasks. "
+        "Secrets are redacted before storage; retrieval is relevance-ranked. "
+        "Defaults to the local database .forge/memory.db.",
+    )
+    memory_subs = memory_parser.add_subparsers(dest="memory_subcommand")
+    memory_subs.add_parser("list", help="List recent memories (default)")
+
+    _mem_search = memory_subs.add_parser(
+        "search", help="Search memories by relevance")
+    _mem_search.add_argument("query", help="Free-text query")
+
+    memory_subs.add_parser("stats", help="Show memory statistics")
+
+    _mem_add = memory_subs.add_parser("add", help="Store a new memory item")
+    _mem_add.add_argument("content", help="Text to remember")
+    _mem_add.add_argument("--source", default="",
+                          help="Who/what produced this memory")
+    _mem_add.add_argument("--importance", type=float, default=0.5,
+                          help="Importance 0..1 (default 0.5)")
+    _mem_add.add_argument("--confidence", type=float, default=0.5,
+                          help="Confidence 0..1 (default 0.5)")
+    _mem_add.add_argument(
+        "--retention", default="",
+        help="Retention policy: ephemeral|session|task|project|persistent")
+
+    _mem_correct = memory_subs.add_parser(
+        "correct", help="Correct an existing memory item")
+    _mem_correct.add_argument("memory_id", help="Memory id to correct")
+    _mem_correct.add_argument("content", help="Corrected text")
+    _mem_correct.add_argument("--source", default="")
+
+    _mem_delete = memory_subs.add_parser("delete", help="Delete a memory item")
+    _mem_delete.add_argument("memory_id", help="Memory id to delete")
+
+    def _add_memory_common(sub):
+        for flag, kwargs in (
+                ("--db", {"default": "", "help":
+                          "SQLite database path (default .forge/memory.db)"}),
+                ("--project", {"default": "", "help":
+                               "Project id (default: current directory name)"}),
+                ("--type", {"default": "", "help":
+                            "Filter by memory type"}),
+                ("--limit", {"type": int, "default": 20,
+                             "help": "Maximum number of results"}),
+                ("--json", {"action": "store_true",
+                            "default": argparse.SUPPRESS,
+                            "help": "Emit machine-readable JSON"})):
+            sub.add_argument(flag, **kwargs)
+
+    memory_parser.add_argument("--db", default="",
+                               help="SQLite database path")
+    memory_parser.add_argument("--project", default="", help="Project id")
+    memory_parser.add_argument("--type", default="",
+                               help="Filter by memory type")
+    memory_parser.add_argument("--limit", type=int, default=20,
+                               help="Maximum number of results")
+    memory_parser.add_argument("--json", action="store_true",
+                               help="Emit machine-readable JSON")
+    for _sub in memory_subs.choices.values():
+        _add_memory_common(_sub)
+
     # Blender: procedural 3D scenes rendered headlessly
     blender_parser = subparsers.add_parser(
         "blender",
@@ -645,6 +853,9 @@ def main() -> None:
 
     elif args.command == "models":
         _run_models(args)
+
+    elif args.command == "memory":
+        raise SystemExit(_run_memory(args))
 
     elif args.command == "blender":
         raise SystemExit(_run_blender(args))

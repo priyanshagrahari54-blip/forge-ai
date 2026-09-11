@@ -48,6 +48,8 @@ class ReviewerAgent:
         task: str,
         diff: str = "",
         changed_files: tuple[str, ...] = (),
+        memory=None,
+        project: str | None = None,
     ) -> list[ReviewFinding] | None:
         """Ask the fabric for independent structured review findings.
 
@@ -55,6 +57,10 @@ class ReviewerAgent:
         ``None`` when no review model is available (the caller then relies on
         the deterministic gate). A malformed model response is ignored rather
         than trusted.
+
+        ``memory``/``project`` are optional long-term-memory integration
+        points: when supplied, HIGH/CRITICAL findings are remembered as
+        durable decision memory for later tasks.
         """
         if self.fabric is None:
             return None
@@ -80,7 +86,25 @@ class ReviewerAgent:
         ))
         if not response.success:
             return None
-        return self._parse(response.text)
+        findings = self._parse(response.text)
+        if memory is not None and findings:
+            self._record_findings(findings, memory, project, task)
+        return findings
+
+    @staticmethod
+    def _record_findings(findings, memory, project, task) -> None:
+        """Remember HIGH/CRITICAL review findings as durable decisions."""
+        from forge.memory.integrations import remember_decision
+        from forge.security.review import FindingSeverity
+
+        blocking = [finding for finding in findings
+                    if finding.severity in (FindingSeverity.HIGH,
+                                            FindingSeverity.CRITICAL)]
+        for finding in blocking[:3]:
+            remember_decision(
+                memory, project or "default",
+                f"review blocked on {task}: {finding.message}",
+                source="reviewer", importance=0.8, confidence=0.7)
 
     @staticmethod
     def _parse(text: str) -> list[ReviewFinding]:
