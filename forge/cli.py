@@ -369,6 +369,175 @@ def _run_task(args) -> int:
     return 0 if result.get("accepted") else 1
 
 
+def _agents_engine(args):
+    """Build the Agent Creation Engine over the CLI file store."""
+    from forge.agents.engine import AgentCreationEngine
+
+    return AgentCreationEngine(
+        root=getattr(args, "root", ".") or ".",
+        store=getattr(args, "store", "") or ".forge/agents",
+        mode=getattr(args, "mode", "assisted") or "assisted")
+
+
+def _run_agents(args) -> int:
+    """CLI entry for the Agent Creation Engine."""
+    from forge.agents.engine import AgentEngineError, SelfGrantDenied
+
+    subcommand = getattr(args, "agents_subcommand", "list") or "list"
+    actor = getattr(args, "actor", "") or "operator"
+    as_json = bool(getattr(args, "json", False))
+
+    def _fail(message) -> int:
+        if as_json:
+            _emit_json({"ok": False, "error": str(message)})
+        else:
+            print(f"agents: {message}", file=sys.stderr)
+        return 1
+
+    try:
+        engine = _agents_engine(args)
+    except (AgentEngineError, ValueError) as exc:
+        return _fail(exc)
+
+    try:
+        if subcommand == "templates":
+            payload = {"templates": engine.templates()}
+            if as_json:
+                _emit_json(payload)
+            else:
+                print("Agent templates")
+                for entry in payload["templates"]:
+                    spec = entry["spec"]
+                    print(f"  {entry['template']}")
+                    print(f"    purpose: {spec['purpose'][:90]}")
+                    print(f"    capabilities: {', '.join(spec['capabilities'])}")
+            return 0
+
+        if subcommand in ("list", "show-all"):
+            packages = engine.list()
+            if as_json:
+                _emit_json({"agents": [p.to_dict() for p in packages]})
+            else:
+                print(f"Agents ({len(packages)})")
+                for package in packages:
+                    print(f"  {package.name} v{package.version} "
+                          f"[{package.lifecycle}]"
+                          f"{' real' if package.real else ' spec-only'}")
+            return 0
+
+        if subcommand == "show":
+            package = engine.get(args.name)
+            if as_json:
+                _emit_json(package.to_dict())
+            else:
+                manifest = package.manifest()
+                print(f"{manifest['name']} v{manifest['version']} "
+                      f"[{manifest['lifecycle']}]")
+                print(f"  executor: {manifest['executor'] or '-'} "
+                      f"real={manifest['real']}")
+                print(f"  purpose: {package.spec.purpose[:120]}")
+                print(f"  capabilities: {', '.join(package.spec.capabilities)}")
+                print(f"  tools: {', '.join(package.spec.tools)}")
+                print(f"  permissions: {', '.join(package.spec.permissions)}")
+            return 0
+
+        if subcommand == "create":
+            if getattr(args, "spec_file", ""):
+                with open(args.spec_file, encoding="utf-8") as handle:
+                    spec = json.load(handle)
+                package = engine.create(
+                    spec, created_by=actor, bind=bool(args.bind))
+            else:
+                if not getattr(args, "template", ""):
+                    return _fail("create needs --template or --spec FILE")
+                package = engine.create_from_template(
+                    args.template, args.name,
+                    purpose=getattr(args, "purpose", "") or "",
+                    created_by=actor, bind=bool(args.bind))
+            if as_json:
+                _emit_json(package.to_dict())
+            else:
+                print(f"Created {package.name} v{package.version} "
+                      f"[{package.lifecycle}]")
+            return 0
+
+        if subcommand == "validate":
+            package = engine.validate(args.name, actor)
+            if as_json:
+                _emit_json(package.to_dict())
+            else:
+                print(f"{package.name}: {package.lifecycle}")
+            return 0
+
+        if subcommand == "test":
+            result = engine.test(args.name, actor,
+                                 live=bool(getattr(args, "live", False)))
+            summary = result["report"]["summary"]
+            if as_json:
+                _emit_json(result)
+            else:
+                print(f"{result['agent']} v{result['version']}: "
+                      f"{summary['passed']}/{summary['total']} checks "
+                      f"[{result['lifecycle']}]")
+                for check in result["report"]["checks"]:
+                    mark = "pass" if check["passed"] else "FAIL"
+                    print(f"  [{mark}] {check['check']}")
+                if summary.get("skipped"):
+                    print(f"  skipped: {', '.join(summary['skipped'])}")
+            return 0 if summary["meets_requirement"] else 1
+
+        if subcommand in ("enable", "pause", "disable", "retire"):
+            package = getattr(engine, subcommand)(args.name, actor)
+            if as_json:
+                _emit_json(package.to_dict())
+            else:
+                print(f"{package.name}: {package.lifecycle}")
+            return 0
+
+        if subcommand == "delete":
+            result = engine.delete(args.name, actor)
+            if as_json:
+                _emit_json(result)
+            else:
+                print(f"Deleted {result['deleted']}")
+            return 0
+
+        if subcommand == "versions":
+            payload = engine.versions(args.name)
+            if as_json:
+                _emit_json(payload)
+            else:
+                print(f"{payload['agent']} v{payload['version']}")
+                for entry in payload["history"]:
+                    print(f"  {entry['version']} by {entry['changed_by']}: "
+                          f"{entry['summary'][:80]}")
+            return 0
+
+        if subcommand == "run":
+            result = engine.execute(
+                args.name, args.requirement,
+                approved=bool(getattr(args, "approve", False)),
+                actor=actor)
+            if as_json:
+                _emit_json(result)
+            else:
+                print(f"Run {'SUCCEEDED' if result['success'] else 'FAILED'} "
+                      f"({result['elapsed_ms']}ms)")
+                if result.get("files"):
+                    print(f"  files: {', '.join(result['files'])}")
+                if result.get("error"):
+                    print(f"  error: {result['error']}")
+            return 0 if result["success"] else 1
+
+        return _fail(f"unknown agents subcommand: {subcommand}")
+    except SelfGrantDenied as exc:
+        return _fail(f"denied: {exc}")
+    except (AgentEngineError, ValueError) as exc:
+        return _fail(exc)
+    except OSError as exc:
+        return _fail(f"file error: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -594,6 +763,80 @@ def main() -> None:
     serve_parser.add_argument("--db", default="",
                              help="Control-plane database path.")
 
+    # Agent Creation Engine commands
+    agents_parser = subparsers.add_parser(
+        "agents",
+        help="Create and manage specialized Forge agents",
+        description="First-party Agent Creation Engine: create agents "
+        "from structured specs or templates, benchmark them, and move "
+        "them through created -> validated -> tested -> enabled.",
+    )
+    agents_subs = agents_parser.add_subparsers(dest="agents_subcommand")
+    _agents_list = agents_subs.add_parser("list", help="List agents")
+    _agents_list.add_argument("--json", action="store_true",
+                              default=argparse.SUPPRESS)
+    _agents_templates = agents_subs.add_parser(
+        "templates", help="Show the six agent templates")
+    _agents_templates.add_argument("--json", action="store_true",
+                                   default=argparse.SUPPRESS)
+    _agents_show = agents_subs.add_parser("show", help="Show an agent")
+    _agents_show.add_argument("name")
+    _agents_show.add_argument("--json", action="store_true",
+                              default=argparse.SUPPRESS)
+    _agents_create = agents_subs.add_parser(
+        "create", help="Create an agent from a template or spec file")
+    _agents_create.add_argument("name", nargs="?",
+                                help="Agent name (with --template)")
+    _agents_create.add_argument("--template", default="",
+                                help="coding|research|security|"
+                                "game-development|os-development|"
+                                "documentation")
+    _agents_create.add_argument("--purpose", default="")
+    _agents_create.add_argument("--spec", dest="spec_file", default="",
+                                help="JSON spec file (alternative to "
+                                "--template)")
+    _agents_create.add_argument("--bind", action="store_true",
+                                help="Bind the backing executor now")
+    _agents_create.add_argument("--json", action="store_true",
+                                default=argparse.SUPPRESS)
+    for _simple in ("validate", "enable", "pause", "disable", "retire",
+                    "delete", "versions"):
+        _parser = agents_subs.add_parser(_simple)
+        _parser.add_argument("name")
+        _parser.add_argument("--json", action="store_true",
+                             default=argparse.SUPPRESS)
+    _agents_test = agents_subs.add_parser(
+        "test", help="Benchmark an agent (structural; --live adds "
+        "live Model Fabric routing checks)")
+    _agents_test.add_argument("name")
+    _agents_test.add_argument("--live", action="store_true")
+    _agents_test.add_argument("--json", action="store_true",
+                              default=argparse.SUPPRESS)
+    _agents_run = agents_subs.add_parser(
+        "run", help="Run an enabled agent once")
+    _agents_run.add_argument("name")
+    _agents_run.add_argument("requirement")
+    _agents_run.add_argument("--approve", action="store_true",
+                             help="Pre-approve writes (DENY still wins)")
+    _agents_run.add_argument("--json", action="store_true",
+                             default=argparse.SUPPRESS)
+    agents_parser.add_argument("--store", default=".forge/agents",
+                               help="Agent package store directory")
+    agents_parser.add_argument("--root", default=".",
+                               help="Project root for runs")
+    agents_parser.add_argument("--mode", default="assisted",
+                               help="Permission mode for runs")
+    agents_parser.add_argument("--actor", default="operator")
+    agents_parser.add_argument("--json", action="store_true",
+                               help="Emit machine-readable JSON")
+    # Accept the shared flags after the subcommand too
+    # (`agents create x --store ...`); SUPPRESS keeps parent values.
+    for _action in agents_subs.choices.values():
+        _action.add_argument("--store", default=argparse.SUPPRESS)
+        _action.add_argument("--root", default=argparse.SUPPRESS)
+        _action.add_argument("--mode", default=argparse.SUPPRESS)
+        _action.add_argument("--actor", default=argparse.SUPPRESS)
+
     args = parser.parse_args()
 
     if args.command == "status":
@@ -687,6 +930,9 @@ def main() -> None:
         print(f"Total Runs in History: {st['total_runs_in_history']}")
         print(f"Accepted Runs: {st['accepted_runs']}")
         print(f"Rejected Runs: {st['rejected_runs']}")
+
+    elif args.command == "agents":
+        raise SystemExit(_run_agents(args))
 
     elif args.command == "serve":
         from forge.api.server import run as serve

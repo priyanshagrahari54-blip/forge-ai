@@ -320,6 +320,105 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
+    # -- agents (Agent Creation Engine) ----------------------------------------
+
+    def agent_templates(self, project_id: str) -> list[dict[str, Any]]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return list(plane.spec_agent_templates(session)["templates"])
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def list_agents(self, project_id: str) -> list[dict[str, Any]]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return [dict(item) for item in
+                    plane.spec_agent_list(session)["agents"]]
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def get_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.spec_agent_get(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def create_agent(self, project_id: str, template: str, name: str,
+                     purpose: str = "",
+                     bind: bool = False) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        if not (name or "").strip():
+            raise BackendError("Name the agent first.")
+        try:
+            return dict(plane.spec_agent_create(
+                session,
+                {"template": template, "name": name.strip(),
+                 "purpose": purpose or ""},
+                bind=bind))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def validate_agent(self, project_id: str,
+                       name: str) -> dict[str, Any]:
+        return self._mutate_agent("spec_agent_validate", project_id,
+                                  name)
+
+    def test_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.spec_agent_test(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def enable_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._mutate_agent("spec_agent_enable", project_id,
+                                  name)
+
+    def pause_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._mutate_agent("spec_agent_pause", project_id,
+                                  name)
+
+    def disable_agent(self, project_id: str,
+                      name: str) -> dict[str, Any]:
+        return self._mutate_agent("spec_agent_disable", project_id,
+                                  name)
+
+    def retire_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._mutate_agent("spec_agent_retire", project_id,
+                                  name)
+
+    def delete_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.spec_agent_delete(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agent_versions(self, project_id: str,
+                       name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.spec_agent_versions(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _mutate_agent(self, operation: str, project_id: str,
+                      name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(getattr(plane, operation)(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
     # -- files --------------------------------------------------------------
 
     def read_project_file(self, project_id: str, rel_path: str,

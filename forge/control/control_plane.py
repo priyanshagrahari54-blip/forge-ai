@@ -4526,6 +4526,12 @@ class ControlPlane:
         """Define a new agent; capabilities never grant power."""
         factory = self._agent_factory(session)
         try:
+            engine = self._creation_engine(session)
+        except Exception:
+            engine = None
+        if engine is not None and engine._load(name) is not None:
+            raise InvalidRequest("Agent already exists: %s" % (name,))
+        try:
             definition = factory.create(
                 name, role, tuple(capabilities), description=description,
                 created_by=session.actor, bind=bind)
@@ -4572,6 +4578,321 @@ class ControlPlane:
         factory = self._agent_factory(session)
         return {"agents": [definition.to_dict()
                            for definition in factory.list()]}
+
+    # -- agent creation engine (first-party) ------------------------------------
+
+    def _creation_engine(self, session: Session):
+        """Per-session Agent Creation Engine over this plane's fabric.
+
+        Engines are session-scoped like the A49 factories: one
+        session's packages are invisible to every other session.
+        Memory namespaces add the session id so isolation holds on
+        disk as well as in memory.
+        """
+        from forge.agents.engine import AgentCreationEngine
+
+        if not hasattr(self, "_creation_engines"):
+            self._creation_engines: dict[str, Any] = {}
+        engine = self._creation_engines.get(session.id)
+        if engine is None:
+            project = self.get_project(session.project_id)
+            engine = AgentCreationEngine(
+                fabric=self.fabric, policy=self.policy,
+                approval_store=self.approval_store, audit=self.audit,
+                root=project.root,
+                memory_root=str(
+                    Path(project.root) / ".forge" / "agent-memory"
+                    / session.id),
+                store=None, session_id=session.id,
+                mode=session.profile)
+            self._creation_engines[session.id] = engine
+        return engine
+
+    def _engine_error(self, exc: Exception) -> InvalidRequest:
+        from forge.agents.engine import SelfGrantDenied
+
+        if isinstance(exc, SelfGrantDenied):
+            raise Forbidden(str(exc)) from exc
+        return InvalidRequest(str(exc))
+
+    def spec_agent_templates(self, session: Session) -> dict[str, Any]:
+        del session
+        from forge.agents.templates import describe_all
+
+        return {"templates": describe_all()}
+
+    def spec_agent_create(self, session: Session, spec: Any, *,
+                          created_by: str = "",
+                          bind: bool = False) -> dict[str, Any]:
+        from forge.agents.spec import AgentSpec
+
+        engine = self._creation_engine(session)
+        legacy = self._agent_factory(session)
+        probe = ""
+        if isinstance(spec, dict):
+            probe = str(spec.get("name", "")).strip().lower()
+        elif isinstance(spec, AgentSpec):
+            probe = spec.name
+        if probe and engine._load(probe) is None \
+                and legacy.get(probe) is not None:
+            raise InvalidRequest("Agent already exists: %s" % probe)
+        try:
+            if isinstance(spec, dict) and "template" in spec:
+                package = engine.create_from_template(
+                    str(spec.get("template", "")),
+                    str(spec.get("name", "")),
+                    purpose=str(spec.get("purpose", "")),
+                    created_by=created_by or session.actor,
+                    bind=bind)
+            else:
+                parsed = (AgentSpec.from_dict(spec)
+                          if isinstance(spec, dict) else spec)
+                package = engine.create(
+                    parsed, created_by=created_by or session.actor,
+                    bind=bind)
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+        return package.to_dict()
+
+    def spec_agent_get(self, session: Session, name: str
+                       ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.get(name).to_dict()
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_list(self, session: Session) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        return {"agents": [package.to_dict()
+                           for package in engine.list()]}
+
+    def spec_agent_update(self, session: Session, name: str,
+                          spec: Any) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.update(
+                name, spec, changed_by=session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_delete(self, session: Session, name: str
+                          ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.delete(name, session.actor)
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_validate(self, session: Session, name: str
+                            ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.validate(name, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_test(self, session: Session, name: str
+                        ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.test(name, session.actor)
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_enable(self, session: Session, name: str
+                          ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.enable(name, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_pause(self, session: Session, name: str
+                         ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.pause(name, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_disable(self, session: Session, name: str
+                           ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.disable(name, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_retire(self, session: Session, name: str
+                          ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.retire(name, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_set_permissions(self, session: Session, name: str,
+                                   permissions: list[str]
+                                   ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.update_permissions(
+                name, permissions, session.actor).to_dict()
+        except (Forbidden, InvalidRequest):
+            raise
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_versions(self, session: Session, name: str
+                            ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            return engine.versions(name)
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+
+    def spec_agent_run(self, session: Session, name: str,
+                       requirement: str, *,
+                       approval_id: str = "") -> dict[str, Any]:
+        """Run an enabled engine agent, AGENT/execute-gated.
+
+        The permission gate is synchronous; execution itself runs on
+        a worker thread and is polled via ``spec_agent_run_result``,
+        mirroring direct agent runs.
+        """
+        from forge.security.approvals import enforce_with_token
+        from forge.security.policy import (PermissionEvaluation,
+                                           PermissionRequest)
+
+        engine = self._creation_engine(session)
+        try:
+            package = engine.get(name)
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+        if not isinstance(requirement, str) or not requirement.strip() \
+                or len(requirement) > 4000:
+            raise InvalidRequest(
+                "Requirement must be 1-4000 characters.")
+        permission = PermissionRequest(
+            agent="forge-agent-run", resource=Resource.AGENT,
+            operation="execute", scope=name,
+            task_id=session.active_task or session.id,
+            reason="engine agent run %s" % name,
+            details=(("agent", name),
+                     ("version", package.version)))
+        policy = self.policy if self.policy is not None \
+            else PermissionPolicy()
+        evaluation = policy.evaluate(permission)
+        self.audit.record_evaluation(permission, evaluation)
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
+                and approval_id:
+            allowed, _reason = enforce_with_token(
+                self.approval_store, approval_id, permission)
+            if allowed:
+                evaluation = PermissionEvaluation(
+                    decision=PolicyDecision.ALLOW, reason=_reason,
+                    risk=permission.risk, scope=permission.scope,
+                    request_id=permission.request_id)
+            else:
+                return self._file_agent_run_approval(
+                    session, name, ",".join(
+                        package.spec.capabilities[:3]))
+        if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
+            return self._file_agent_run_approval(
+                session, name,
+                ",".join(package.spec.capabilities[:3]))
+        if evaluation.decision != PolicyDecision.ALLOW:
+            self._audit(session.actor, "agents", "run", False,
+                        task_id=session.active_task or session.id,
+                        reason=evaluation.reason)
+            return {"allowed": False, "approval_required": False,
+                    "approval_request_id": "", "run_id": "",
+                    "reason": evaluation.reason or "denied by policy"}
+        run_id = uuid4().hex[:12]
+        record = Run(
+            id="engine-run-%s" % run_id,
+            project_id=session.project_id,
+            requirement=requirement.strip()[:4000],
+            status=RunStatus.RUNNING, stage="engine-run", version=1,
+            mode=session.profile, actor=session.actor,
+            created_at=time.time(), updated_at=time.time(),
+            started_at=time.time())
+        self.runs.create(record)
+        if not hasattr(self, "_engine_run_results"):
+            self._engine_run_results: dict[tuple, dict[str, Any]] = {}
+
+        def worker() -> None:
+            try:
+                result = engine.execute(
+                    name, requirement, approved=False,
+                    actor=session.actor, run_id=run_id)
+                self.runs.mutate(
+                    record.id,
+                    status=(RunStatus.SUCCEEDED if result["success"]
+                            else RunStatus.FAILED),
+                    stage="completed", finished_at=time.time(),
+                    files_json=json.dumps(list(result["files"])),
+                    report_json=json.dumps(
+                        {"output": result["output"][:2000],
+                         "error": result["error"]}))
+                self._engine_run_results[(session.id, run_id)] = {
+                    "status": "finished", "run": result}
+            except Exception as exc:
+                self.runs.mutate(
+                    record.id, status=RunStatus.FAILED,
+                    stage="failed", finished_at=time.time(),
+                    error=str(exc)[:500])
+                self._engine_run_results[(session.id, run_id)] = {
+                    "status": "failed", "error": str(exc)[:500]}
+
+        if self._executor is not None:
+            self._submit_tracked(worker)
+        else:
+            worker()
+        return {"allowed": True, "approval_required": False,
+                "approval_request_id": "", "run_id": run_id,
+                "status": "queued", "task_id": record.id}
+
+    def spec_agent_run_result(self, session: Session, name: str,
+                              run_id: str) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            engine.get(name)
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+        results = getattr(self, "_engine_run_results", {})
+        entry = results.get((session.id, run_id))
+        if entry is None:
+            return {"status": "pending", "run_id": run_id}
+        return {"run_id": run_id, **entry}
+
+    def spec_agent_runs(self, session: Session, name: str
+                        ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            runs = engine.history(name)
+        except Exception as exc:
+            raise self._engine_error(exc) from exc
+        return {"agent": name, "runs": runs}
 
 
     # -- compute (A48) --------------------------------------------------------------------

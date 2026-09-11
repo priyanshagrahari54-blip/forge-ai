@@ -341,3 +341,23 @@ class FinalGateVerifyRequest(BaseModel):
 
 class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
+
+
+# -- Agent Creation Engine (first-party) ----------------------------------------------------------
+
+class EngineAgentCreateRequest(BaseModel):
+    spec: dict
+    bind: bool = Field(default=False)
+
+
+class EngineAgentUpdateRequest(BaseModel):
+    spec: dict
+
+
+class EngineAgentRunRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=4000)
+    approval_id: str = Field(default="", max_length=200)
+
+
+class EngineAgentPermissionsRequest(BaseModel):
+    permissions: List[str] = Field(min_length=1, max_length=16)

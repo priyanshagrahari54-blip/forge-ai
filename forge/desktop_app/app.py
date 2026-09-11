@@ -106,6 +106,11 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_models_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
+        agents_menu = tk.Menu(menubar, tearoff=False)
+        agents_menu.add_command(label="Agent Manager...",
+                                command=self._open_agent_manager)
+        menubar.add_cascade(label="Agents", menu=agents_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Setup guide", command=self._show_setup)
         help_menu.add_command(label="About", command=self._show_about)
@@ -261,6 +266,10 @@ class ForgeDesktopApp(tk.Tk):
                     self._show_doctor_window(payload)
                 elif kind == "models":
                     self._show_models_window(payload)
+                elif kind == "agents":
+                    self._render_agent_manager(payload)
+                elif kind == "agent_error":
+                    messagebox.showerror(APP_TITLE, str(payload))
                 elif kind == "notice":
                     self._set_status(str(payload))
                 elif kind == "error":
@@ -639,6 +648,189 @@ class ForgeDesktopApp(tk.Tk):
             lines.append(f"  {name}: {info}")
         text.insert(tk.END, "\n".join(lines))
         text.configure(state=tk.DISABLED)
+
+    # -- agent manager ------------------------------------------------------------
+
+    def _open_agent_manager(self) -> None:
+        """Open the Agent Manager window (create/test/enable agents)."""
+        if not self.backend.running:
+            messagebox.showinfo(APP_TITLE, "Start the backend first (open a project folder).")
+            return
+        if getattr(self, "_agents_window", None) is not None:
+            try:
+                if self._agents_window.winfo_exists():
+                    self._agents_window.lift()
+                    return
+            except Exception:
+                pass
+        window = tk.Toplevel(self)
+        window.title("Agent Manager")
+        window.geometry("760x520")
+        self._agents_window = window
+        self._agents_list: list[dict[str, Any]] = []
+
+        top = ttk.Frame(window, padding=(8, 8, 8, 4))
+        top.pack(fill=tk.X)
+        ttk.Label(top, text="Template:").pack(side=tk.LEFT)
+        self._agent_template = tk.StringVar(value="coding")
+        ttk.Combobox(top, textvariable=self._agent_template,
+                     values=["coding", "research", "security",
+                             "game-development", "os-development",
+                             "documentation"],
+                     state="readonly", width=18).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(top, text="Name:").pack(side=tk.LEFT)
+        self._agent_name = ttk.Entry(top, width=22)
+        self._agent_name.pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Button(top, text="New agent",
+                   command=self._create_agent_async).pack(side=tk.LEFT)
+        ttk.Button(top, text="Refresh",
+                   command=self._refresh_agents_async).pack(side=tk.LEFT, padx=(6, 0))
+
+        middle = ttk.PanedWindow(window, orient=tk.HORIZONTAL)
+        middle.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        left = ttk.Frame(middle, padding=4)
+        self._agents_box = tk.Listbox(left, activestyle="dotbox")
+        self._agents_box.pack(fill=tk.BOTH, expand=True)
+        self._agents_box.bind("<<ListboxSelect>>", self._on_agent_selected)
+        middle.add(left, weight=1)
+        right = ttk.Frame(middle, padding=4)
+        self._agent_detail = tk.Text(right, wrap=tk.WORD, height=16,
+                                     bg="#f6f8fa")
+        self._agent_detail.pack(fill=tk.BOTH, expand=True)
+        middle.add(right, weight=2)
+
+        bottom = ttk.Frame(window, padding=(8, 0, 8, 8))
+        bottom.pack(fill=tk.X)
+        for label, action in (("Validate", self._validate_agent_async),
+                              ("Test", self._test_agent_async),
+                              ("Enable", self._enable_agent_async),
+                              ("Pause", self._pause_agent_async),
+                              ("Disable", self._disable_agent_async),
+                              ("Retire", self._retire_agent_async),
+                              ("Delete", self._delete_agent_async)):
+            ttk.Button(bottom, text=label, command=action).pack(side=tk.LEFT, padx=2)
+        self._refresh_agents_async()
+
+    def _selected_agent_name(self) -> str:
+        box = getattr(self, "_agents_box", None)
+        if box is None:
+            return ""
+        selection = box.curselection()
+        if not selection:
+            return ""
+        try:
+            return self._agents_list[selection[0]].get("spec", {}).get("name", "")
+        except (IndexError, AttributeError):
+            return ""
+
+    def _agent_op_async(self, operation: str, verb: str,
+                        needs_selection: bool = True) -> None:
+        project = self._current_project_id()
+        name = self._selected_agent_name() if needs_selection else ""
+        if needs_selection and not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+
+        def work() -> None:
+            try:
+                if operation == "refresh":
+                    agents = self.backend.list_agents(project)
+                    self._queue.put(("agents", agents))
+                    return
+                if operation == "create":
+                    template = self._agent_template.get()
+                    wanted = self._agent_name.get().strip()
+                    self.backend.create_agent(project, template, wanted,
+                                              bind=True)
+                    self._queue.put(("notice", f"Agent {wanted} created"))
+                elif operation == "test":
+                    result = self.backend.test_agent(project, name)
+                    summary = result.get("report", {}).get("summary", {})
+                    self._queue.put(("notice",
+                                     f"{name}: {summary.get('passed', '?')}/"
+                                     f"{summary.get('total', '?')} checks"))
+                else:
+                    getattr(self.backend, f"{operation}_agent")(project, name)
+                    self._queue.put(("notice", f"{verb}: {name}"))
+                agents = self.backend.list_agents(project)
+                self._queue.put(("agents", agents))
+            except BackendError as exc:
+                self._queue.put(("agent_error", str(exc)))
+            except Exception as exc:  # never let the worker die silently
+                self._queue.put(("agent_error", f"{verb} failed: {exc}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_agents_async(self) -> None:
+        self._agent_op_async("refresh", "Refreshed", needs_selection=False)
+
+    def _create_agent_async(self) -> None:
+        self._agent_op_async("create", "Created", needs_selection=False)
+
+    def _validate_agent_async(self) -> None:
+        self._agent_op_async("validate", "Validated")
+
+    def _test_agent_async(self) -> None:
+        self._agent_op_async("test", "Tested")
+
+    def _enable_agent_async(self) -> None:
+        self._agent_op_async("enable", "Enabled")
+
+    def _pause_agent_async(self) -> None:
+        self._agent_op_async("pause", "Paused")
+
+    def _disable_agent_async(self) -> None:
+        self._agent_op_async("disable", "Disabled")
+
+    def _retire_agent_async(self) -> None:
+        if messagebox.askyesno(APP_TITLE, "Retire the selected agent? Retired agents can never run again."):
+            self._agent_op_async("retire", "Retired")
+
+    def _delete_agent_async(self) -> None:
+        if messagebox.askyesno(APP_TITLE, "Delete the selected agent?"):
+            self._agent_op_async("delete", "Deleted")
+
+    def _render_agent_manager(self, agents: list[dict[str, Any]]) -> None:
+        box = getattr(self, "_agents_box", None)
+        if box is None:
+            return
+        try:
+            if not self._agents_window.winfo_exists():
+                return
+        except Exception:
+            return
+        self._agents_list = list(agents or [])
+        box.delete(0, tk.END)
+        for item in self._agents_list:
+            spec = item.get("spec", {})
+            box.insert(tk.END, f"{spec.get('name', '?')} v{item.get('version', '?')} "
+                               f"[{item.get('lifecycle', '?')}]")
+        self._render_agent_detail("")
+
+    def _on_agent_selected(self, _event=None) -> None:
+        self._render_agent_detail(self._selected_agent_name())
+
+    def _render_agent_detail(self, name: str) -> None:
+        detail = getattr(self, "_agent_detail", None)
+        if detail is None:
+            return
+        text = ""
+        for item in getattr(self, "_agents_list", []):
+            spec = item.get("spec", {})
+            if spec.get("name") == name:
+                text = (f"{spec.get('name')} v{item.get('version')} "
+                        f"[{item.get('lifecycle')}]\n"
+                        f"executor: {item.get('executor') or '-'} "
+                        f"real={item.get('real')}\n"
+                        f"purpose: {spec.get('purpose', '')}\n"
+                        f"capabilities: {', '.join(spec.get('capabilities', []))}\n"
+                        f"tools: {', '.join(spec.get('tools', []))}\n"
+                        f"permissions: {', '.join(spec.get('permissions', []))}\n")
+                break
+        detail.configure(state=tk.NORMAL)
+        detail.delete("1.0", tk.END)
+        detail.insert(tk.END, text or "Select an agent to inspect it.")
+        detail.configure(state=tk.DISABLED)
 
     # -- dialogs ----------------------------------------------------------------------
 

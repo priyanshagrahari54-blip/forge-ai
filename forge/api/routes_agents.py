@@ -15,10 +15,15 @@ from forge.api.schemas import (AgentCreateRequest, AgentImportRequest,
                                AgentMemorySetRequest,
                                AgentOutcomeRequest, AgentRunRequest,
                                AgentStatusRequest, AgentUpdateRequest,
+                               EngineAgentCreateRequest,
+                               EngineAgentPermissionsRequest,
+                               EngineAgentRunRequest,
+                               EngineAgentUpdateRequest,
                                SelfDevApplyRequest)
 from forge.control.control_plane import (ApprovalConflictError,
                                          ApprovalNotFoundError,
-                                         ControlPlane, InvalidRequest,
+                                         ControlPlane, Forbidden,
+                                         InvalidRequest,
                                          TaskNotFound)
 
 router = APIRouter()
@@ -298,3 +303,190 @@ async def selfdev_ledger(name: str,
         return plane.selfdev_ledger(current.session, name)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+# -- Agent Creation Engine (first-party) ----------------------------------------------------------
+
+def _engine_errors(exc: Exception) -> HTTPException:
+    if isinstance(exc, Forbidden):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, InvalidRequest):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
+@router.get("/agent-specs/templates")
+async def engine_templates(current: Authed = Depends(authed_mutation),
+                           plane: ControlPlane = Depends(get_plane)):
+    return plane.spec_agent_templates(current.session)
+
+
+@router.post("/agent-specs", dependencies=[rate_limit("agents")])
+async def engine_create(body: EngineAgentCreateRequest,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_create(
+            current.session, body.spec, bind=body.bind)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.get("/agent-specs")
+async def engine_list(current: Authed = Depends(authed_mutation),
+                      plane: ControlPlane = Depends(get_plane)):
+    return plane.spec_agent_list(current.session)
+
+
+@router.get("/agent-specs/{name}")
+async def engine_get(name: str,
+                     current: Authed = Depends(authed_mutation),
+                     plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_get(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.put("/agent-specs/{name}", dependencies=[rate_limit("agents")])
+async def engine_update(name: str, body: EngineAgentUpdateRequest,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_update(
+            current.session, name, body.spec)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.delete("/agent-specs/{name}",
+               dependencies=[rate_limit("agents")])
+async def engine_delete(name: str,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_delete(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/validate",
+             dependencies=[rate_limit("agents")])
+async def engine_validate(name: str,
+                          current: Authed = Depends(authed_mutation),
+                          plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_validate(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/test",
+             dependencies=[rate_limit("agents")])
+async def engine_test(name: str,
+                      current: Authed = Depends(authed_mutation),
+                      plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_test(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/enable",
+             dependencies=[rate_limit("agents")])
+async def engine_enable(name: str,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_enable(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/pause",
+             dependencies=[rate_limit("agents")])
+async def engine_pause(name: str,
+                       current: Authed = Depends(authed_mutation),
+                       plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_pause(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/disable",
+             dependencies=[rate_limit("agents")])
+async def engine_disable(name: str,
+                         current: Authed = Depends(authed_mutation),
+                         plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_disable(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/retire",
+             dependencies=[rate_limit("agents")])
+async def engine_retire(name: str,
+                        current: Authed = Depends(authed_mutation),
+                        plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_retire(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.put("/agent-specs/{name}/permissions",
+            dependencies=[rate_limit("agents")])
+async def engine_permissions(name: str,
+                             body: EngineAgentPermissionsRequest,
+                             current: Authed = Depends(authed_mutation),
+                             plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_set_permissions(
+            current.session, name, list(body.permissions))
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.get("/agent-specs/{name}/versions")
+async def engine_versions(name: str,
+                          current: Authed = Depends(authed_mutation),
+                          plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_versions(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.post("/agent-specs/{name}/run",
+             dependencies=[rate_limit("agents")])
+async def engine_run(name: str, body: EngineAgentRunRequest,
+                     current: Authed = Depends(authed_mutation),
+                     plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_run(
+            current.session, name, body.requirement,
+            approval_id=body.approval_id)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.get("/agent-specs/{name}/runs/{run_id}")
+async def engine_run_result(name: str, run_id: str,
+                            current: Authed = Depends(authed_mutation),
+                            plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_run_result(
+            current.session, name, run_id)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
+
+
+@router.get("/agent-specs/{name}/runs")
+async def engine_runs(name: str,
+                      current: Authed = Depends(authed_mutation),
+                      plane: ControlPlane = Depends(get_plane)):
+    try:
+        return plane.spec_agent_runs(current.session, name)
+    except (InvalidRequest, Forbidden) as exc:
+        raise _engine_errors(exc) from None
