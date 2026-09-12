@@ -113,6 +113,10 @@ unchanged.
 | `POST /builds/{id}/run-next` | Run the first incomplete stage (retries failures) |
 | `POST /builds/{id}/stages/{n}/run` | Run stage N (gate-checked: earlier stages must be verified) |
 | `GET /builds/{id}/stages/{n}/evidence` | Stage evidence + linked-run summary |
+| `GET /builds/{id}/preview` | Preview metadata: entry, candidates, per-stage files |
+| `PATCH /builds/{id}/preview` | Choose the entry HTML page (`entry`, `""` clears) |
+| `GET /builds/{id}/preview/file?path=…` | Bounded content viewer (text / image / binary) |
+| `GET /builds/{id}/preview/raw?path=…` | Raw bytes for the iframe + its assets |
 
 Errors reuse the standard envelope: `404 NOT_FOUND` for unknown or
 foreign ids (existence never leaks cross-project), `409 TASK_CONFLICT`
@@ -135,7 +139,35 @@ selected section on the right: verified-progress bar, `Run next stage`
 blueprint editors, an add-stage form, and the ordered stage timeline
 with locks (`Locked — waiting for stage N…`), live-run links, failure
 reasons, and verified-evidence cards linking back to the accepted run.
-The board polls every 4 s but never re-renders while you are typing.
+The board polls every 4 s but never re-renders while you are typing —
+or when nothing changed, so the live preview iframe is never reset
+needlessly.
+
+## Live preview: see what Forge is making
+
+Right under the section header, the **Live preview** surface answers
+*"show me the website"* and *"show me what each stage made"*:
+
+- **Rendered site**: pick an entry HTML page (auto-discovered —
+  `index.html`, `public/`, `dist/`, … first) and the workspace site
+  renders live in a sandboxed iframe, with Refresh, full-page view,
+  and auto-refresh whenever a stage completes (toggleable).
+- **What was made**: every completed stage lists the files it created;
+  click a file to view its content (code viewer, image thumbnails,
+  honest binary/too-large notes). The running stage shows a
+  *Working…* note with a link to the live run.
+
+Security is the same story as the rest of the cockpit: all preview
+endpoints require auth and stay inside the session's project root;
+paths are validated (no traversal, absolute paths, `.git`/`.forge`,
+symlink escape, `.env`/keys/secrets); raw bytes serve only an
+extension allowlist (HTML/CSS/JS/images/fonts/media) with `nosniff`,
+`no-store`, and a `sandbox allow-scripts` CSP; and the iframe itself
+is `sandbox="allow-scripts"` with no `allow-same-origin`, so
+previewed scripts can never reach the cockpit DOM, cookies, or
+storage. One honest limitation: JS `fetch()` calls from inside the
+sandboxed page cannot authenticate, so pages that load data via
+`fetch()` should inline it or accept the static fallback.
 
 ## Tests
 
@@ -146,3 +178,11 @@ matrix (including `SUCCEEDED`-without-evidence → `failed`), evidence
 trimming, the HTTP API, and an end-to-end test that runs **two real
 Supervisor transactions** (scripted model, real code/tests/gates path)
 and asserts stage 2 stays locked until stage 1 verifies.
+
+`tests/test_staged_preview.py` (43 tests): path normalization and
+denials (traversal, protected dirs, sensitive names, symlink escape),
+candidate discovery order/skips, entry lifecycle, viewer kinds and
+truncation, raw-serving allowlist/size rules, project isolation, the
+preview HTTP API (including sandbox headers and anonymous refusal),
+and an end-to-end test where a real run builds `index.html` and the
+preview serves exactly what the run made.

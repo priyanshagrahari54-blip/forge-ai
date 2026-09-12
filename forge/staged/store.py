@@ -37,6 +37,7 @@ class StagedStore:
                 description TEXT NOT NULL DEFAULT '',
                 roadmap TEXT NOT NULL DEFAULT '',
                 blueprint TEXT NOT NULL DEFAULT '',
+                preview_entry TEXT NOT NULL DEFAULT '',
                 created_by TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
@@ -65,6 +66,15 @@ class StagedStore:
             )
             """
         )
+        try:
+            columns = [row["name"] for row in
+                       db.query("PRAGMA table_info(staged_projects)")]
+        except Exception:
+            columns = []
+        if "preview_entry" not in columns:
+            db.execute(
+                "ALTER TABLE staged_projects ADD COLUMN preview_entry "
+                "TEXT NOT NULL DEFAULT ''")
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_build_stages_build "
             "ON build_stages(build_id)"
@@ -88,11 +98,11 @@ class StagedStore:
             created_at=now, updated_at=now)
         self._db.execute(
             "INSERT INTO staged_projects (id, project_id, name, description, "
-            "roadmap, blueprint, created_by, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "roadmap, blueprint, preview_entry, created_by, created_at, "
+            "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (build.id, build.project_id, build.name, build.description,
-             build.roadmap, build.blueprint, build.created_by,
-             build.created_at, build.updated_at))
+             build.roadmap, build.blueprint, build.preview_entry,
+             build.created_by, build.created_at, build.updated_at))
         return build
 
     def get_build(self, build_id: str) -> Optional[BuildProject]:
@@ -113,7 +123,8 @@ class StagedStore:
         return int(row["n"]) if row is not None else 0
 
     def update_build(self, build_id: str, **fields: Any) -> Optional[BuildProject]:
-        allowed = {"name", "description", "roadmap", "blueprint"}
+        allowed = {"name", "description", "roadmap", "blueprint",
+                   "preview_entry"}
         updates = {key: value for key, value in fields.items()
                    if key in allowed}
         if not updates:
@@ -208,6 +219,7 @@ class StagedStore:
             description=row["description"] or "",
             roadmap=row["roadmap"] or "",
             blueprint=row["blueprint"] or "",
+            preview_entry=row["preview_entry"] or "",
             created_by=row["created_by"] or "",
             created_at=float(row["created_at"] or 0.0),
             updated_at=float(row["updated_at"] or 0.0))

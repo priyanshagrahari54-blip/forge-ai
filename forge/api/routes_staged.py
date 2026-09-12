@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 
 from forge.api.deps import (
     Authed,
@@ -15,6 +16,7 @@ from forge.api.deps import (
 from forge.api.schemas import (
     StagedBuildCreateRequest,
     StagedBuildUpdateRequest,
+    StagedPreviewUpdateRequest,
     StagedRunRequest,
     StagedStageUpdateRequest,
     StagedStagesAddRequest,
@@ -127,3 +129,57 @@ async def stage_evidence(build_id: str, position: int,
                          plane: ControlPlane = Depends(get_plane)):
     return _service(plane).stage_evidence(
         current.session, build_id, position)
+
+
+# -- live preview ----------------------------------------------------------
+
+
+@router.get("/builds/{build_id}/preview")
+async def get_preview(build_id: str,
+                      current: Authed = Depends(authed),
+                      plane: ControlPlane = Depends(get_plane)):
+    return _service(plane).get_preview(current.session, build_id)
+
+
+@router.patch("/builds/{build_id}/preview")
+async def set_preview_entry(build_id: str,
+                            body: StagedPreviewUpdateRequest,
+                            current: Authed = Depends(authed_mutation),
+                            plane: ControlPlane = Depends(get_plane)):
+    _service(plane).set_preview_entry(
+        current.session, build_id, body.entry)
+    return _service(plane).get_preview(current.session, build_id)
+
+
+@router.get("/builds/{build_id}/preview/file")
+async def preview_file(build_id: str, path: str = "",
+                       current: Authed = Depends(authed),
+                       plane: ControlPlane = Depends(get_plane)):
+    from urllib.parse import quote
+
+    payload = _service(plane).read_preview_file(
+        current.session, build_id, path)
+    if payload.get("kind") == "image":
+        payload["raw_url"] = (
+            "/api/v1/builds/%s/preview/raw?path=%s"
+            % (build_id, quote(payload["path"], safe="")))
+    return payload
+
+
+@router.get("/builds/{build_id}/preview/raw")
+async def preview_raw(build_id: str, path: str = "",
+                      current: Authed = Depends(authed),
+                      plane: ControlPlane = Depends(get_plane)):
+    abspath, media_type = _service(plane).resolve_preview_raw(
+        current.session, build_id, path)
+    # The cockpit embeds this in a sandboxed iframe (no
+    # allow-same-origin), and the document carries its own sandbox CSP:
+    # previewed scripts can never reach the cockpit DOM, cookies, or
+    # storage. no-store keeps every refresh live.
+    return FileResponse(
+        abspath, media_type=media_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox allow-scripts",
+            "Cache-Control": "no-store",
+        })

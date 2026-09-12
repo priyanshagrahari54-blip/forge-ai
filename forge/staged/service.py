@@ -16,7 +16,8 @@ method that completes a stage without a verified run.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from pathlib import PurePosixPath
+from typing import Any, Dict, List, Optional, Tuple
 
 from forge.control.control_plane import (
     Conflict,
@@ -25,6 +26,17 @@ from forge.control.control_plane import (
     RunStatus,
     TERMINAL_STATUSES,
     validate_id,
+)
+from forge.staged.preview import (
+    ENTRY_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    MAX_RAW_BYTES,
+    PreviewError,
+    media_type_for,
+    normalize_preview_path,
+    read_text_preview,
+    resolve_under_root,
+    scan_candidates,
 )
 from forge.staged.models import (
     MAX_BUILDS_PER_PROJECT,
@@ -345,6 +357,141 @@ class StagedBuilds:
             if run is not None:
                 payload["run"] = self._run_summary(run)
         return payload
+
+    # -- live preview: show what Forge is making --------------------------
+
+    def get_preview(self, session: Any, build_id: str) -> Dict[str, Any]:
+        """Preview metadata: entry page, candidates, per-stage files."""
+        build = self._get_build(session, build_id)
+        stages = self._store.list_stages(build.id)
+        self._sync_stages(stages)
+        root = self._project_root(session)
+        candidates = scan_candidates(root)
+        entry_exists = False
+        if build.preview_entry:
+            try:
+                entry_exists = resolve_under_root(
+                    root, build.preview_entry).is_file()
+            except (PreviewError, OSError):
+                entry_exists = False
+        files_made: List[Dict[str, Any]] = []
+        for stage in stages:
+            files: List[str] = []
+            if stage.status == StageStatus.COMPLETED:
+                changed = stage.evidence.get("files_changed", [])
+                if isinstance(changed, list):
+                    files = [str(path) for path in changed][:200]
+            files_made.append({
+                "position": stage.position,
+                "title": stage.title,
+                "status": stage.status.value,
+                "run_id": stage.run_id,
+                "files": files,
+            })
+        return {
+            "build_id": build.id,
+            "entry": build.preview_entry,
+            "entry_exists": entry_exists,
+            "candidates": candidates,
+            "files_made": files_made,
+        }
+
+    def set_preview_entry(self, session: Any, build_id: str,
+                          entry: Any) -> BuildProject:
+        """Choose which HTML file the live preview renders ("" clears)."""
+        build = self._get_build(session, build_id)
+        if entry is None:
+            entry = ""
+        if not isinstance(entry, str):
+            raise InvalidRequest("Preview entry must be a string.")
+        entry = entry.strip()
+        if entry:
+            try:
+                normalized = normalize_preview_path(entry)
+            except PreviewError as exc:
+                raise InvalidRequest(str(exc)) from None
+            if (PurePosixPath(normalized).suffix.lower()
+                    not in ENTRY_EXTENSIONS):
+                raise InvalidRequest(
+                    "Preview entry must be an HTML file.")
+            try:
+                target = resolve_under_root(
+                    self._project_root(session), normalized)
+            except PreviewError as exc:
+                raise InvalidRequest(str(exc)) from None
+            try:
+                exists = target.is_file()
+            except OSError:
+                exists = False
+            if not exists:
+                raise InvalidRequest("Preview entry does not exist.")
+            entry = normalized
+        updated = self._store.update_build(build.id, preview_entry=entry)
+        if updated is None:  # pragma: no cover - defensive
+            raise NotFound("Unknown build project.")
+        return updated
+
+    def read_preview_file(self, session: Any, build_id: str,
+                          path: Any) -> Dict[str, Any]:
+        """Read one project file for the content viewer (bounded)."""
+        build = self._get_build(session, build_id)
+        try:
+            normalized = normalize_preview_path(path)
+            target = resolve_under_root(
+                self._project_root(session), normalized)
+        except PreviewError as exc:
+            raise InvalidRequest(str(exc)) from None
+        try:
+            is_file = target.is_file()
+            size = target.stat().st_size if is_file else 0
+        except OSError:
+            raise NotFound("Unknown preview file.") from None
+        if not is_file:
+            raise NotFound("Unknown preview file.")
+        suffix = PurePosixPath(normalized).suffix.lower()
+        if suffix in IMAGE_EXTENSIONS:
+            return {"build_id": build.id, "path": normalized,
+                    "kind": "image", "size": int(size),
+                    "content": None, "truncated": False}
+        try:
+            text, truncated = read_text_preview(target)
+        except PreviewError as exc:
+            raise NotFound(str(exc)) from None
+        if text is None:
+            return {"build_id": build.id, "path": normalized,
+                    "kind": "binary", "size": int(size),
+                    "content": None, "truncated": False}
+        return {"build_id": build.id, "path": normalized,
+                "kind": "text", "size": int(size),
+                "content": text, "truncated": truncated}
+
+    def resolve_preview_raw(self, session: Any, build_id: str,
+                            path: Any) -> Tuple[str, str]:
+        """Resolve one allowlisted file to ``(abspath, media_type)``."""
+        build = self._get_build(session, build_id)
+        try:
+            normalized = normalize_preview_path(path)
+            target = resolve_under_root(
+                self._project_root(session), normalized)
+        except PreviewError as exc:
+            raise InvalidRequest(str(exc)) from None
+        media = media_type_for(normalized)
+        if media is None:
+            raise NotFound("Preview file is not servable.")
+        try:
+            is_file = target.is_file()
+            size = target.stat().st_size if is_file else 0
+        except OSError:
+            raise NotFound("Unknown preview file.") from None
+        if not is_file:
+            raise NotFound("Unknown preview file.")
+        if size > MAX_RAW_BYTES:
+            raise InvalidRequest("Preview file is too large.")
+        return str(target), media
+
+    def _project_root(self, session: Any) -> str:
+        project = self._plane.get_project(session.project_id)
+        return str(project.root)
 
     # -- internals --------------------------------------------------------
 

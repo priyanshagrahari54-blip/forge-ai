@@ -49,6 +49,7 @@ class BuildProject:
     description: str = ""
     roadmap: str = ""
     blueprint: str = ""
+    preview_entry: str = ""
     created_by: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -64,6 +65,7 @@ class BuildProject:
             "updated_at": self.updated_at,
             "roadmap_chars": len(self.roadmap),
             "blueprint_chars": len(self.blueprint),
+            "preview_entry": self.preview_entry,
         }
         if include_docs:
             payload["roadmap"] = self.roadmap

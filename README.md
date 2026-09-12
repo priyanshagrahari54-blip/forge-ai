@@ -680,6 +680,10 @@ roadmap + blueprint + stage-1 prompt → real Supervisor run → verified?
 - **Evidence per stage**: acceptance, test/review/security/build
   results, files changed, checkpoint, model, and duration — each
   linking back to the accepted run.
+- **Live preview**: the rendered site in a sandboxed iframe
+  (auto-discovered entry page, auto-refresh on stage completion) plus
+  a per-stage *what was made* file view — safely scoped to the
+  project root with traversal/sensitive-file denials.
 
 See `docs/A82-STAGED-BUILDS.md` for the architecture, prompt assembly,
 API reference, and guarantees.

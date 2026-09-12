@@ -11,6 +11,8 @@ const state = {
   taskId: null,
   buildId: null,
   buildEditing: false,
+  buildAutoRefresh: true,
+  buildBoardSig: "",
   deskToken: null,
   voiceToken: null,
   memToken: null,
@@ -1338,10 +1340,18 @@ async function renderBuilds() {
     if (quiet && buildTypingActive(detailBox)) return;
     const snap = snapEpoch();
     try {
-      const board = await api("/api/v1/builds/" +
-        encodeURIComponent(state.buildId));
+      const boardUrl = "/api/v1/builds/" +
+        encodeURIComponent(state.buildId);
+      const boardPromise = api(boardUrl);
+      const previewPromise = api(boardUrl + "/preview").catch(() => null);
+      const board = await boardPromise;
+      const preview = await previewPromise;
       if (stale(snap)) return;
       if (quiet && buildTypingActive(detailBox)) return;
+      board._preview = preview;
+      const sig = buildBoardSig(board);
+      if (quiet && sig === state.buildBoardSig) return;
+      state.buildBoardSig = sig;
       renderBoard(board, detailBox, errBox, loadList, loadBoard);
     } catch (err) {
       if (stale(snap)) return;
@@ -1372,8 +1382,29 @@ async function renderBuilds() {
   }, 4000));
 }
 
+function buildBoardSig(board) {
+  const stages = (board.stages || []).map((stage) => [
+    stage.position, stage.status, stage.run_id, stage.attempts,
+    stage.error || "",
+  ]);
+  const build = board.build || {};
+  return JSON.stringify({
+    progress: board.progress || {},
+    current: board.current_position || 0,
+    done: board.all_complete === true,
+    active: board.active_run_id || "",
+    stages: stages,
+    docs: [build.roadmap_chars || 0, build.blueprint_chars || 0,
+      build.preview_entry || ""],
+  });
+}
+
 function renderBoard(board, detailBox, errBox, loadList, loadBoard) {
   state.buildEditing = false;
+  const keepFrame = !state.buildAutoRefresh
+    ? detailBox.querySelector("iframe.preview-frame")
+    : null;
+  if (keepFrame) keepFrame.remove();
   detailBox.innerHTML = "";
   errBox.textContent = "";
   const build = board.build || {};
@@ -1432,6 +1463,7 @@ function renderBoard(board, detailBox, errBox, loadList, loadBoard) {
   actions.appendChild(delBtn);
   head.appendChild(actions);
   detailBox.appendChild(head);
+  detailBox.appendChild(renderPreview(board, errBox, loadBoard, keepFrame));
 
   const docs = el("div", "surface");
   const docsHead = el("div", "section-header");
@@ -1545,6 +1577,191 @@ function renderBoard(board, detailBox, errBox, loadList, loadBoard) {
   for (const stage of stages) {
     detailBox.appendChild(renderStageCard(stage, board, running,
       errBox, loadList, loadBoard));
+  }
+}
+
+function previewRawUrl(buildId, path) {
+  return "/api/v1/builds/" + encodeURIComponent(buildId) +
+    "/preview/raw?path=" + encodeURIComponent(path);
+}
+
+function renderPreview(board, errBox, loadBoard, keepFrame) {
+  const build = board.build || {};
+  const buildId = build.build_id || "";
+  const meta = board._preview || {};
+  const entry = meta.entry || "";
+  const entryExists = meta.entry_exists === true;
+  const candidates = meta.candidates || [];
+  const made = meta.files_made || [];
+
+  const box = el("div", "surface build-preview");
+  const head = el("div", "section-header");
+  head.appendChild(el("h3", null, "Live preview"));
+  const auto = el("label", "checkbox-row");
+  const autoBox = el("input");
+  autoBox.type = "checkbox";
+  autoBox.checked = state.buildAutoRefresh;
+  autoBox.addEventListener("change", () => {
+    state.buildAutoRefresh = autoBox.checked;
+  });
+  auto.appendChild(autoBox);
+  auto.appendChild(el("span", null, "Auto-refresh on stage complete"));
+  head.appendChild(auto);
+  box.appendChild(head);
+  box.appendChild(el("p", "muted",
+    "What Forge is making, live. Sandboxed — previewed pages cannot " +
+    "touch the cockpit."));
+
+  const bar = el("div", "preview-bar");
+  if (candidates.length) {
+    const select = el("select");
+    select.setAttribute("aria-label", "Preview entry page");
+    if (!entry) {
+      const placeholder = el("option", null, "Pick an entry page…");
+      placeholder.value = "";
+      select.appendChild(placeholder);
+    }
+    for (const candidate of candidates) {
+      const option = el("option", null, candidate);
+      option.value = candidate;
+      if (candidate === entry) option.selected = true;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", async () => {
+      errBox.textContent = "";
+      try {
+        await api("/api/v1/builds/" + encodeURIComponent(buildId) +
+          "/preview", { method: "PATCH", body: { entry: select.value } });
+        await loadBoard(false);
+      } catch (err) {
+        errBox.textContent = err.message;
+      }
+    });
+    bar.appendChild(select);
+  }
+  const refresh = el("button", "btn small", "Refresh");
+  refresh.type = "button";
+  refresh.disabled = !(entry && entryExists);
+  refresh.addEventListener("click", () => {
+    const frame = box.querySelector("iframe.preview-frame");
+    if (frame) frame.setAttribute("src", previewRawUrl(buildId, entry));
+  });
+  bar.appendChild(refresh);
+  if (entry && entryExists) {
+    const full = el("a", "btn small", "Open full page");
+    full.href = previewRawUrl(buildId, entry);
+    full.target = "_blank";
+    full.rel = "noopener";
+    bar.appendChild(full);
+  }
+  box.appendChild(bar);
+
+  if (entry && !entryExists) {
+    box.appendChild(el("p", "error",
+      "The entry page was deleted — pick another one above."));
+  } else if (!candidates.length) {
+    box.appendChild(el("p", "muted",
+      "No HTML files yet — run a stage that builds a site."));
+  }
+  if (entry && entryExists) {
+    const frame = el("iframe", "preview-frame");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("title",
+      "Live preview of " + (build.name || "build"));
+    frame.setAttribute("src", previewRawUrl(buildId, entry));
+    frame.dataset.entry = entry;
+    if (keepFrame && keepFrame.dataset.entry === entry) {
+      box.appendChild(keepFrame);
+    } else {
+      box.appendChild(frame);
+    }
+  }
+
+  const madeHead = el("div", "section-header");
+  madeHead.appendChild(el("h3", null, "What was made"));
+  box.appendChild(madeHead);
+  const viewer = el("div", "file-viewer hidden");
+  let shown = false;
+  for (const group of made) {
+    const files = group.files || [];
+    if (!files.length && group.status !== "running") continue;
+    shown = true;
+    const section = el("div", "made-group");
+    const ghead = el("div", "made-head");
+    ghead.appendChild(el("span", "stage-pos", String(group.position)));
+    ghead.appendChild(el("strong", null,
+      group.title || ("Stage " + group.position)));
+    ghead.appendChild(stageBadge(group.status));
+    section.appendChild(ghead);
+    if (group.status === "running") {
+      const note = el("p", "muted", "Working on this stage right now… ");
+      if (group.run_id) {
+        const live = el("a", "link", "watch live run");
+        live.href = "#/tasks/" + encodeURIComponent(group.run_id);
+        note.appendChild(live);
+      }
+      section.appendChild(note);
+    }
+    if (files.length) {
+      const chips = el("div", "file-chips");
+      for (const file of files) {
+        const chip = el("button", "file-chip", file);
+        chip.type = "button";
+        chip.addEventListener("click", () => {
+          openPreviewFile(buildId, file, viewer);
+        });
+        chips.appendChild(chip);
+      }
+      section.appendChild(chips);
+    }
+    box.appendChild(section);
+  }
+  if (!shown) {
+    box.appendChild(el("p", "muted",
+      "Nothing made yet — completed stages list every file they " +
+      "created here."));
+  }
+  box.appendChild(viewer);
+  return box;
+}
+
+async function openPreviewFile(buildId, path, viewer) {
+  viewer.classList.remove("hidden");
+  viewer.innerHTML = "";
+  const head = el("div", "viewer-head");
+  head.appendChild(el("span", "mono", path));
+  const close = el("button", "btn small", "Close");
+  close.type = "button";
+  close.addEventListener("click", () => {
+    viewer.classList.add("hidden");
+    viewer.innerHTML = "";
+  });
+  head.appendChild(close);
+  viewer.appendChild(head);
+  viewer.appendChild(el("p", "muted", "Loading…"));
+  try {
+    const data = await api("/api/v1/builds/" +
+      encodeURIComponent(buildId) +
+      "/preview/file?path=" + encodeURIComponent(path));
+    viewer.querySelectorAll("p").forEach((node) => node.remove());
+    if (data.kind === "text") {
+      const pre = el("pre", "mono");
+      pre.textContent = (data.content || "") +
+        (data.truncated ? "\n…[truncated]" : "");
+      viewer.appendChild(pre);
+    } else if (data.kind === "image" && data.raw_url) {
+      const img = el("img");
+      img.src = data.raw_url;
+      img.alt = path;
+      viewer.appendChild(img);
+    } else {
+      viewer.appendChild(el("p", "muted",
+        "Binary file (" + (data.size || 0) + " bytes) — nothing to show."));
+    }
+  } catch (err) {
+    viewer.querySelectorAll("p").forEach((node) => node.remove());
+    viewer.appendChild(el("p", "error",
+      "Unable to load file: " + err.message));
   }
 }
 
@@ -1742,7 +1959,6 @@ async function renderModels() {
       })));
     }
     const box = document.getElementById("m-list");
-    box.inn  const box = document.getElementById("m-list");
     box.innerHTML = "";
     const models = data.models || [];
     if (!models.length) {
@@ -3749,15 +3965,6 @@ function renderAgentBuilderView() {
       } catch (err) {
         errorState(result, "Agent creation failed", err,
           renderAgentBuilderView);
-      }
-    });
-  load();
-}
-
-    });
-  load();
-}
-entBuilderView);
       }
     });
   load();

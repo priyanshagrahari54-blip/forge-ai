@@ -385,3 +385,7 @@ class StagedStageUpdateRequest(BaseModel):
 
 class StagedRunRequest(BaseModel):
     mode: str = Field(default="", max_length=32)
+
+
+class StagedPreviewUpdateRequest(BaseModel):
+    entry: str = Field(default="", max_length=512)
