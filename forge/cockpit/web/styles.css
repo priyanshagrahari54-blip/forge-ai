@@ -800,3 +800,7 @@ progress.run-progress::-moz-progress-bar { background: var(--accent); border-rad
     padding: 12px;
   }
 }
+
+/* ---------- self-improvement (A81) ---------- */
+details.memory-entry summary { cursor: pointer; font-weight: 600; }
+details.memory-entry ul { margin: 4px 0 4px 18px; font-size: 13px; color: var(--muted); }

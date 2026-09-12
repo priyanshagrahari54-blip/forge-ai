@@ -29,6 +29,7 @@ VIEWS: tuple[dict[str, str], ...] = (
     {"label": "Go to Settings", "target": "settings"},
     {"label": "Go to Conversation", "target": "conversation"},
     {"label": "Go to Research", "target": "research"},
+    {"label": "Go to Self-Improvement", "target": "selfimprove"},
     {"label": "Go to Compute", "target": "compute"},
     {"label": "Go to Agent Builder", "target": "agentbuilder"},
     {"label": "Go to System", "target": "system"},

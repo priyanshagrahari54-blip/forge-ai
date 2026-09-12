@@ -341,3 +341,20 @@ class FinalGateVerifyRequest(BaseModel):
 
 class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
+
+
+# -- A81 controlled self-improvement -------------------------------------------------------------
+
+class SelfImprovementAnalyzeRequest(BaseModel):
+    run_tests: bool = False
+
+
+class SelfImprovementRunRequest(BaseModel):
+    iterations: int = Field(default=1, ge=1, le=10)
+    run_tests: bool = False
+    targets: Optional[List[str]] = None
+
+
+class SelfImprovementApproveRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    change_fingerprint: str = Field(default="", max_length=64)

@@ -10,7 +10,6 @@ import sys
 from forge.core.supervisor import Supervisor
 from forge.intelligence.analyzer import ProjectAnalyzer
 from forge.intelligence.report import generate_report
-from forge.self_development import ForgeSelfAnalyzer, SelfDevelopmentLoop
 
 
 def _emit_json(payload) -> None:
@@ -369,6 +368,177 @@ def _run_task(args) -> int:
     return 0 if result.get("accepted") else 1
 
 
+def _run_self_analyze(args) -> int:
+    """CLI entry for A81 self-analysis (read-only)."""
+    from forge.self_improvement import SelfAnalyzer
+
+    analyzer = SelfAnalyzer(".")
+    report = analyzer.analyze(run_tests=getattr(args, "run_tests", False))
+    if getattr(args, "json", False):
+        _emit_json(report.to_dict())
+        return 0
+    summary = report.summary()
+    print("Forge Self Analysis")
+    print(f"Root: {report.root}")
+    print(f"Sources: {', '.join(report.sources)}")
+    print(f"Evidence: {summary['evidence_total']} "
+          f"({', '.join(f'{k}={v}' for k, v in sorted(summary['evidence_by_kind'].items())) or 'none'})")
+    print(f"Weaknesses: {summary['weaknesses_total']}")
+    for key, value in sorted(report.metrics.items()):
+        print(f"  metric {key}: {value}")
+    print("\nWeaknesses (ranked):")
+    if not report.weaknesses:
+        print("  none — no failures, regressions, slow paths or bottlenecks observed")
+    for weak in report.weaknesses:
+        files = ", ".join(weak.affected_files) or "(no file resolved)"
+        print(f"[{weak.id}] [{weak.severity.upper()}] ({weak.category}) {weak.title}")
+        print(f"    metric {weak.metric}={weak.value} target={weak.target} "
+              f"evidence={','.join(weak.evidence_ids)}")
+        print(f"    files: {files}")
+        print(f"    action: {weak.suggested_action}")
+    print("\nEvidence:")
+    for item in report.evidence[:40]:
+        print(f"  {item.id} [{item.kind}] <{item.source}> {item.summary}")
+    if len(report.evidence) > 40:
+        print(f"  ... {len(report.evidence) - 40} more (see --json)")
+    return 0
+
+
+def _run_self_improve(args) -> int:
+    """CLI entry for A81 controlled self-improvement.
+
+    Evaluates candidates in isolation and parks the ones that pass every
+    technical gate for a human decision. Applying requires an explicit
+    ``--approve <id> --as <actor>``; nothing is ever committed or merged.
+    """
+    from forge.self_improvement import (
+        GuardrailViolation,
+        HARD_MAX_ITERATIONS,
+        SelfImprovementEngine,
+    )
+
+    engine = SelfImprovementEngine(".")
+    as_json = getattr(args, "json", False)
+
+    if getattr(args, "rollback", None):
+        try:
+            result = engine.rollback(args.rollback, actor=args.actor or "cli")
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Rollback failed: {exc}")
+            return 1
+        _emit_json(result) if as_json else print(
+            f"Rolled back {result['candidate_id']}: restored "
+            f"{', '.join(result['restored']) or 'nothing'}"
+            + (f"; removed {', '.join(result['removed'])}" if result['removed'] else ""))
+        return 0
+
+    if getattr(args, "discard", None):
+        ok = engine.discard_pending(args.discard, actor=args.actor or "cli")
+        print(f"{'Discarded' if ok else 'No pending candidate'} {args.discard}")
+        return 0 if ok else 1
+
+    approval = None
+    if getattr(args, "approve", None):
+        if not args.actor:
+            print("--approve requires --as <your name>: approvals must name a human actor")
+            return 2
+        try:
+            approval, decision = engine.approve(
+                args.approve, approved_by=args.actor, reason=args.reason)
+        except (LookupError, PermissionError) as exc:
+            print(f"Approval refused: {exc}")
+            return 1
+        if as_json and not getattr(args, "apply", None):
+            _emit_json({"approval": approval.to_dict(), "decision": decision.to_dict()})
+        else:
+            print(f"Approval recorded for {args.approve} by {args.actor}: "
+                  f"{'ACCEPTED' if decision.accepted else 'REJECTED'}")
+            if decision.failed_gates:
+                print(f"  failed gates: {', '.join(decision.failed_gates)}")
+        if not decision.accepted:
+            return 1
+        if not getattr(args, "apply", None):
+            print(f"  apply with: forge self-improve --apply {args.approve} "
+                  f"--approve {args.approve} --as {args.actor}")
+            return 0
+
+    if getattr(args, "apply", None):
+        if approval is None or approval.candidate_id != args.apply:
+            print("--apply requires --approve for the same candidate id in the same "
+                  "command (approvals are single-use and fingerprint-bound)")
+            return 2
+        try:
+            result = engine.apply_accepted(args.apply, approval)
+        except (LookupError, PermissionError, GuardrailViolation, FileExistsError) as exc:
+            print(f"Apply refused: {exc}")
+            return 1
+        if as_json:
+            _emit_json(result)
+        else:
+            print(f"Applied {result['candidate_id']} to the working tree: "
+                  f"{', '.join(result['files'])}")
+            print(f"  snapshot: {result['snapshot']}")
+            print("  NOT committed. Review the diff, run tests, and commit manually; "
+                  f"undo with: forge self-improve --rollback {result['candidate_id']}")
+        return 0
+
+    iterations = max(1, min(args.iterations, HARD_MAX_ITERATIONS))
+    print(f"Starting Forge Self-Improvement Loop (iterations: {iterations}, "
+          f"hard cap {HARD_MAX_ITERATIONS})...")
+    results = engine.run(
+        max_iterations=iterations, targets=getattr(args, "targets", None),
+        collect_kwargs={"run_tests": getattr(args, "run_tests", False)})
+    if as_json:
+        _emit_json({"results": [r.to_dict() for r in results],
+                    "status": engine.status().to_dict()})
+        return 0
+    print(f"Completed {len(results)} self-improvement iteration(s).")
+    for r in results:
+        if r.proposal is None:
+            print(f"Iteration {r.iteration}: {r.stopped_reason}")
+            continue
+        if r.decision is None:
+            print(f"Iteration {r.iteration}: SKIPPED — {r.stopped_reason}")
+            continue
+        if r.decision.accepted:
+            label = "ACCEPTED"
+        elif r.decision.awaiting_approval:
+            label = "AWAITING POLICY APPROVAL"
+        else:
+            label = "REJECTED"
+        print(f"Iteration {r.iteration}: {label} — {r.proposal.title}")
+        print(f"  candidate: {r.candidate.id if r.candidate else '-'} "
+              f"files: {', '.join(sorted(r.candidate.changes)) if r.candidate else '-'}")
+        for gate, ok in r.decision.gates.items():
+            print(f"  gate {gate}: {'pass' if ok else 'FAIL'} — {r.decision.reasons.get(gate, '')}")
+        if r.decision.awaiting_approval and r.candidate:
+            print(f"  approve with: forge self-improve --approve {r.candidate.id} --as <you>")
+    return 0
+
+
+def _run_self_status(args) -> int:
+    from forge.self_improvement import SelfImprovementEngine
+
+    engine = SelfImprovementEngine(".")
+    if getattr(args, "json", False):
+        _emit_json(engine.dashboard())
+        return 0
+    st = engine.status()
+    print("Forge Self-Development Status")
+    print(f"Root: {st.root}")
+    print(f"Iteration bound: {st.max_iterations} per run (hard cap {st.hard_max_iterations})")
+    print(f"Proposals: {st.proposals}")
+    print(f"Candidates: {st.candidates}")
+    print(f"Accepted decisions: {st.accepted}")
+    print(f"Rejected decisions: {st.rejected}")
+    print(f"Applied improvements: {st.applied}")
+    print(f"Rollbacks: {st.rollbacks}")
+    print(f"Pending approval: {', '.join(st.pending_approval) or 'none'}")
+    print(f"Ledger: {st.ledger['entries']} entries, chain "
+          f"{'OK' if st.ledger['chain_ok'] else 'BROKEN: ' + st.ledger['chain_detail']}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -563,19 +733,44 @@ def main() -> None:
     higgsfield_parser.add_argument("--api-timeout", type=float,
                                    default=30.0)
 
-    # Self-development commands
-    subparsers.add_parser("self-analyze")
-
-    improve_parser = subparsers.add_parser("self-improve")
-    improve_parser.add_argument(
-        "--iterations",
-        "-i",
-        type=int,
-        default=1,
-        help="Maximum number of self-improvement iterations to run",
+    # Controlled self-improvement (A81)
+    analyze_parser = subparsers.add_parser(
+        "self-analyze",
+        help="Analyze Forge's own failures, latency, routing and resources",
     )
+    analyze_parser.add_argument("--run-tests", action="store_true",
+                                help="Run the test-suite to gather live failure evidence")
+    analyze_parser.add_argument("--json", action="store_true")
 
-    subparsers.add_parser("self-status")
+    improve_parser = subparsers.add_parser(
+        "self-improve",
+        help="Propose, build and evaluate isolated improvement candidates "
+             "(never applies or commits by itself)",
+    )
+    improve_parser.add_argument(
+        "--iterations", "-i", type=int, default=1,
+        help="Maximum candidates to evaluate this run (hard cap applies)")
+    improve_parser.add_argument("--run-tests", action="store_true",
+                                help="Gather evidence from a live test run first")
+    improve_parser.add_argument("--targets", nargs="*", default=None,
+                                help="Restrict candidate/baseline test runs to these paths")
+    improve_parser.add_argument("--json", action="store_true")
+    improve_parser.add_argument("--approve", metavar="CANDIDATE_ID",
+                                help="Record your policy approval for a pending candidate")
+    improve_parser.add_argument("--apply", metavar="CANDIDATE_ID",
+                                help="Apply an approved candidate to the working tree "
+                                     "(requires --approve in the same command or a prior approval)")
+    improve_parser.add_argument("--rollback", metavar="CANDIDATE_ID",
+                                help="Restore the files an applied candidate changed")
+    improve_parser.add_argument("--discard", metavar="CANDIDATE_ID",
+                                help="Drop a pending candidate without applying it")
+    improve_parser.add_argument("--as", dest="actor", default="",
+                                help="Human actor recording an approval (required for --approve)")
+    improve_parser.add_argument("--reason", default="")
+
+    status_parser = subparsers.add_parser(
+        "self-status", help="Show proposals, candidates, decisions and the ledger")
+    status_parser.add_argument("--json", action="store_true")
 
     serve_parser = subparsers.add_parser(
         "serve",
@@ -653,40 +848,19 @@ def main() -> None:
         raise SystemExit(_run_higgsfield(args))
 
     elif args.command == "self-analyze":
-        analyzer = ForgeSelfAnalyzer(".")
-        res = analyzer.analyze()
-        findings = res.get("findings", [])
-        print("Forge Self Analysis")
-        print(f"Root: {res.get('root')}")
-        print(f"Total Findings: {len(findings)}")
-        print("\nStructured Findings:")
-        for f in findings:
-            print(
-                f"[{f['id']}] [{f['severity'].upper()}] ({f['category']}) "
-                f"{f['description']} (Files: {', '.join(f.get('affected_files', []))})"
-            )
+        code = _run_self_analyze(args)
+        if code:
+            raise SystemExit(code)
 
     elif args.command == "self-improve":
-        loop = SelfDevelopmentLoop(".")
-        iterations = max(1, args.iterations)
-        print(f"Starting Forge Self-Improvement Loop (iterations: {iterations})...")
-        results = loop.run(max_iterations=iterations)
-        print(f"Completed {len(results)} self-improvement iteration(s).")
-        for idx, r in enumerate(results, 1):
-            status = "ACCEPTED" if r.accepted else "REJECTED"
-            print(f"Iteration {idx}: {status}")
-            if r.rejection_reason:
-                print(f"  Reason: {r.rejection_reason}")
+        code = _run_self_improve(args)
+        if code:
+            raise SystemExit(code)
 
     elif args.command == "self-status":
-        loop = SelfDevelopmentLoop(".")
-        st = loop.status()
-        print("Forge Self-Development Status")
-        print(f"Root: {st['root']}")
-        print(f"Current Loop Iteration: {st['iteration_count']}")
-        print(f"Total Runs in History: {st['total_runs_in_history']}")
-        print(f"Accepted Runs: {st['accepted_runs']}")
-        print(f"Rejected Runs: {st['rejected_runs']}")
+        code = _run_self_status(args)
+        if code:
+            raise SystemExit(code)
 
     elif args.command == "serve":
         from forge.api.server import run as serve

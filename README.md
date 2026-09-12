@@ -607,6 +607,37 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Controlled Self-Improvement (A81)
+
+Forge analyzes its own runtime performance — failures, test failures,
+latency, model performance, routing mistakes, repeated errors, agent
+failures, resource bottlenecks — and turns the evidence into ranked
+weaknesses and structured proposals (hypothesis, evidence, expected
+benefit, risk, affected files, test plan). Each proposal is tried in an
+**isolated copy** of the repository: the change is applied there, tested
+against an identical baseline copy, and compared; any regression rejects
+it. Acceptance requires tests, security, architecture, regression and
+improvement gates **plus an explicit human policy approval** bound to the
+candidate's change fingerprint. A hash-chained ledger records everything;
+applying an approved candidate snapshots originals for exact rollback and
+never commits; iterations are hard-bounded at 10.
+
+Hard guardrails (constants, not configuration — and themselves protected):
+Forge never removes its own security controls, increases its own
+permissions, disables policy, bypasses approvals, modifies credentials, or
+touches protected files without explicit authorization.
+
+```bash
+forge self-analyze --run-tests
+forge self-improve --iterations 1 --run-tests
+forge self-improve --approve CAND-… --as alice --apply CAND-…   # working tree only, no commit
+forge self-improve --rollback CAND-…
+forge self-status
+```
+
+Cockpit view **Self-Improvement**; API under `/api/v1/self-improvement`.
+See `docs/A81-SELF-IMPROVEMENT.md`.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -692,8 +723,11 @@ forge models capabilities      # capability vocabulary
 forge models test              # bounded local self-check
 forge models --capability vision
 forge models --json
-forge self-analyze
-forge self-improve --iterations 1
+forge self-analyze [--run-tests]           # evidence + ranked weaknesses (read-only)
+forge self-improve --iterations 1          # isolated candidates; parks for approval
+forge self-improve --approve ID --as you --apply ID   # apply approved candidate (no commit)
+forge self-improve --rollback ID
+forge self-status
 ```
 
 Writes, command execution, commits, pushes, repository deletion, and secret exposure remain permission-controlled. Forge is intentionally not an unattended deployment system.
