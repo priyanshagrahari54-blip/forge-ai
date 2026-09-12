@@ -320,6 +320,90 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
+    # -- managed agents (Creation Engine) ------------------------------------
+
+    def managed_templates(self, project_id: str) -> list[dict[str, Any]]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return [dict(item) for item in
+                    plane.managed_templates(session)["templates"]]
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def list_managed_agents(self, project_id: str) -> list[dict[str, Any]]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return [dict(item) for item in
+                    plane.managed_list(session)["agents"]]
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def get_managed_agent(self, project_id: str,
+                          name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.managed_get(session, name))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def create_managed_agent(self, project_id: str, template: str,
+                             name: str, purpose: str = "") -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        if not name.strip():
+            raise BackendError("Give the agent a name first.")
+        try:
+            return dict(plane.managed_create_from_template(
+                session, template, name, purpose))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _managed_action(self, operation: str, project_id: str,
+                        name: str) -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            result = getattr(plane, operation)(session, name)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return dict(result)
+
+    def validate_managed_agent(self, project_id: str,
+                               name: str) -> dict[str, Any]:
+        return self._managed_action("managed_validate", project_id, name)
+
+    def test_managed_agent(self, project_id: str,
+                           name: str) -> dict[str, Any]:
+        return self._managed_action("managed_test", project_id, name)
+
+    def enable_managed_agent(self, project_id: str,
+                             name: str) -> dict[str, Any]:
+        return self._managed_action("managed_enable", project_id, name)
+
+    def pause_managed_agent(self, project_id: str,
+                            name: str) -> dict[str, Any]:
+        return self._managed_action("managed_pause", project_id, name)
+
+    def disable_managed_agent(self, project_id: str,
+                              name: str) -> dict[str, Any]:
+        return self._managed_action("managed_disable", project_id, name)
+
+    def retire_managed_agent(self, project_id: str,
+                             name: str) -> dict[str, Any]:
+        return self._managed_action("managed_retire", project_id, name)
+
+    def version_managed_agent(self, project_id: str, name: str, *,
+                              bump: str = "patch") -> dict[str, Any]:
+        plane = self._require_plane()
+        session = self._session_for(project_id)
+        try:
+            return dict(plane.managed_version(session, name, bump=bump))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
     # -- files --------------------------------------------------------------
 
     def read_project_file(self, project_id: str, rel_path: str,

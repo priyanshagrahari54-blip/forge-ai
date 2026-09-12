@@ -106,6 +106,11 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_models_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
+        agents_menu = tk.Menu(menubar, tearoff=False)
+        agents_menu.add_command(label="Agent Manager...",
+                                command=self._show_agent_manager)
+        menubar.add_cascade(label="Agents", menu=agents_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Setup guide", command=self._show_setup)
         help_menu.add_command(label="About", command=self._show_about)
@@ -263,6 +268,8 @@ class ForgeDesktopApp(tk.Tk):
                     self._show_models_window(payload)
                 elif kind == "notice":
                     self._set_status(str(payload))
+                elif kind == "agent_result":
+                    self._apply_agent_result(payload)
                 elif kind == "error":
                     messagebox.showerror(APP_TITLE, str(payload))
         except queue.Empty:
@@ -639,6 +646,191 @@ class ForgeDesktopApp(tk.Tk):
             lines.append(f"  {name}: {info}")
         text.insert(tk.END, "\n".join(lines))
         text.configure(state=tk.DISABLED)
+
+    # -- agent manager (Creation Engine) --------------------------------------------
+
+    def _show_agent_manager(self) -> None:
+        """Open the Agent Manager window (list, create, lifecycle)."""
+        if not self.backend.running:
+            messagebox.showinfo(APP_TITLE, "Start the backend first (open a project folder).")
+            return
+        project = self._current_project.get()
+        if not project:
+            messagebox.showinfo(APP_TITLE, "Pick a project first.")
+            return
+        window = tk.Toplevel(self)
+        window.title("Agent Manager")
+        window.geometry("720x520")
+        self._agent_window = window
+        self._agent_project = project
+        self._agent_names: list[str] = []
+        top = ttk.Frame(window, padding=6)
+        top.pack(fill=tk.BOTH, expand=True)
+        self._agent_listbox = tk.Listbox(top, width=28, activestyle="dotbox")
+        self._agent_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        self._agent_listbox.bind("<<ListboxSelect>>", self._on_agent_selected)
+        self._agent_detail = tk.Text(top, wrap=tk.WORD, state=tk.DISABLED,
+                                     height=20)
+        self._agent_detail.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                                padx=(6, 0))
+        row = ttk.Frame(window, padding=(6, 0, 6, 6))
+        row.pack(fill=tk.X)
+        for label, action in (("Refresh", self._refresh_agent_list),
+                              ("Create...", self._agent_create_dialog),
+                              ("Validate", lambda: self._agent_action("validate")),
+                              ("Test", lambda: self._agent_action("test")),
+                              ("Enable", lambda: self._agent_action("enable")),
+                              ("Pause", lambda: self._agent_action("pause")),
+                              ("Disable", lambda: self._agent_action("disable")),
+                              ("Retire", lambda: self._agent_action("retire"))):
+            ttk.Button(row, text=label, command=action).pack(side=tk.LEFT, padx=1)
+        self._refresh_agent_list()
+
+    def _agent_selected(self) -> str:
+        try:
+            picked = self._agent_listbox.curselection()
+        except Exception:
+            return ""
+        if not picked:
+            return ""
+        try:
+            return self._agent_names[picked[0]]
+        except (IndexError, AttributeError):
+            return ""
+
+    def _on_agent_selected(self, _event=None) -> None:
+        name = self._agent_selected()
+        if not name:
+            return
+        self._render_agent_detail(name)
+
+    def _refresh_agent_list(self) -> None:
+        try:
+            agents = self.backend.list_managed_agents(self._agent_project)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        except AttributeError:
+            return
+        self._agent_names = [item.get("name", "") for item in agents]
+        self._agent_listbox.delete(0, tk.END)
+        for item in agents:
+            self._agent_listbox.insert(
+                tk.END, f"{item.get('name')} [{item.get('state')}]")
+        if self._agent_names:
+            self._render_agent_detail(self._agent_names[0])
+
+    def _render_agent_detail(self, name: str) -> None:
+        try:
+            agent = self.backend.get_managed_agent(self._agent_project, name)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        spec = agent.get("spec", {})
+        lines = [
+            f"{agent.get('name')} v{agent.get('version')} [{agent.get('state')}]",
+            f"purpose: {spec.get('purpose', '')}",
+            f"capabilities: {','.join(spec.get('capabilities', []))}",
+            f"tools: {','.join(spec.get('tools', [])) or '-'}",
+            f"permissions: {len(spec.get('permissions', []))} grant(s)",
+            f"model: {(spec.get('model_requirements', {}) or {}).get('capability', '')}",
+            f"verification: {','.join(spec.get('verification_requirements', []))}",
+            f"history entries: {len(agent.get('history', []))}",
+            f"benchmarks: {len(agent.get('benchmarks', []))}",
+        ]
+        self._agent_detail.configure(state=tk.NORMAL)
+        self._agent_detail.delete("1.0", tk.END)
+        self._agent_detail.insert(tk.END, "\n".join(lines))
+        self._agent_detail.configure(state=tk.DISABLED)
+
+    def _agent_create_dialog(self) -> None:
+        try:
+            templates = self.backend.managed_templates(self._agent_project)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Create agent")
+        dialog.geometry("420x260")
+        ttk.Label(dialog, text="Template:").pack(anchor=tk.W, padx=10, pady=(8, 0))
+        template_var = tk.StringVar(value=(templates[0].get("name", "coding") if templates else "coding"))
+        box = ttk.Combobox(dialog, textvariable=template_var,
+                           values=[item.get("name", "") for item in templates],
+                           state="readonly", width=30)
+        box.pack(anchor=tk.W, padx=10)
+        ttk.Label(dialog, text="Name:").pack(anchor=tk.W, padx=10, pady=(8, 0))
+        name_var = tk.StringVar()
+        ttk.Entry(dialog, textvariable=name_var, width=34).pack(anchor=tk.W, padx=10)
+        ttk.Label(dialog, text="Purpose (optional):").pack(anchor=tk.W, padx=10, pady=(8, 0))
+        purpose_var = tk.StringVar()
+        ttk.Entry(dialog, textvariable=purpose_var, width=34).pack(anchor=tk.W, padx=10)
+
+        def _create() -> None:
+            try:
+                agent = self.backend.create_managed_agent(
+                    self._agent_project, template_var.get(),
+                    name_var.get().strip(), purpose_var.get().strip())
+            except BackendError as exc:
+                messagebox.showerror(APP_TITLE, str(exc))
+                return
+            dialog.destroy()
+            self._refresh_agent_list()
+            self._render_agent_detail(agent.get("name", ""))
+
+        ttk.Button(dialog, text="Create", command=_create).pack(pady=12)
+
+    def _agent_action(self, action: str) -> None:
+        name = self._agent_selected()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+        method = {
+            "validate": self.backend.validate_managed_agent,
+            "test": self.backend.test_managed_agent,
+            "enable": self.backend.enable_managed_agent,
+            "pause": self.backend.pause_managed_agent,
+            "disable": self.backend.disable_managed_agent,
+            "retire": self.backend.retire_managed_agent,
+        }.get(action)
+        if method is None:
+            return
+        if action == "retire" and not messagebox.askyesno(
+                APP_TITLE, f"Retire agent {name!r}? This is terminal."):
+            return
+
+        def work() -> None:
+            try:
+                result = method(self._agent_project, name)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agent_result", {"action": action,
+                                              "name": name,
+                                              "result": result}))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_agent_result(self, payload: dict[str, Any]) -> None:
+        action = payload.get("action", "")
+        name = payload.get("name", "")
+        result = payload.get("result", {})
+        if action == "test" and isinstance(result, dict):
+            window = tk.Toplevel(self)
+            window.title(f"Benchmark: {name}")
+            window.geometry("560x400")
+            text = tk.Text(window, wrap=tk.WORD, padx=8, pady=8)
+            text.pack(fill=tk.BOTH, expand=True)
+            lines = [f"{name}: {result.get('passed')}/{result.get('total')} passed"]
+            for entry in result.get("checks", []):
+                mark = "pass" if entry.get("passed") else "FAIL"
+                lines.append(f"[{mark}] {entry.get('check')}: {entry.get('detail', '')}")
+            text.insert(tk.END, "\n".join(lines))
+            text.configure(state=tk.DISABLED)
+        self._set_status(f"Agent {name}: {action} done")
+        try:
+            self._refresh_agent_list()
+        except Exception:
+            pass
 
     # -- dialogs ----------------------------------------------------------------------
 
