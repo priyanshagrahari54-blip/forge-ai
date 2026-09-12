@@ -67,6 +67,7 @@ start (main `16007dc`).
 | A78 Rollout gate | YES | YES | YES | YES | OK | n/a | COMPLETE | COMPLETE |
 | A79 Final loop | YES | YES | YES | YES | OK | n/a | COMPLETE | COMPLETE |
 | A80 Final go/no-go | YES | YES | YES | YES | PARTIAL | n/a | PARTIAL (no provider-state check, no ARCHITECTURE_COMPLETE vs PRODUCTION_READY) | COMPLETE (after fix) |
+| A81 Native AI Engine (forge/native) | YES | YES (CLI + desktop backend) | YES (168 tests) | YES (forge run --native) | OK (reuses A32/A33; no bypass) | n/a by design (generative steps refuse honestly until a real model is attached; no trainer ships) | — (post-audit) | COMPLETE (free-first core; neural paths are interfaces awaiting real models, stated in docs) |
 
 Evidence notes:
 - "Runtime" means reachable through control plane or CLI in a real (non-mocked) process; all A-stages

@@ -196,6 +196,16 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+
+        native_tab = ttk.Frame(self._notebook, padding=4)
+        self._native = tk.Text(native_tab, wrap=tk.WORD, state=tk.DISABLED,
+                               height=20, bg="#f6f8fa")
+        native_scroll = ttk.Scrollbar(native_tab, command=self._native.yview)
+        self._native.configure(yscrollcommand=native_scroll.set)
+        self._native.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        native_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._notebook.add(native_tab, text="Native AI")
+        self._native_rendered = ""
         paned.add(right, weight=3)
 
     def _build_statusbar(self) -> None:
@@ -295,6 +305,30 @@ class ForgeDesktopApp(tk.Tk):
         for event in snapshot.get("events", []):
             self._append_event(event)
         self._event_cursor = snapshot.get("event_cursor", self._event_cursor)
+        self._render_native(snapshot.get("native_ai"),
+                            errors.get("native_ai", ""))
+
+    def _render_native(self, native: dict[str, Any] | None,
+                       error: str) -> None:
+        """Native AI status panel (A81): engine, backends, stage, retry.
+
+        Data comes from the engine's persisted snapshot, so it also reflects
+        runs started from the CLI. Text building lives in
+        :func:`forge.native.panel.format_native_status` (Tk-free, unit
+        tested); the widget is only rewritten when the text changed, keeping
+        the UI quiet on 2 GB hosts.
+        """
+        from forge.native.panel import format_native_status
+
+        text = format_native_status(native, error)
+        if text == self._native_rendered:
+            return
+        self._native_rendered = text
+        widget = self._native
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, text + "\n")
+        widget.configure(state=tk.DISABLED)
 
     def _render_tasks(self, tasks: list[dict[str, Any]]) -> None:
         ids = [t["id"] for t in tasks]

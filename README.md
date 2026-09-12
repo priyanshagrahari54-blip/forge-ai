@@ -607,6 +607,28 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Forge Native AI Engine (A81)
+
+A first-party engineering engine (`forge/native/`) for low-power installs
+(the G560-class Windows 7 / Python 3.8 / 2 GB client): task understanding, a
+structured planner (inspect → reason → edit → test → debug → review →
+finish), repository-grounded budgeted context, a vendor-neutral reasoning
+interface (native deterministic backend + local/remote neural interfaces,
+all routed through the single Model Fabric abstraction), a coding engine
+composed of the existing A32 ChangeSet/A33 policy layers, full verification
+gates, a bounded debug loop, five-category project memory, live status
+snapshots for the desktop Native AI panel, and honest training interfaces
+(dataset build/validation, jobs, evaluation, versioning, promotion,
+rollback — no trainer ships, and none is pretended).
+
+Free-first by construction: everything except generative steps (code,
+repairs, prose) works with no model attached; those are refused with
+`NEURAL_REQUIRED` and the run honestly ends `NEEDS_MODEL` — deterministic
+code is never passed off as a language model, and unperformed work is never
+reported as completed. CLI: `forge native-ai` / `... status` / `... test` /
+`forge run --native`. See `docs/A81-NATIVE-AI-ENGINE.md` for the full
+architecture, capability matrix, model-connection guides, and limitations.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

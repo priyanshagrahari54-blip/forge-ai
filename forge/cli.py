@@ -294,7 +294,17 @@ def _run_doctor(args) -> int:
 
 
 def _run_task(args) -> int:
-    """Run one autonomous task through the Supervisor; exit 0 when accepted."""
+    """Run one autonomous task through the Supervisor; exit 0 when accepted.
+
+    With ``--native`` the task is routed through the Native AI Engine (A81)
+    instead of the Supervisor: planning, context, verification, memory, and
+    status live in the native layer, and the run degrades honestly to
+    ``NEEDS_MODEL`` (exit 3) when generative steps lack a neural backend
+    rather than failing the whole pre-flight.
+    """
+    if getattr(args, "native", False):
+        return _run_native_ai_run(args)
+
     from forge.models import describe_no_model_error, fabric_has_real_model
     from forge.security.permissions import OperationMode
 
@@ -369,6 +379,237 @@ def _run_task(args) -> int:
     return 0 if result.get("accepted") else 1
 
 
+# ---------------------------------------------------------------------------
+# Native AI Engine (A81)
+# ---------------------------------------------------------------------------
+
+#: Exit codes for `forge native-ai run` / `forge run --native`:
+#: 0 = completed, 1 = failed, 2 = blocked by approval/policy,
+#: 3 = plan needs a neural model for its generative steps.
+NATIVE_EXIT_OK = 0
+NATIVE_EXIT_FAILED = 1
+NATIVE_EXIT_BLOCKED = 2
+NATIVE_EXIT_NEEDS_MODEL = 3
+
+
+def _native_exit_code(final_status: str) -> int:
+    return {
+        "COMPLETED": NATIVE_EXIT_OK,
+        "NEEDS_MODEL": NATIVE_EXIT_NEEDS_MODEL,
+        "BLOCKED_APPROVAL": NATIVE_EXIT_BLOCKED,
+    }.get(final_status, NATIVE_EXIT_FAILED)
+
+
+def _build_native_engine(args, fabric=None):
+    """Construct a NativeAIEngine from parsed CLI arguments."""
+    from forge.native.engine import NativeAIEngine
+    from forge.security.permissions import OperationMode
+
+    mode_name = getattr(args, "mode", "assisted") or "assisted"
+    try:
+        mode = OperationMode(mode_name)
+    except ValueError:
+        raise SystemExit(
+            f"Unknown mode: {mode_name!r} "
+            "(expected safe|assisted|autonomous|locked)")
+    return NativeAIEngine(
+        root=getattr(args, "root", "."),
+        project=getattr(args, "project", "forge-ai"),
+        mode=mode,
+        fabric=fabric,
+        max_debug_retries=max(0, int(getattr(args, "max_debug_retries", 3))),
+        context_max_tokens=max(
+            256, int(getattr(args, "context_tokens", 1600))),
+        memory_enabled=not getattr(args, "no_memory", False),
+    )
+
+
+def _run_native_ai_run(args) -> int:
+    """`forge native-ai <task>` — one complete native-engine run."""
+    from forge.models import describe_no_model_error, fabric_has_real_model
+
+    fabric = _build_fabric(args)
+    try:
+        has_model = fabric_has_real_model(fabric)
+    except Exception:
+        has_model = False
+    engine = _build_native_engine(args, fabric=fabric)
+    mode_name = getattr(args, "mode", "assisted") or "assisted"
+    approved = bool(getattr(args, "approve", False))
+    if (mode_name == "assisted" and not approved
+            and not getattr(args, "force", False)):
+        # A write-class task cannot land without an approver; say so before
+        # burning cycles (the run itself would stop at the policy gate).
+        probe = engine.run_probe_plan(args.requirement)
+        if probe.get("has_edit_step"):
+            message = (
+                "Assisted mode needs an approver for every write and "
+                "`forge native-ai` cannot prompt for approval.\n"
+                "Re-run with --approve (pre-approves writes; DENY still "
+                "blocks them), use --mode autonomous, or approve in the "
+                "desktop/cockpit app.")
+            if args.json:
+                print(json.dumps({"accepted": False, "error": message,
+                                  "needs_approval": True}, indent=2))
+            else:
+                print(message, file=sys.stderr)
+            return NATIVE_EXIT_BLOCKED
+
+    result = engine.run(args.requirement, approved=approved)
+    report = result.report.to_dict()
+    if args.json:
+        print(json.dumps({"result": result.snapshot, "report": report},
+                         indent=2, default=str))
+        return _native_exit_code(result.final_status)
+
+    print(f"Native AI: {result.final_status}")
+    print(f"  task: {args.requirement[:120]}")
+    print(f"  plan: {report.get('task_class', '?')} "
+          f"({report.get('plan', {}).get('confidence', '?')} confidence)")
+    stages = report.get("stages", [])
+    if stages:
+        print(f"  stages: {' -> '.join(stages)}")
+    backends = report.get("backends") or {}
+    active = backends.get("active_backend") or {}
+    generative = backends.get("generative_backend") or {}
+    print(f"  reasoning: structural={active.get('name', 'none')} "
+          f"generative={generative.get('name') or 'none (NEURAL_REQUIRED)'}")
+    model = report.get("model_backend") or {}
+    print("  model backend: "
+          + (f"registered: {', '.join(model.get('models', []))} "
+             f"({model.get('live', 'unverified')})"
+             if model.get("real_model") else model.get("detail", "")))
+    runs = report.get("test_runs", [])
+    for run in runs[-1:]:
+        print(f"  tests: exit={run.get('exit_code')} "
+              f"passed={run.get('passed')}")
+    debug = report.get("debug") or {}
+    if debug:
+        print(f"  debug: cycles={len(debug.get('cycles', []))} "
+              f"stopped={debug.get('stopped_reason', '')}")
+    verification = report.get("verification") or {}
+    print(f"  verification: {verification.get('status', '-')} "
+          f"(failed gates: "
+          f"{', '.join(g['name'] for g in verification.get('gates', []) if g['executed'] and not g['passed']) or 'none'})")
+    if report.get("files_changed"):
+        print(f"  files changed: {', '.join(report['files_changed'])}")
+    for skipped in report.get("skipped_neural", []):
+        print(f"  skipped (needs neural model): {skipped}")
+    if report.get("error"):
+        print(f"  error: {report['error']}")
+    print(f"  duration: {report.get('duration_seconds', 0):.1f}s")
+    if result.needs_model:
+        print("  note: generative steps were refused honestly; no code was "
+              "fabricated. Attach a real model (forge doctor) to run them.")
+        if not has_model:
+            print("  hint: " + describe_no_model_error(fabric=fabric)
+                  .replace("\n", " ")[:300])
+    return _native_exit_code(result.final_status)
+
+
+def _run_native_ai_status(args) -> int:
+    """`forge native-ai status` — persisted snapshot + live capability view."""
+    from forge.native.engine import NativeAIEngine
+    from forge.native.state import snapshot_summary
+
+    root = getattr(args, "root", ".")
+    live = None
+    try:
+        engine = NativeAIEngine(root=root, persist_status=False,
+                                fabric=_build_fabric(args)
+                                if getattr(args, "probe_models", False)
+                                else None)
+        live = engine.status()
+    except Exception as exc:  # status must never explode on a broken project
+        live = {"error": str(exc)}
+    persisted = snapshot_summary(root)
+    payload = {"live": live, "persisted": persisted}
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    state = (live or {}).get("state", {})
+    print("Forge Native AI Engine status")
+    print(f"  project: {state.get('project', '-')}  root: {state.get('root', '-')}")
+    print(f"  engine state: {state.get('engine_state', 'idle')}")
+    task = state.get("task") or {}
+    print(f"  task: {task.get('state', 'none')}"
+          + (f" — {task.get('text', '')[:80]}" if task.get("text") else ""))
+    stage = state.get("stage") or {}
+    print(f"  stage: {stage.get('kind') or '-'} "
+          f"({stage.get('index', 0)}/{stage.get('total', 0)})")
+    reasoning = (live or {}).get("reasoning", {})
+    active = reasoning.get("active_backend") or {}
+    generative = reasoning.get("generative_backend") or {}
+    print(f"  reasoning backend: structural={active.get('name', 'none')} "
+          f"(neural={active.get('neural', False)}), generative="
+          f"{generative.get('name') or 'none (NEURAL_REQUIRED)'}")
+    model = (live or {}).get("model_backend") or {}
+    print("  model backend: "
+          + (f"registered: {', '.join(model.get('models', []))} "
+             f"({model.get('live', 'unverified')})"
+             if model.get("real_model") else model.get("detail", "-")))
+    verification = state.get("verification") or {}
+    print(f"  verification: {verification.get('status', 'PENDING')} "
+          f"(failed: {', '.join(verification.get('failed', [])) or 'none'})")
+    retry = state.get("retry") or {}
+    print(f"  retry state: {retry.get('cycle', 0)}/{retry.get('max', 0)} "
+          f"active={retry.get('active', False)} "
+          f"last={retry.get('last_reason', '') or '-'}")
+    print()
+    print("Capabilities without a neural model (free-first):")
+    for capability in (live or {}).get("capabilities", []):
+        mark = "model" if capability.get("requires_neural") else "free "
+        print(f"  [{mark}] {capability.get('label', capability.get('id'))}")
+    memory = (live or {}).get("memory") or {}
+    print(f"  memory entries: {memory.get('entries', 0)} "
+          f"({', '.join(f'{k}={v}' for k, v in (memory.get('categories') or {}).items())})")
+    if persisted.get("available"):
+        print()
+        print(f"  persisted snapshot: {persisted['age_seconds']}s old "
+              f"({'fresh' if persisted.get('fresh') else 'historical'})")
+    else:
+        print(f"\n  {persisted.get('reason', '')}")
+    return 0
+
+
+def _run_native_ai_test(args) -> int:
+    """`forge native-ai test` — deterministic, self-contained checks."""
+    from forge.native.selftest import run_native_selftest
+
+    report = run_native_selftest()
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print("Forge Native AI self-test (temp fixture, no model, no network)")
+        for check in report["checks"]:
+            mark = "PASS" if check["passed"] else "FAIL"
+            print(f"  [{mark}] {check['name']}: {check['detail']}")
+        if report["error"]:
+            print(f"  error: {report['error']}")
+        verdict = "OK" if report["passed"] else "FAILED"
+        print(f"Self-test {verdict}: {report['passed_count']}/"
+              f"{report['total']} checks passed")
+    return 0 if report["passed"] else 1
+
+
+def _native_argv_normalize(argv) -> list:
+    """Allow `forge native-ai "task"` as sugar for `native-ai run "task"`.
+
+    A bare `forge native-ai` (or flags with no subcommand) routes to
+    `status` via the None subcommand in the dispatcher. Known subcommands
+    pass through untouched.
+    """
+    argv = list(argv)
+    if len(argv) < 2 or argv[1] != "native-ai":
+        return argv
+    rest = argv[2:]
+    if not rest or rest[0].startswith("-") \
+            or rest[0] in ("run", "status", "test"):
+        return argv
+    return argv[:2] + ["run"] + rest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -405,10 +646,78 @@ def main() -> None:
     run_parser.add_argument("--ollama-model", default="")
     run_parser.add_argument("--force", action="store_true",
                             help="Bypass the no-model and assisted-approval "
-                            "pre-flight gates (the run then fails honestly "
-                            "at the first unsatisfiable step)")
+                                 "pre-flight gates (the run then fails honestly "
+                                 "at the first unsatisfiable step)")
+    run_parser.add_argument("--native", action="store_true",
+                            help="Route this task through the Native AI "
+                                 "Engine (planning, context, verification, "
+                                 "memory, status panel) instead of the "
+                                 "Supervisor directly; works without any "
+                                 "neural model (generative steps then report "
+                                 "NEEDS_MODEL, exit 3)")
     run_parser.add_argument("--json", action="store_true",
                             help="Emit machine-readable JSON")
+
+    # Native AI Engine (A81)
+    native_parser = subparsers.add_parser(
+        "native-ai",
+        help="Forge Native AI Engine (first-party, no mandatory provider)",
+        description="Run, inspect, and self-test the Native AI Engine: "
+        "planning, repository intelligence, budgeted context, "
+        "policy-gated coding, verification, bounded debugging, and "
+        "project memory. Works fully without any external AI provider; "
+        "generative steps (code/repair) require a real model attached "
+        "via the Model Fabric.",
+    )
+    native_subs = native_parser.add_subparsers(dest="native_subcommand")
+    native_run = native_subs.add_parser(
+        "run", help="Run one task end to end through the engine")
+    native_run.add_argument("requirement", help="Engineering task text")
+    native_status = native_subs.add_parser(
+        "status", help="Engine state, backends, and capability labels")
+    native_test = native_subs.add_parser(
+        "test", help="Deterministic self-test against a temp fixture")
+    for _sub in (native_run, native_status, native_test):
+        _sub.add_argument("--root", default=argparse.SUPPRESS,
+                          help="Repository root (default: .)")
+        _sub.add_argument("--project", default=argparse.SUPPRESS,
+                          help="Project name for reporting")
+        _sub.add_argument("--mode", default=argparse.SUPPRESS,
+                          help="Permission mode: safe|assisted|autonomous|"
+                               "locked (default: assisted)")
+        _sub.add_argument("--json", action="store_true",
+                          default=argparse.SUPPRESS,
+                          help="Emit machine-readable JSON")
+        _sub.add_argument("--config", default=argparse.SUPPRESS,
+                          help="Fabric config file for model probing")
+        _sub.add_argument("--ollama-url", default=argparse.SUPPRESS,
+                          help="Override Ollama endpoint")
+        _sub.add_argument("--ollama-model", default=argparse.SUPPRESS,
+                          help="Override Ollama model name")
+    native_run.add_argument("--approve", action="store_true",
+                            help="Pre-approve writes (never overrides DENY)")
+    native_run.add_argument("--force", action="store_true",
+                            help="Skip the assisted-mode pre-flight guidance")
+    native_run.add_argument("--max-debug-retries", type=int,
+                            default=argparse.SUPPRESS,
+                            help="Bounded repair cycles (default 3)")
+    native_run.add_argument("--context-tokens", type=int,
+                            default=argparse.SUPPRESS,
+                            help="Context budget in tokens (default 1600)")
+    native_run.add_argument("--no-memory", action="store_true",
+                            help="Disable project memory writes")
+    native_status.add_argument("--probe-models", action="store_true",
+                               help="Build the fabric to report model "
+                                    "readiness (may touch configured "
+                                    "endpoints)")
+    native_parser.add_argument("--root", default=".",
+                               help="Repository root (default: .)")
+    native_parser.add_argument("--project", default="forge-ai")
+    native_parser.add_argument("--mode", default="assisted")
+    native_parser.add_argument("--json", action="store_true")
+    native_parser.add_argument("--config", default="")
+    native_parser.add_argument("--ollama-url", default="")
+    native_parser.add_argument("--ollama-model", default="")
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -594,7 +903,7 @@ def main() -> None:
     serve_parser.add_argument("--db", default="",
                              help="Control-plane database path.")
 
-    args = parser.parse_args()
+    args = parser.parse_args(_native_argv_normalize(sys.argv)[1:])
 
     if args.command == "status":
         supervisor = Supervisor("forge-ai")
@@ -642,6 +951,14 @@ def main() -> None:
         analyzer = ProjectAnalyzer(".")
         analysis = analyzer.analyze()
         print(generate_report(analysis))
+
+    elif args.command == "native-ai":
+        subcommand = getattr(args, "native_subcommand", None) or "status"
+        if subcommand == "run":
+            raise SystemExit(_run_native_ai_run(args))
+        if subcommand == "test":
+            raise SystemExit(_run_native_ai_test(args))
+        raise SystemExit(_run_native_ai_status(args))
 
     elif args.command == "models":
         _run_models(args)

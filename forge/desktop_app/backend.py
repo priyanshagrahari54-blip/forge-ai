@@ -320,6 +320,66 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
+    # -- native AI (A81 status panel) -------------------------------------
+
+    def native_ai_status(self, project_id: str) -> dict[str, Any]:
+        """Native AI Engine view for the desktop status panel.
+
+        Reads the engine's persisted ``.forge/native/state.json`` (written
+        by every stage transition) rather than querying a live engine —
+        status must work even while the engine runs in another process
+        (CLI ``forge native-ai run``). The model-backend line reflects the
+        in-process fabric when one is attached; registration is reported as
+        registration, never as liveness.
+        """
+        from forge.native.capabilities import capability_matrix
+        from forge.native.state import snapshot_summary
+
+        try:
+            plane = self._require_plane()
+            project = plane.get_project(project_id)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        root = Path(project.root)
+        persisted = snapshot_summary(root)
+        fabric = None
+        try:
+            fabric = getattr(plane, "fabric", None)
+        except Exception:
+            fabric = None
+        model_backend: dict[str, Any] = {"configured": False,
+                                         "detail": "no Model Fabric attached"}
+        if fabric is not None:
+            from forge.models.readiness import fabric_has_real_model
+            try:
+                real = bool(fabric_has_real_model(fabric))
+            except Exception:
+                real = False
+            names: list[str] = []
+            if real:
+                try:
+                    names = [str(m.name) for m in fabric.registry.list()
+                             if getattr(m, "provider", "") != "local"]
+                except Exception:
+                    names = []
+            model_backend = {
+                "configured": True, "real_model": real,
+                "models": names[:10],
+                "live": "unverified (registration only; no completed "
+                        "calls reported here)",
+                "detail": ("models registered for generative steps" if real
+                           else "only the deterministic fallback is "
+                                "registered; generative steps are refused "
+                                "with NEURAL_REQUIRED"),
+            }
+        return {
+            "root": str(root),
+            "persisted": persisted,
+            "capabilities": [c.to_dict()
+                             for c in capability_matrix()],
+            "model_backend": model_backend,
+        }
+
     # -- files --------------------------------------------------------------
 
     def read_project_file(self, project_id: str, rel_path: str,
@@ -386,4 +446,8 @@ class DesktopBackend:
                 snapshot["event_cursor"] = fetched["latest"]
             except BackendError as exc:
                 snapshot["errors"]["events"] = str(exc)
+        try:
+            snapshot["native_ai"] = self.native_ai_status(project_id)
+        except BackendError as exc:
+            snapshot["errors"]["native_ai"] = str(exc)
         return snapshot
