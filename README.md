@@ -688,6 +688,60 @@ roadmap + blueprint + stage-1 prompt → real Supervisor run → verified?
 See `docs/A82-STAGED-BUILDS.md` for the architecture, prompt assembly,
 API reference, and guarantees.
 
+## Specification Agent Engine (A83)
+
+Forge creates new specialized software agents from structured
+specifications. An agent is a validated spec, a versioned package on
+disk, an explicit lifecycle, and a runtime that can only act through the
+Model Fabric, PolicyGate, Tool Runtime, Memory, Verification, and
+Checkpoints — never around them.
+
+- **Specification** (`forge.agents.engine.spec`): name, purpose,
+  capabilities (canonical vocabulary only), tools, permissions, model
+  requirements, memory policy, verification requirements, and resource
+  limits. Validation reports every problem at once and enforces
+  cross-section consistency — a tool implies its operation,
+  `delete_repository`/`expose_secrets` can never be granted, and
+  `.git`/`.forge` can never be un-protected.
+- **Factory + package** (`factory`, `package`): a structured package under
+  `.forge/agents/<name>/` — `agent.json`, immutable `versions/*.json`,
+  `benchmarks/*.json`, `grants.json`, `history.json` — written atomically.
+  Creating an agent grants nothing.
+- **Lifecycle** (`lifecycle`): `created → validated → tested → enabled`,
+  plus `paused` / `disabled` / `retired` (terminal). `tested` needs a
+  recorded benchmark report; `enabled` is only reachable from `tested`; a
+  spec change discards the evidence.
+- **Runtime** (`runtime`): lifecycle gate → resource budget → Model Fabric
+  → sandbox (`use_tool` / `remember` / `recall` / `keys` / `note` — no
+  grant or policy surface) → Tool Runtime + PolicyGate → policy-bounded
+  memory → verification → checkpoint/rollback. A placeholder model
+  response fails the run instead of pretending to be output; a failed gate
+  rolls back exactly the files the run touched.
+- **No self-grant** (`grants`): grants need a named operator, are bounded
+  by the spec ceiling, refuse the agent itself (and its aliases) with the
+  attempt recorded, and a major spec change revokes every grant.
+- **Templates** (`templates`): Coding, Research, Security, Game
+  Development, OS Development, Documentation.
+- **Benchmark** (`benchmark`): code-judged boundary scenarios (spec
+  integrity, lifecycle gate, tool/permission/memory isolation,
+  self-grant refusal, resource limits) plus model scenarios that are
+  honestly `skipped` — never passed — when no real model is reachable.
+- **Versioning** (`versioning`): the bump is derived from the diff
+  (capabilities/tools/operations → major; model/memory/verification/limits
+  → minor; purpose/role/tags → patch); version records are immutable.
+- **CLI**: `forge agents`, `create`, `validate`, `test`, `enable`,
+  `disable`, `pause`, `resume`, `retire`, `run`, `show`, `permissions`,
+  `grant`, `revoke`, `versions`, `history`, `update`. Exit codes are
+  meaningful: a failed gate never exits 0.
+- **Desktop**: Agents → Agent Manager — create from a template, validate,
+  benchmark, enable/pause/disable/retire, grant spec permissions, and
+  inspect spec, effective permissions, lifecycle history, benchmark
+  scenarios, quota, versions, and runs. It calls the same engine the CLI
+  uses, with the same actor.
+
+See `docs/A83-SPEC-AGENT-ENGINE.md`. Full suite after A83: 2005
+passed, 3 skipped.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -776,6 +830,15 @@ forge models capabilities      # capability vocabulary
 forge models test              # bounded local self-check
 forge models --capability vision
 forge models --json
+forge agents                                # list created agents
+forge agents templates                      # the six first-party templates
+forge agents create --template coding --name exporter
+forge agents validate exporter
+forge agents grant exporter --all-spec      # operator grant (never self-grant)
+forge agents test exporter                  # code-judged benchmark
+forge agents enable exporter
+forge agents run exporter "add CSV export" --approve
+forge agents disable exporter
 forge self-analyze
 forge self-improve --iterations 1
 ```

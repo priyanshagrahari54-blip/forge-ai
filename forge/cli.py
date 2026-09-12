@@ -1421,6 +1421,12 @@ def main() -> None:
     for _sub in memory_subs.choices.values():
         _add_memory_common(_sub)
 
+    # Agents: the Agent Creation Engine (A82) — specifications, lifecycle,
+    # benchmarking, permissions, and runs.
+    from forge.agents.engine.cli import build_parser as build_agents_parser
+
+    build_agents_parser(subparsers)
+
     # Blender: procedural 3D scenes rendered headlessly
     blender_parser = subparsers.add_parser(
         "blender",
@@ -1696,6 +1702,11 @@ def main() -> None:
         raise SystemExit(_run_agents(args))
     elif args.command == "memory":
         raise SystemExit(_run_memory(args))
+
+    elif args.command == "agents":
+        from forge.agents.engine.cli import run_agents_cli
+
+        raise SystemExit(run_agents_cli(args))
 
     elif args.command == "blender":
         raise SystemExit(_run_blender(args))

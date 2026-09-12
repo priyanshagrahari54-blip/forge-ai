@@ -44,6 +44,9 @@ class DesktopBackend:
     _sessions: dict[str, ProjectSession] = field(default_factory=dict,
                                                  init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
+    #: Agent Creation Engine per project root (A81).
+    _agent_engines: dict[str, Any] = field(default_factory=dict,
+                                           init=False, repr=False)
 
     # -- lifecycle ------------------------------------------------------
 
@@ -320,6 +323,106 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
+    # -- agent manager (A82) ------------------------------------------------
+
+    def _agent_engine(self, project_id: str):
+        """Agent Creation Engine for one project root (cached per root).
+
+        The desktop never invents a second path into agent state: it talks
+        to the same engine the CLI uses, with the same actor, so every
+        action is validated, lifecycle-gated, and audited identically.
+        """
+        from forge.agents.engine import AgentCreationEngine
+
+        plane = self._require_plane()
+        try:
+            project = plane.get_project(project_id)
+        except Exception as exc:
+            raise BackendError(f"Unknown project: {project_id!r}") from exc
+        cached = self._agent_engines.get(project.root)
+        if cached is None:
+            cached = AgentCreationEngine(project.root, fabric=self.fabric)
+            self._agent_engines[project.root] = cached
+        return cached
+
+    def agent_summary(self, project_id: str) -> dict[str, Any]:
+        """Everything the Agent Manager panel renders, in one call."""
+        try:
+            return dict(self._agent_engine(project_id).summary())
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agent_detail(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).detail(name))
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def create_agent(self, project_id: str, name: str, *, template: str,
+                     purpose: str = "", grant: bool = False
+                     ) -> dict[str, Any]:
+        """Create an agent from a first-party template."""
+        if not template:
+            raise BackendError("Choose a template first.")
+        try:
+            return dict(self._agent_engine(project_id).create_from_template(
+                template, name, purpose=purpose, actor=self.actor,
+                grant=grant))
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def validate_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).validate(
+                name, actor=self.actor))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def test_agent(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).test(
+                name, actor=self.actor))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def set_agent_state(self, project_id: str, name: str, state: str
+                        ) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).set_state(
+                name, state, actor=self.actor))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def grant_agent_spec(self, project_id: str, name: str) -> list[dict]:
+        try:
+            return list(self._agent_engine(project_id).grant_spec(
+                name, actor=self.actor,
+                reason="granted from the desktop Agent Manager"))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def revoke_agent_permission(self, project_id: str, name: str,
+                                operation: str) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).revoke(
+                name, operation, actor=self.actor,
+                reason="revoked from the desktop Agent Manager"))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def run_agent(self, project_id: str, name: str, task: str,
+                  *, approved: bool = False) -> dict[str, Any]:
+        try:
+            return dict(self._agent_engine(project_id).run(
+                name, task, actor=self.actor, approved=approved))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
 
     # -- files --------------------------------------------------------------
 
