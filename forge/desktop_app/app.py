@@ -106,6 +106,17 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_models_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
+        server_menu = tk.Menu(menubar, tearoff=False)
+        server_menu.add_command(label="Go to Server tab",
+                                command=self._focus_server_tab)
+        server_menu.add_command(label="Reconnect now",
+                                command=self._link_restore_clicked)
+        server_menu.add_command(label="Restore server state",
+                                command=self._link_restore_clicked)
+        server_menu.add_command(label="Disconnect",
+                                command=self._link_disconnect_clicked)
+        menubar.add_cascade(label="Server", menu=server_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Setup guide", command=self._show_setup)
         help_menu.add_command(label="About", command=self._show_about)
@@ -171,7 +182,6 @@ class ForgeDesktopApp(tk.Tk):
 
         self._notebook = ttk.Notebook(right)
         self._notebook.pack(fill=tk.BOTH, expand=True)
-
         log_tab = ttk.Frame(self._notebook, padding=4)
         self._log = tk.Text(log_tab, wrap=tk.WORD, state=tk.DISABLED,
                             height=20, bg="#0d1117", fg="#e6edf3",
@@ -196,12 +206,336 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+        self._build_server_tab()
         paned.add(right, weight=3)
 
     def _build_statusbar(self) -> None:
         self._status = ttk.Label(self, text="Not started", relief=tk.SUNKEN,
                                  anchor=tk.W, padding=(6, 2))
         self._status.pack(fill=tk.X)
+
+    # -- Forge Server tab (A81) ---------------------------------------------
+
+    def _build_server_tab(self) -> None:
+        tab = ttk.Frame(self._notebook, padding=6)
+        self._notebook.add(tab, text="Server")
+
+        conn = ttk.LabelFrame(tab, text="Forge Server connection", padding=6)
+        conn.pack(fill=tk.X)
+
+        row1 = ttk.Frame(conn)
+        row1.pack(fill=tk.X, pady=1)
+        ttk.Label(row1, text="Server URL:").pack(side=tk.LEFT)
+        self._link_url = ttk.Entry(row1, width=34)
+        self._link_url.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(row1, text="Client ID:").pack(side=tk.LEFT)
+        self._link_client = ttk.Entry(row1, width=14)
+        self._link_client.pack(side=tk.LEFT, padx=(4, 12))
+
+        row2 = ttk.Frame(conn)
+        row2.pack(fill=tk.X, pady=1)
+        ttk.Label(row2, text="Secret (path or value):").pack(side=tk.LEFT)
+        self._link_secret = ttk.Entry(row2, width=44, show="*")
+        self._link_secret.pack(side=tk.LEFT, fill=tk.X, expand=True,
+                               padx=(4, 4))
+        ttk.Button(row2, text="Browse...",
+                   command=self._link_browse_secret).pack(side=tk.LEFT)
+
+        row3 = ttk.Frame(conn)
+        row3.pack(fill=tk.X, pady=1)
+        ttk.Label(row3, text="Execution:").pack(side=tk.LEFT)
+        self._link_mode = tk.StringVar(value="HYBRID")
+        ttk.Combobox(row3, textvariable=self._link_mode,
+                     values=("LOCAL", "SERVER", "HYBRID"), state="readonly",
+                     width=10).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Button(row3, text="Save && connect",
+                   command=self._link_connect_clicked).pack(side=tk.LEFT,
+                                                            padx=(0, 6))
+        ttk.Button(row3, text="Disconnect",
+                   command=self._link_disconnect_clicked).pack(side=tk.LEFT,
+                                                               padx=(0, 6))
+        ttk.Button(row3, text="Restore state",
+                   command=self._link_restore_clicked).pack(side=tk.LEFT)
+        self._link_pill = tk.Label(row3, text=" UNCONFIGURED ", bg="#6e7781",
+                                   fg="white", padx=8, pady=2)
+        self._link_pill.pack(side=tk.RIGHT)
+
+        info = ttk.Frame(tab)
+        info.pack(fill=tk.X, pady=(6, 2))
+        self._link_server_label = ttk.Label(info, text="Server: not connected")
+        self._link_server_label.pack(side=tk.LEFT)
+        self._link_queue_label = ttk.Label(info, text="   queue: -")
+        self._link_queue_label.pack(side=tk.LEFT)
+        self._link_hint = ttk.Label(info, text="", foreground="#555")
+        self._link_hint.pack(side=tk.RIGHT)
+
+        body = ttk.Frame(tab)
+        body.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        tasks_frame = ttk.LabelFrame(body, text="Server tasks", padding=4)
+        tasks_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                         padx=(0, 4))
+        self._link_tasks = tk.Listbox(tasks_frame, width=46,
+                                      activestyle="dotbox")
+        self._link_tasks.pack(fill=tk.BOTH, expand=True)
+        self._link_tasks.bind("<<ListboxSelect>>",
+                              lambda _e: self._on_link_task_selected())
+        self._link_current = ttk.Label(tasks_frame, text="stage=- model=- "
+                                       "worker=-", foreground="#555")
+        self._link_current.pack(anchor=tk.W, pady=(2, 0))
+        btns = ttk.Frame(tasks_frame)
+        btns.pack(fill=tk.X)
+        for label, op, verb in (("Pause", "pause", "Paused"),
+                                ("Resume", "resume", "Resumed"),
+                                ("Cancel", "cancel", "Cancelled"),
+                                ("Retry", "retry", "Retried")):
+            ttk.Button(btns, text=label, command=lambda o=op, v=verb:
+                       self._link_mutate(o, v)).pack(side=tk.LEFT, padx=1)
+
+        right_col = ttk.Frame(body)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        approvals = ttk.LabelFrame(right_col, text="Approval requests",
+                                   padding=4)
+        approvals.pack(fill=tk.X)
+        self._link_approval_list = tk.Listbox(approvals, height=5,
+                                              activestyle="dotbox")
+        self._link_approval_list.pack(fill=tk.X)
+        self._link_approval_ids: list[str] = []
+        approve_row = ttk.Frame(approvals)
+        approve_row.pack(fill=tk.X, pady=(2, 0))
+        ttk.Button(approve_row, text="Approve",
+                   command=lambda: self._link_decide(True)).pack(side=tk.LEFT,
+                                                                 padx=1)
+        ttk.Button(approve_row, text="Deny",
+                   command=lambda: self._link_decide(False)).pack(side=tk.LEFT,
+                                                                  padx=1)
+
+        verify = ttk.LabelFrame(right_col, text="Verification (selected "
+                                "task)", padding=4)
+        verify.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._link_verify = tk.Text(verify, height=7, wrap=tk.WORD,
+                                    state=tk.DISABLED, bg="#f6f8fa")
+        verify_scroll = ttk.Scrollbar(verify, command=self._link_verify.yview)
+        self._link_verify.configure(yscrollcommand=verify_scroll.set)
+        self._link_verify.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        verify_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        log_frame = ttk.LabelFrame(right_col, text="Link log", padding=4)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._link_log = tk.Text(log_frame, height=8, wrap=tk.WORD,
+                                 state=tk.DISABLED, bg="#0d1117",
+                                 fg="#e6edf3", insertbackground="#e6edf3")
+        log_scroll = ttk.Scrollbar(log_frame, command=self._link_log.yview)
+        self._link_log.configure(yscrollcommand=log_scroll.set)
+        self._link_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._link_selected = ""
+        self._link_snapshot: dict[str, Any] = {"configured": False}
+
+    def _link_browse_secret(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select the client secret file")
+        if path:
+            self._link_secret.delete(0, tk.END)
+            self._link_secret.insert(0, path)
+
+    def _link_read_secret(self) -> str:
+        """Secret from the entry: a file path (read once) or the value."""
+        import os
+        raw = self._link_secret.get().strip()
+        if not raw:
+            return ""
+        if os.path.isfile(raw):
+            try:
+                with open(raw, "r", encoding="utf-8") as handle:
+                    return handle.read().strip()
+            except OSError as exc:
+                messagebox.showerror(APP_TITLE, f"Cannot read secret: {exc}")
+                return ""
+        return raw
+
+    def _apply_mode_variable(self) -> None:
+        status = self.backend.link_status()
+        mode = str(status.get("mode", "hybrid")).upper()
+        if status.get("configured"):
+            self._link_mode.set(mode)
+
+    def _link_connect_clicked(self) -> None:
+        settings = {
+            "server_url": self._link_url.get().strip(),
+            "client_id": self._link_client.get().strip(),
+            "project_id": self._current_project_id(),
+            "mode": self._link_mode.get().strip().lower(),
+            "secret": self._link_read_secret(),
+        }
+        if not settings["server_url"] or not settings["client_id"]:
+            messagebox.showinfo(APP_TITLE,
+                                "Server URL and client ID are required.")
+            return
+        if not settings["secret"]:
+            messagebox.showinfo(APP_TITLE,
+                                "Paste the one-time secret or browse to the "
+                                "secret file (from the server's add-client).")
+            return
+        try:
+            status = self.backend.link_configure(settings)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._link_secret.delete(0, tk.END)  # never keep the secret on screen
+        self._render_link_status(status)
+        self._set_status("Connecting to Forge Server...")
+        self._link_restore_clicked()
+
+    def _link_restore_clicked(self) -> None:
+        def work() -> None:
+            try:
+                snapshot = self.backend.link_connect()
+            except BackendError as exc:
+                self._queue.put(("notice", f"Link: {exc}"))
+                return
+            self._queue.put(("link_snapshot", snapshot))
+        threading.Thread(target=work, daemon=True, name="forge-link-restore"
+                         ).start()
+
+    def _link_disconnect_clicked(self) -> None:
+        try:
+            status = self.backend.link_disconnect()
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._render_link_status(status)
+
+    def _render_link_status(self, status: dict[str, Any]) -> None:
+        text = str(status.get("state", "DISCONNECTED"))
+        colors = {"CONNECTED": "#1a7f37", "CONNECTING": "#0b5fff",
+                  "RECONNECTING": "#8a6d00", "AUTH_FAILED": "#c0392b",
+                  "DISCONNECTED": "#6e7781"}
+        self._link_pill.configure(
+            text=f" {text} ",
+            bg=colors.get(text, "#6e7781"))
+        self._apply_mode_variable()
+        detail = status.get("detail") or ""
+        url = status.get("server_url") or "-"
+        self._link_server_label.configure(
+            text=f"Server: {url}" + (f" ({detail})" if detail else ""))
+
+    def _on_link_task_selected(self) -> None:
+        selection = self._link_tasks.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        tasks = self._link_snapshot.get("tasks", [])
+        if 0 <= index < len(tasks):
+            self._link_selected = tasks[index]["id"]
+            self._render_link_detail(tasks[index])
+
+    def _render_link_detail(self, task: dict[str, Any]) -> None:
+        self._link_current.configure(text=(
+            f"stage={task.get('stage', '-') or '-'}"
+            f"  model={task.get('model') or '-'}"
+            f"  provider={task.get('provider') or '-'}"
+            f"  execution={task.get('execution') or '-'}"
+            f"  worker=server/{task.get('actor', '-')}"))
+        verification = self._link_snapshot.get("verification") or {}
+        if task["id"] == self._link_snapshot.get("selected_task") \
+                and verification:
+            self._render_link_verification(verification)
+
+    def _render_link_verification(self, verification: dict[str, Any]) \
+            -> None:
+        lines = []
+        for gate in ("tests", "review", "security", "build", "acceptance",
+                     "benchmark"):
+            payload = verification.get(gate)
+            if payload:
+                lines.append(f"{gate}: {json.dumps(payload, default=str)[:220]}")
+        text = "\n".join(lines) or json.dumps(verification, default=str)[:800]
+        self._link_verify.configure(state=tk.NORMAL)
+        self._link_verify.delete("1.0", tk.END)
+        self._link_verify.insert(tk.END, text + "\n")
+        self._link_verify.configure(state=tk.DISABLED)
+
+    def _link_mutate(self, operation: str, verb: str) -> None:
+        if not self._link_selected:
+            messagebox.showinfo(APP_TITLE, "Select a server task first.")
+            return
+        try:
+            self.backend.link_mutate_task(self._link_selected, operation)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._set_status(f"{verb}: {self._link_selected}")
+
+    def _link_decide(self, approved: bool) -> None:
+        selection = self._link_approval_list.curselection()
+        if not selection or not self._link_approval_ids:
+            messagebox.showinfo(APP_TITLE, "Select an approval first.")
+            return
+        approval_id = self._link_approval_ids[selection[0]]
+        try:
+            self.backend.link_decide_approval(approval_id, approved)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._set_status(f"Approval {approval_id}: "
+                         f"{'approved' if approved else 'denied'} (server)")
+
+    def _apply_link_snapshot(self, snapshot: dict[str, Any]) -> None:
+        if not snapshot.get("configured"):
+            return
+        self._link_snapshot = snapshot
+        self._render_link_status(snapshot.get("connection", {}))
+        info = snapshot.get("server_info") or {}
+        models = ", ".join(info.get("models", [])[:3]) or "none"
+        self._link_server_label.configure(
+            text=f"Server: {snapshot.get('connection', {}).get('server_url', '-')}"
+                 f"   workers={info.get('workers', '-')}"
+                 f"   models: {models}")
+        queue_depth = (snapshot.get("queue") or {}).get("depth", 0)
+        self._link_queue_label.configure(text=f"   queue: {queue_depth}")
+
+        tasks = snapshot.get("tasks", [])
+        self._link_tasks.delete(0, tk.END)
+        for task in tasks[:60]:
+            marker = "*" if task["id"] == self._link_selected else " "
+            self._link_tasks.insert(
+                tk.END, f"{marker}[{task.get('status', '?')}] "
+                f"{_short(task['id'])} {task.get('execution') or '-'} "
+                f"{(task.get('requirement') or '')[:36]}")
+            self._link_tasks.itemconfig(
+                tk.END, fg=self._status_color(task))
+
+        approvals = snapshot.get("approvals", [])
+        self._link_approval_ids = [a.get("id", "") for a in approvals[:8]]
+        self._link_approval_list.delete(0, tk.END)
+        for item in approvals[:8]:
+            label = (item.get("label") or item.get("operation")
+                     or "approval")
+            self._link_approval_list.insert(
+                tk.END, f"{_short(item.get('id', ''))} {label}"[:110])
+
+        selected = self._link_selected
+        for task in tasks:
+            if task["id"] == selected:
+                self._render_link_detail(task)
+                break
+
+        self._render_link_verification(snapshot.get("verification") or {})
+
+        self._link_log.configure(state=tk.NORMAL)
+        self._link_log.delete("1.0", tk.END)
+        for line in snapshot.get("logs", [])[-120:]:
+            self._link_log.insert(tk.END, line + "\n")
+        self._link_log.see(tk.END)
+        self._link_log.configure(state=tk.DISABLED)
+
+        preview = snapshot.get("decision_preview") or {}
+        if preview:
+            self._link_hint.configure(
+                text=f"route: {preview.get('execution', '-')} — "
+                     f"{preview.get('reason', '')}"[:140])
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -220,6 +554,30 @@ class ForgeDesktopApp(tk.Tk):
         self._ready_pill.configure(text=" checking models... ", bg="#8a6d00")
         self._begin_polling()
         self._refresh_readiness_async(first=True)
+        # A81: reopen a previously configured Forge Server link and
+        # restore the server-side task state (requirement 9).
+        self._link_resume_async()
+
+    def _link_resume_async(self) -> None:
+        """Reconnect a saved link in the background; render its state."""
+        def work() -> None:
+            try:
+                status = self.backend.link_load()
+            except Exception:
+                return
+            if not status.get("configured"):
+                return
+            self._queue.put(("link_snapshot",
+                             {"configured": True,
+                              "connection": status}))
+            try:
+                snapshot = self.backend.link_connect()
+            except BackendError as exc:
+                self._queue.put(("notice", f"Link restore: {exc}"))
+                return
+            self._queue.put(("link_snapshot", snapshot))
+        threading.Thread(target=work, daemon=True,
+                         name="forge-link-resume").start()
 
     def _begin_polling(self) -> None:
         self.after(DRAIN_MS, self._drain_queue)
@@ -242,6 +600,15 @@ class ForgeDesktopApp(tk.Tk):
                 failures += 1
                 if failures <= 3:
                     self._queue.put(("poll_error", str(exc)))
+            # A81: refresh the Forge Server view from the same poller.
+            try:
+                if self.backend.link is not None:
+                    link = self.backend.link_snapshot(
+                        self._link_selected)
+                    self._queue.put(("link_snapshot", link))
+            except Exception as exc:  # the tab stays on its last state
+                if failures <= 3:
+                    self._queue.put(("notice", f"Server view: {exc}"))
             self._stop.wait(POLL_SECONDS)
 
     def _drain_queue(self) -> None:
@@ -252,6 +619,8 @@ class ForgeDesktopApp(tk.Tk):
                 kind, payload = self._queue.get_nowait()
                 if kind == "snapshot":
                     self._apply_snapshot(payload)
+                elif kind == "link_snapshot":
+                    self._apply_link_snapshot(payload)
                 elif kind == "poll_error":
                     self._set_status(f"Refresh hiccup: {payload}")
                 elif kind == "readiness":
@@ -427,6 +796,12 @@ class ForgeDesktopApp(tk.Tk):
             messagebox.showerror(APP_TITLE, str(exc))
             return
         self._requirement.delete(0, tk.END)
+        if run.get("execution") in ("LOCAL", "SERVER"):
+            # Routed through the Forge link: track it on the Server tab.
+            self._link_selected = run["id"]
+            if run.get("execution") == "LOCAL":
+                self._set_status(f"Light task {run['id']} executed locally")
+                return
         self._selected_task = run["id"]
         self._event_cursor = 0
         self._log.configure(state=tk.NORMAL)
@@ -694,7 +1069,17 @@ class ForgeDesktopApp(tk.Tk):
                             "No server, no browser, no extra dependencies.\n\n"
                             "Tasks run through the same guarded pipeline\n"
                             "as the browser cockpit: plan, code, test,\n"
-                            "review, acceptance - with approvals for writes.")
+                            "review, acceptance - with approvals for writes."
+                            "\n\nForge Server link (Server tab): run the heavy\n"
+                            "engineering on the server; this machine stays a\n"
+                            "lightweight client (LOCAL/SERVER/HYBRID).")
+
+    def _focus_server_tab(self) -> None:
+        try:
+            self._notebook.select(self._notebook.tabs()[-1])
+        except Exception:  # notebook without the Server tab (old build)
+            pass
+
 
 
 def launch(projects: dict[str, str] | None = None,
