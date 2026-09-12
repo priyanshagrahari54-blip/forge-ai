@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -67,12 +68,31 @@ class RollbackManager:
             manifest["files"][path] = entry
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         written: list[str] = []
-        for raw, content in changes.items():
-            path = normalize_path(raw)
-            target = self.root / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            written.append(path)
+        try:
+            for raw, content in changes.items():
+                path = normalize_path(raw)
+                target = self.root / path
+                resolved = target.resolve()
+                try:
+                    resolved.relative_to(self.root)
+                except ValueError:
+                    raise GuardrailViolation([{"rule": "path escapes repository", "path": path}])
+                if target.is_symlink():
+                    raise GuardrailViolation([{"rule": "refusing to write through symlink", "path": path}])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Write atomically: temp file in the same directory, then replace.
+                tmp = target.with_name(target.name + ".forge-tmp")
+                tmp.write_text(content, encoding="utf-8")
+                os.replace(tmp, target)
+                written.append(path)
+        except Exception:
+            # Partial apply: restore what was written so the tree is never
+            # left half-changed, then re-raise for the caller/ledger.
+            try:
+                self.rollback(candidate_id)
+            finally:
+                shutil.rmtree(directory, ignore_errors=True)
+            raise
         return {"candidate_id": candidate_id, "files": sorted(written),
                 "snapshot": str(directory)}
 

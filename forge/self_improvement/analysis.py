@@ -110,6 +110,7 @@ class SelfAnalyzer:
 
     def collect(self, *, failure_ledger: Any = None, runs: Iterable[Any] | None = None,
                 router_history: Iterable[dict[str, Any]] | None = None,
+                route_events: Iterable[dict[str, Any]] | None = None,
                 agent_runs: Iterable[dict[str, Any]] | None = None,
                 metrics_snapshot: dict[str, Any] | None = None,
                 test_output: str | None = None, test_duration: float | None = None,
@@ -119,6 +120,10 @@ class SelfAnalyzer:
         sources: list[str] = []
         if run_tests and test_output is None:
             test_output, test_duration = self._run_tests(test_timeout)
+            if "FAILED test-run:" in (test_output or "")[:40]:
+                # The test command itself could not run: that is a failure
+                # signal in its own right, not "zero failing tests".
+                collector.from_failure_text("tests:pytest", test_output)
         if test_output is not None:
             collector.from_test_output(test_output, duration_seconds=test_duration)
             sources.append("tests")
@@ -128,8 +133,8 @@ class SelfAnalyzer:
         if runs is not None:
             collector.from_runs(runs)
             sources.append("run_store")
-        if router_history is not None:
-            collector.from_router_history(router_history)
+        if router_history is not None or route_events is not None:
+            collector.from_router_history(router_history or [], route_events=route_events)
             sources.append("model_router")
         if agent_runs is not None:
             collector.from_agent_runs(agent_runs)
@@ -147,7 +152,7 @@ class SelfAnalyzer:
     def _run_tests(self, timeout: int) -> tuple[str, float]:
         started = time.perf_counter()
         command = [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                   "-x", "--no-header", "-rfE"]
+                   "--no-header", "-rfE"]
         try:
             process = subprocess.run(command, cwd=self.root, text=True,
                                      capture_output=True, timeout=timeout, check=False)
@@ -365,9 +370,14 @@ class SelfAnalyzer:
             text = path.read_text(encoding="utf-8")
         except OSError:
             return candidates
-        for match in re.finditer(r"^from\s+(forge(?:\.[\w]+)+)\s+import", text, re.M):
-            rel = match.group(1).replace(".", "/") + ".py"
-            if (self.root / rel).is_file() and rel not in candidates:
+        modules = re.findall(r"^from\s+(forge(?:\.[\w]+)+)\s+import", text, re.M)
+        modules += re.findall(r"^import\s+(forge(?:\.[\w]+)+)", text, re.M)
+        for module in modules:
+            rel = module.replace(".", "/") + ".py"
+            if not (self.root / rel).is_file():
+                rel = module.replace(".", "/") + "/__init__.py"
+            if (self.root / rel).is_file() and rel not in candidates \
+                    and not is_protected_path(rel):
                 candidates.append(rel)
         return candidates[:6]
 

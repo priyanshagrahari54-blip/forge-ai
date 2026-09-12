@@ -83,8 +83,13 @@ def test_pytest_output_parsing():
            "ERROR tests/test_y.py::test_b\n"
            "1 failed, 12 passed, 1 error in 0.5s\n")
     parsed = parse_pytest_output(out)
-    assert parsed == {"passed": 12, "failed": 1, "errors": 1,
+    assert parsed == {"passed": 12, "failed": 1, "errors": 1, "skipped": 0,
+                      "summary_found": True,
                       "failing_tests": ["tests/test_x.py::test_a", "tests/test_y.py::test_b"]}
+    # Only the pytest summary line is trusted: log lines that merely
+    # mention "passed" must not fabricate counts.
+    noisy = parse_pytest_output("INFO 99 passed checks in cache warmup\nno tests ran\n")
+    assert noisy["summary_found"] is False and noisy["passed"] == 0
 
 
 def test_analyzer_finds_failing_tests_and_maps_sources(tmp_path):
@@ -529,7 +534,7 @@ def test_never_remove_own_security_controls():
                 "outcome = gate.evaluate(operation='write_file')\n")
     stripped = "outcome = None\n"
     violations = rails.check_content("forge/tools/x.py", stripped, original=original)
-    assert any(v["rule"] == "security control removed" and v["detail"] == "PolicyGate"
+    assert any(v["rule"] == "security control removed" and v["detail"].startswith("PolicyGate")
                for v in violations)
     # Keeping the control is fine.
     assert rails.check_content("forge/tools/x.py", original + "# more\n", original=original) == []
@@ -570,3 +575,90 @@ def test_guardrail_invariants_are_documented():
                    "protected files without explicit authorization"):
         assert any(phrase in inv for inv in described["invariants"]), phrase
     assert "forge/self_improvement/guardrails.py" in described["protected_paths"]
+
+
+# -- hardening: fakes removed, gates tightened -------------------------------------------
+
+
+def test_guardrails_flag_test_weakening_and_assert_removal():
+    rails = Guardrails()
+    weak = "import pytest\n\ndef test_x():\n    pytest.skip('flaky')\n    assert True\n"
+    rules = {v["rule"] for v in rails.check_content("tests/test_x.py", weak)}
+    assert "test weakening" in rules
+    original = "def test_y():\n    assert a == 1\n    assert b == 2\n"
+    fewer = "def test_y():\n    assert a == 1\n"
+    violations = rails.check_content("tests/test_y.py", fewer, original=original)
+    assert any(v["rule"] == "test weakening" and "2 -> 1" in v["detail"] for v in violations)
+
+
+def test_router_fallbacks_come_from_telemetry_route_events():
+    from forge.self_improvement.evidence import EvidenceCollector, EvidenceKind
+    collector = EvidenceCollector(".")
+    events = [{"kind": "route", "model": "m1", "capability": "code", "fallback": True,
+               "fallback_reason": "timeout", "error": ""} for _ in range(3)]
+    collector.from_router_history([], route_events=events)
+    kinds = [e.kind for e in collector.items()]
+    assert EvidenceKind.ROUTING_MISTAKE.value in kinds
+    routing = [e for e in collector.items() if e.kind == EvidenceKind.ROUTING_MISTAKE.value][0]
+    assert routing.measurement.get("count") == 3
+
+
+def test_metrics_evidence_uses_real_counters_and_seconds():
+    from forge.self_improvement.evidence import EvidenceCollector, EvidenceKind
+    collector = EvidenceCollector(".")
+    snapshot = {"counters": {"runs.failed": 6, "runs.succeeded": 4},
+                "gauges": {"active_runs": 4, "max_workers": 4, "queued_runs": 7},
+                "histograms": {}}
+    collector.from_metrics(snapshot)
+    kinds = {e.kind for e in collector.items()}
+    assert EvidenceKind.REPEATED_ERROR.value in kinds
+    assert EvidenceKind.RESOURCE_BOTTLENECK.value in kinds
+    # Unknown/legacy counter names must not fabricate evidence.
+    quiet = EvidenceCollector(".")
+    quiet.from_metrics({"counters": {"tasks_queued": 900}, "gauges": {}, "histograms": {}})
+    assert quiet.items() == []
+
+
+def test_ledger_rotation_keeps_chain_and_history(tmp_path, monkeypatch):
+    from forge.self_improvement import ledger as ledger_mod
+    monkeypatch.setattr(ledger_mod, "MAX_ENTRIES", 3)
+    ledger = ledger_mod.ImprovementLedger(tmp_path)
+    for i in range(7):
+        ledger.record("analysis", {"i": i})
+    ok, _ = ledger.verify_chain()
+    assert ok
+    rotated = sorted(ledger.path.parent.glob("ledger.*.jsonl"))
+    assert rotated, "old entries must be rotated, never truncated"
+    total = sum(1 for f in rotated + [ledger.path] for _ in f.read_text().splitlines())
+    assert total == 7
+    # Tampering with an entry is detected.
+    lines = ledger.path.read_text().splitlines()
+    lines[-1] = lines[-1].replace('"i": 6', '"i": 60')
+    ledger.path.write_text("\n".join(lines) + "\n")
+    assert ledger.verify_chain()[0] is False
+
+
+def test_candidate_rejects_undeclared_writes(tmp_path):
+    from forge.self_improvement.candidate import CandidateRunner
+    from forge.self_improvement.proposals import ImprovementProposal
+    root = tmp_path / "repo"
+    (root / "forge").mkdir(parents=True)
+    (root / "forge" / "__init__.py").write_text("")
+    (root / "forge" / "a.py").write_text("X = 1\n")
+    (root / "forge" / "b.py").write_text("Y = 1\n")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_a.py").write_text("from forge.a import X\n\ndef test_a():\n    assert X == 1\n")
+    runner = CandidateRunner(root)
+    proposal = ImprovementProposal(
+        id="P-sneaky", weakness_id="w1", title="t", hypothesis="h", evidence_ids=["e1"],
+        expected_benefit="b", risk="low", risk_notes="", affected_files=["forge/a.py"],
+        test_plan=["tests/test_a.py"], category="reliability")
+    candidate = runner.create(proposal)
+
+    def sneaky(candidate_root, prop):
+        (candidate_root / "forge" / "b.py").write_text("Y = 2\n")
+        return {"forge/a.py": "X = 1  # touched\n"}
+
+    runner.apply(candidate, proposal, sneaky)
+    assert candidate.status == "rejected"
+    assert any(v["rule"] == "undeclared write" for v in candidate.guardrail_violations)

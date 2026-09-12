@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,55 +41,110 @@ KINDS = ("analysis", "proposal", "candidate", "decision", "pending", "applied",
          "rejected", "rollback", "iteration", "note")
 
 
+def _entry_hash(previous: str, body: dict[str, Any]) -> str:
+    core = {k: body[k] for k in ("seq", "kind", "at", "refs", "payload") if k in body}
+    return hashlib.sha256(
+        (previous + json.dumps(core, sort_keys=True, default=str)).encode("utf-8")
+    ).hexdigest()
+
+
 class ImprovementLedger:
+    """Append-only, hash-chained JSONL ledger.
+
+    Appends are O(1): the last sequence/hash is kept in memory (and
+    re-derived from the file tail on first use). Writes are serialized by
+    a process lock; when the active file exceeds ``MAX_ENTRIES`` it is
+    *rotated* to ``ledger.<n>.jsonl`` and the chain continues (the first
+    entry of the new file references the last hash of the rotated one), so
+    history is never truncated and the chain never breaks.
+    """
+
     def __init__(self, root: str | Path = ".", *, path: Path | None = None) -> None:
         self.root = Path(root).resolve()
         self.path = path or (self.root / ".forge" / "self_improvement" / "ledger.jsonl")
+        self._lock = threading.RLock()
+        self._tail: tuple[int, str] | None = None  # (seq, hash)
+        self._count: int | None = None
 
     # -- writing ----------------------------------------------------------------
 
-    def _last(self) -> dict[str, Any] | None:
+    def _load_tail(self) -> tuple[int, str]:
+        if self._tail is not None:
+            return self._tail
         entries = self.entries()
-        return entries[-1] if entries else None
+        self._count = len(entries)
+        if not entries:
+            # Active file empty/rotated: continue from the newest rotated file.
+            for path in reversed(self._rotated_paths()):
+                rows = self._read(path)
+                if rows:
+                    entries = rows
+                    break
+        if entries:
+            last = entries[-1]
+            self._tail = (int(last["seq"]), str(last["hash"]))
+        else:
+            self._tail = (0, "")
+        return self._tail
+
+    def _rotated_paths(self) -> list[Path]:
+        paths = []
+        index = 1
+        while True:
+            candidate = self.path.with_name(f"{self.path.stem}.{index}{self.path.suffix}")
+            if not candidate.exists():
+                break
+            paths.append(candidate)
+            index += 1
+        return paths
 
     def record(self, kind: str, payload: dict[str, Any], **refs: Any) -> dict[str, Any]:
         if kind not in KINDS:
             raise ValueError(f"unknown ledger kind {kind!r}; expected one of {KINDS}")
-        last = self._last()
-        seq = (int(last["seq"]) + 1) if last else 1
-        previous = str(last["hash"]) if last else ""
-        body = {
-            "seq": seq, "kind": kind, "at": time.time(),
-            "refs": {k: v for k, v in refs.items() if v},
-            "payload": _redact_keys(redact(payload)),
-        }
-        digest = hashlib.sha256(
-            (previous + json.dumps(body, sort_keys=True, default=str)).encode("utf-8")
-        ).hexdigest()
-        body["prev"] = previous
-        body["hash"] = digest
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(body, default=str) + "\n")
-        self._prune()
-        return body
+        with self._lock:
+            last_seq, previous = self._load_tail()
+            body = {
+                "seq": last_seq + 1, "kind": kind, "at": time.time(),
+                "refs": {k: v for k, v in refs.items() if v},
+                "payload": _redact_keys(redact(payload)),
+            }
+            body["prev"] = previous
+            body["hash"] = _entry_hash(previous, body)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(body, default=str) + "\n"
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._tail = (body["seq"], body["hash"])
+            self._count = (self._count or 0) + 1
+            if self._count > MAX_ENTRIES:
+                self._rotate()
+            return body
 
-    def _prune(self) -> None:
-        entries = self.entries()
-        if len(entries) <= MAX_ENTRIES:
-            return
-        keep = entries[-MAX_ENTRIES:]
-        with self.path.open("w", encoding="utf-8") as handle:
-            for entry in keep:
-                handle.write(json.dumps(entry, default=str) + "\n")
+    def _rotate(self) -> None:
+        index = 1
+        while (self.path.with_name(f"{self.path.stem}.{index}{self.path.suffix}")).exists():
+            index += 1
+        self.path.rename(self.path.with_name(f"{self.path.stem}.{index}{self.path.suffix}"))
+        self._count = 0
 
     # -- reading ----------------------------------------------------------------
 
     def entries(self, kind: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
-        if not self.path.is_file():
+        rows = self._read(self.path)
+        if kind is not None:
+            rows = [r for r in rows if r.get("kind") == kind]
+        if limit is not None:
+            rows = rows[-max(0, int(limit)):]
+        return rows
+
+    @staticmethod
+    def _read(path: Path) -> list[dict[str, Any]]:
+        if not path.is_file():
             return []
         rows: list[dict[str, Any]] = []
-        with self.path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:
@@ -96,21 +153,26 @@ class ImprovementLedger:
                     data = json.loads(line)
                 except ValueError:
                     continue
-                if kind is None or data.get("kind") == kind:
-                    rows.append(data)
-        if limit is not None:
-            rows = rows[-max(0, int(limit)):]
+                rows.append(data)
         return rows
 
     def verify_chain(self) -> tuple[bool, str]:
+        """Verify the whole chain: every rotated file in order, then the
+        active file. Any edit, deletion or reordering breaks it."""
         previous = ""
-        for entry in self.entries():
-            body = {k: entry[k] for k in ("seq", "kind", "at", "refs", "payload") if k in entry}
-            expected = hashlib.sha256(
-                (previous + json.dumps(body, sort_keys=True, default=str)).encode("utf-8")
-            ).hexdigest()
+        expected_seq: int | None = None
+        rows: list[dict[str, Any]] = []
+        for path in self._rotated_paths():
+            rows.extend(self._read(path))
+        rows.extend(self._read(self.path))
+        for entry in rows:
+            expected = _entry_hash(previous, entry)
             if entry.get("prev", "") != previous or entry.get("hash") != expected:
                 return False, f"chain broken at seq {entry.get('seq')}"
+            seq = int(entry.get("seq", 0))
+            if expected_seq is not None and seq != expected_seq:
+                return False, f"sequence gap at seq {seq}"
+            expected_seq = seq + 1
             previous = expected
         return True, "ok"
 

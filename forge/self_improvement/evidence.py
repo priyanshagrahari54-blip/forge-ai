@@ -66,20 +66,42 @@ _SUMMARY_RE = re.compile(
 _FAILED_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+([^\s]+)", re.M)
 
 
+_SUMMARY_LINE_RE = re.compile(
+    r"^(?:=+\s*)?((?:\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|"
+    r"deselected|warnings?|rerun)(?:,\s*)?)+)\s*in\s+[\d.]+s", re.M)
+
+
 def parse_pytest_output(output: str) -> dict[str, Any]:
-    """Extract counts and failing node ids from ``pytest -q`` output."""
-    passed = failed = errors = 0
-    for match in re.finditer(r"(\d+)\s+(passed|failed|error(?:s)?)\b", output):
-        count = int(match.group(1))
-        word = match.group(2)
-        if word == "passed":
-            passed = count
-        elif word == "failed":
-            failed = count
-        else:
-            errors = count
-    failing = _FAILED_LINE_RE.findall(output)
-    return {"passed": passed, "failed": failed, "errors": errors,
+    """Extract counts and failing node ids from ``pytest`` output.
+
+    Counts are taken from pytest's final summary line only (never from
+    test names or captured output). The last summary line wins so wrapped
+    or nested runs cannot inflate the numbers.
+    """
+    passed = failed = errors = skipped = 0
+    summary_found = False
+    for match in _SUMMARY_LINE_RE.finditer(output or ""):
+        summary_found = True
+        passed = failed = errors = skipped = 0
+        for count_text, word in re.findall(r"(\d+)\s+(passed|failed|errors?|skipped)",
+                                           match.group(1)):
+            count = int(count_text)
+            if word == "passed":
+                passed = count
+            elif word == "failed":
+                failed = count
+            elif word == "skipped":
+                skipped = count
+            else:
+                errors = count
+    failing = []
+    seen: set[str] = set()
+    for node in _FAILED_LINE_RE.findall(output or ""):
+        if node not in seen:
+            seen.add(node)
+            failing.append(node)
+    return {"passed": passed, "failed": failed, "errors": errors, "skipped": skipped,
+            "summary_found": summary_found,
             "failing_tests": failing[:MAX_ITEMS_PER_KIND]}
 
 
@@ -129,6 +151,10 @@ class EvidenceCollector:
                       {"duration_seconds": float(duration_seconds),
                        "passed": parsed["passed"]})
 
+    def from_failure_text(self, source: str, text: str) -> None:
+        """A single observed failure (e.g. the test command not running)."""
+        self._add(EvidenceKind.FAILURE, source, _clip(text), {"error": _clip(text)})
+
     def from_failure_ledger(self, ledger: Any, *, limit: int = 20) -> None:
         """A59 failure ledger: recurring fingerprints become evidence."""
         if ledger is None:
@@ -156,9 +182,17 @@ class EvidenceCollector:
         """A34 run records: failed runs, rollbacks, slow executions."""
         rows = list(runs)
         durations: list[float] = []
+        queue_waits: list[float] = []
+        queued_now = 0
         for run in rows:
             status = str(getattr(run, "status", ""))
             status = status.split(".")[-1]
+            if status == "QUEUED":
+                queued_now += 1
+            created = getattr(run, "created_at", None)
+            started_at = getattr(run, "started_at", None)
+            if created and started_at and started_at >= created:
+                queue_waits.append(float(started_at - created))
             error = _clip(getattr(run, "error", ""))
             if status in ("FAILED", "ROLLED_BACK"):
                 self._add(EvidenceKind.FAILURE, "run_store",
@@ -191,12 +225,31 @@ class EvidenceCollector:
                       {"count": len(ordered), "mean_seconds": round(mean, 3),
                        "p95_seconds": round(p95, 3),
                        "max_seconds": round(ordered[-1], 3)})
+        if queue_waits:
+            ordered = sorted(queue_waits)
+            p95 = ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))]
+            if p95 >= 30.0:
+                self._add(EvidenceKind.RESOURCE_BOTTLENECK, "run_store",
+                          f"runs waited p95 {p95:.0f}s in the queue before starting",
+                          {"count": len(ordered), "p95_queue_seconds": round(p95, 3)})
+        if queued_now >= 5:
+            self._add(EvidenceKind.RESOURCE_BOTTLENECK, "run_store",
+                      f"{queued_now} runs currently queued and not started",
+                      {"queued_runs": queued_now})
 
-    def from_router_history(self, history: Iterable[dict[str, Any]]) -> None:
-        """Model fabric routing feedback: per-model success/latency, fallbacks."""
+    def from_router_history(self, history: Iterable[dict[str, Any]], *,
+                            route_events: Iterable[dict[str, Any]] | None = None,
+                            latency_unit: str = "ms") -> None:
+        """Model fabric feedback: per-model success/latency, plus fallbacks.
+
+        ``history`` is the fabric router's feedback list (latency in **ms**;
+        pass ``latency_unit="s"`` for the legacy ``ModelRouter`` whose
+        history stores seconds). ``route_events`` are the fabric telemetry
+        ``route`` events — the only place fallback decisions are recorded.
+        """
         per_model: dict[str, dict[str, Any]] = {}
-        events = list(history or [])
-        for event in events:
+        scale = 1000.0 if latency_unit == "s" else 1.0
+        for event in list(history or []):
             if not isinstance(event, dict):
                 continue
             name = str(event.get("model", "") or "unknown")
@@ -208,16 +261,29 @@ class EvidenceCollector:
                 stats["failures"] += 1
                 if event.get("error"):
                     stats["errors"].append(_clip(event.get("error")))
-            latency = event.get("latency")
+            latency = event.get("latency", event.get("latency_ms"))
             if isinstance(latency, (int, float)) and latency > 0:
-                stats["latency_total"] += float(latency)
+                stats["latency_total"] += float(latency) * scale
                 stats["latency_count"] += 1
-            if event.get("fallback") or event.get("fallback_reason"):
-                self._add(EvidenceKind.ROUTING_MISTAKE, "model_router",
-                          f"routing fell back for {name}: {event.get('fallback_reason', 'fallback')}",
-                          {"model": name,
-                           "fallback_reason": _clip(event.get("fallback_reason", "")),
-                           "capability": event.get("capability", "")})
+        fallbacks: dict[str, dict[str, Any]] = {}
+        for event in list(route_events or []):
+            if not isinstance(event, dict) or not (event.get("fallback") or event.get("error")):
+                continue
+            reason = _clip(event.get("fallback_reason") or event.get("error") or "fallback")
+            key = f"{event.get('capability', '')}|{reason}"
+            entry = fallbacks.setdefault(key, {"count": 0, "models": set(),
+                                               "capability": event.get("capability", ""),
+                                               "reason": reason})
+            entry["count"] += 1
+            if event.get("model"):
+                entry["models"].add(str(event["model"]))
+        for entry in fallbacks.values():
+            self._add(EvidenceKind.ROUTING_MISTAKE, "model_router",
+                      f"routing fell back x{entry['count']} for capability "
+                      f"{entry['capability'] or '?'}: {entry['reason']}",
+                      {"capability": entry["capability"], "count": entry["count"],
+                       "fallback_reason": entry["reason"],
+                       "models": sorted(entry["models"])})
         for name, stats in sorted(per_model.items()):
             calls = stats["calls"]
             failures = stats["failures"]
@@ -253,18 +319,36 @@ class EvidenceCollector:
                        "elapsed_ms": entry.get("elapsed_ms")})
 
     def from_metrics(self, snapshot: dict[str, Any] | None, *,
-                     slow_ms: float = 5000.0) -> None:
-        """A62 metrics snapshot: slow phases and saturation gauges."""
+                     slow_seconds: float = 120.0) -> None:
+        """A62 metrics snapshot: slow phases, failure ratios, saturation.
+
+        The plane's ``MetricsRegistry.observe`` takes **seconds** and its
+        snapshot reports ``*_ms`` fields computed from them, so thresholds
+        here are expressed in seconds and converted once.
+        """
         if not isinstance(snapshot, dict):
             return
+        slow_ms = slow_seconds * 1000.0
         for name, stats in (snapshot.get("latencies") or {}).items():
             if not isinstance(stats, dict):
                 continue
             p95 = float(stats.get("p95_ms", 0.0) or 0.0)
-            if p95 >= slow_ms:
+            count = int(stats.get("count", 0) or 0)
+            if count >= 3 and p95 >= slow_ms:
                 self._add(EvidenceKind.LATENCY, "metrics",
-                          f"{name} p95 {p95:.0f}ms over {stats.get('count', 0)} samples",
+                          f"{name} p95 {p95 / 1000.0:.1f}s over {count} samples",
                           {"metric": name, **stats})
+        counters = snapshot.get("counters") or {}
+        for prefix, label in (("runs", "task runs"), ("agent_runs", "agent runs")):
+            ok = int(counters.get(f"{prefix}.succeeded", 0) or 0)
+            bad = int(counters.get(f"{prefix}.failed", 0) or 0)
+            total = ok + bad
+            if total >= 3 and bad / total >= 0.5:
+                kind = (EvidenceKind.AGENT_FAILURE if prefix == "agent_runs"
+                        else EvidenceKind.REPEATED_ERROR)
+                self._add(kind, "metrics",
+                          f"{label}: {bad}/{total} failed ({bad / total:.0%}) this plane lifetime",
+                          {"succeeded": ok, "failed": bad, "failure_rate": round(bad / total, 4)})
         gauges = snapshot.get("gauges") or {}
         active = int(gauges.get("active_runs", 0) or 0)
         workers = int(gauges.get("max_workers", 0) or 0)
@@ -272,13 +356,11 @@ class EvidenceCollector:
             self._add(EvidenceKind.RESOURCE_BOTTLENECK, "metrics",
                       f"worker pool saturated: {active} active runs / {workers} workers",
                       {"active_runs": active, "max_workers": workers})
-        counters = snapshot.get("counters") or {}
-        queued = int(counters.get("tasks_queued", 0) or 0)
-        started = int(counters.get("tasks_started", 0) or 0)
-        if queued - started >= 5:
+        queued = int(gauges.get("queued_runs", 0) or 0)
+        if queued >= 5:
             self._add(EvidenceKind.RESOURCE_BOTTLENECK, "metrics",
-                      f"queue backlog: {queued - started} tasks queued but not started",
-                      {"queued": queued, "started": started})
+                      f"queue backlog: {queued} runs queued and not started",
+                      {"queued_runs": queued, "active_runs": active, "max_workers": workers})
 
     def from_self_history(self, history_dir: Path | None = None) -> None:
         """Earlier A26-A30 self-development runs: repeated rejections."""

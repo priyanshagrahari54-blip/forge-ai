@@ -249,12 +249,22 @@ class SelfImprovementEngine:
         known = [e.id for e in (report or self.last_report).evidence] if (report or self.last_report) else None
         problems = validate_proposal(proposal, known, self.guardrails)
         if problems:
-            raise GuardrailViolation([{"rule": "inadmissible proposal", "detail": p} for p in problems])
+            violations = [{"rule": "inadmissible proposal", "detail": p} for p in problems]
+            self.ledger.record("rejected", {"reasons": problems, "failed_gates": ["admissibility"],
+                                            "weakness_id": proposal.weakness_id,
+                                            "changed_files": []},
+                               proposal_id=proposal.id)
+            raise GuardrailViolation(violations)
         candidate = self.runner.create(proposal)
         self.ledger.record("candidate", {"status": "created", "root": candidate.root},
                            candidate_id=candidate.id, proposal_id=proposal.id)
         try:
-            self.runner.apply(candidate, proposal, self.producer())
+            try:
+                self.runner.apply(candidate, proposal, self.producer())
+            except GuardrailViolation as exc:
+                candidate.status = "rejected"
+                candidate.guardrail_violations = list(getattr(exc, "violations", []) or
+                                                      [{"rule": "guardrail", "detail": str(exc)}])
             if candidate.status == "applied":
                 self.runner.evaluate(candidate, proposal, targets=targets, metric_probe=metric_probe)
             if approval is None and self.approval_resolver is not None and candidate.status in ("evaluated", "regressed"):

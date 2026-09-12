@@ -4463,6 +4463,10 @@ class ControlPlane:
         except Exception:
             pass
         try:
+            kwargs["route_events"] = list(self.fabric.telemetry.events("route"))[-500:]
+        except Exception:
+            pass
+        try:
             kwargs["agent_runs"] = list(
                 getattr(self, "_agent_run_logs", {}).get(session.id, []))
         except Exception:
@@ -4499,16 +4503,40 @@ class ControlPlane:
         if iterations < 1 or iterations > HARD_MAX_ITERATIONS:
             raise InvalidRequest(f"iterations must be 1-{HARD_MAX_ITERATIONS}")
         engine = self._self_improvement_engine(session)
-        kwargs = self._self_improvement_evidence_kwargs(session)
-        kwargs["run_tests"] = bool(run_tests)
-        results = engine.run(max_iterations=iterations, targets=targets,
-                             collect_kwargs=kwargs)
+        lock = self._self_improvement_lock(engine)
+        if not lock.acquire(blocking=False):
+            raise InvalidRequest("a self-improvement run is already in progress for this project")
+        try:
+            kwargs = self._self_improvement_evidence_kwargs(session)
+            kwargs["run_tests"] = bool(run_tests)
+            results = engine.run(max_iterations=iterations, targets=targets,
+                                 collect_kwargs=kwargs)
+        finally:
+            lock.release()
         self._audit(session.actor, "self_improvement", "run", True,
                     task_id=session.active_task or session.id,
                     reason=f"iterations={len(results)} "
                            f"accepted={sum(1 for r in results if r.accepted)}")
         return redact({"results": [r.to_dict() for r in results],
                        "status": engine.status().to_dict()})
+
+    def _self_improvement_lock(self, engine: Any) -> threading.Lock:
+        locks = getattr(self, "_self_improvement_locks", None)
+        if locks is None:
+            locks = self._self_improvement_locks = {}
+        key = id(engine)
+        if key not in locks:
+            locks[key] = threading.Lock()
+        return locks[key]
+
+    def _self_improvement_approval_store(self) -> dict[tuple[str, str], Any]:
+        if not hasattr(self, "_self_improvement_approvals"):
+            self._self_improvement_approvals: dict[tuple[str, str], Any] = {}
+        store = self._self_improvement_approvals
+        # Sweep expired approvals so a stale approval can never be consumed.
+        for key in [k for k, a in store.items() if getattr(a, "expired", False)]:
+            store.pop(key, None)
+        return store
 
     def self_improvement_dashboard(self, session: Session) -> dict[str, Any]:
         engine = self._self_improvement_engine(session)
@@ -4528,10 +4556,8 @@ class ControlPlane:
             raise NotFound(str(exc)) from exc
         except PermissionError as exc:
             raise PolicyDenied(str(exc)) from exc
-        if not hasattr(self, "_self_improvement_approvals"):
-            self._self_improvement_approvals: dict[tuple[str, str], Any] = {}
-        # Approvals are session-bound and single-use (consumed by apply).
-        self._self_improvement_approvals[(session.id, candidate_id)] = approval
+        # Approvals are session-bound, time-limited and single-use (consumed by apply).
+        self._self_improvement_approval_store()[(session.id, candidate_id)] = approval
         self._audit(session.actor, "self_improvement", "approve",
                     decision.accepted, task_id=session.active_task or session.id,
                     reason=f"{candidate_id} accepted={decision.accepted}")
@@ -4544,11 +4570,12 @@ class ControlPlane:
 
         if session.profile in ("safe", "locked"):
             raise PolicyDenied(f"profile {session.profile!r} cannot apply changes")
-        approvals = getattr(self, "_self_improvement_approvals", {})
+        approvals = self._self_improvement_approval_store()
         approval = approvals.get((session.id, candidate_id))
         if approval is None:
             raise ApprovalRequired(
-                "approve this candidate in this session before applying it")
+                "approve this candidate in this session before applying it "
+                "(approvals expire after one hour)")
         engine = self._self_improvement_engine(session)
         try:
             result = engine.apply_accepted(candidate_id, approval)

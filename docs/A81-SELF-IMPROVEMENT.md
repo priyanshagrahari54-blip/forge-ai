@@ -199,5 +199,39 @@ validation/404s, discard, live evidence sources, cockpit view hooks, and
 the production model producer routing through the Fabric inside the
 isolated candidate.
 
-A81 result: **36 new tests; full suite 1859 passed, 3 skipped** (baseline
+A81 result: **41 new tests; full suite 1864 passed, 3 skipped** (baseline
 before A81: 1823 passed, 3 skipped).
+
+## Hardening pass (no fake measurements)
+
+Every measurement the loop acts on is backed by a real source, and every
+gate fails closed:
+
+- **Evidence.** `parse_pytest_output` trusts only the pytest summary line
+  (`N passed, M failed …`) and reports `summary_found`; routing mistakes come
+  from the model fabric's telemetry `route` events (`fallback`,
+  `fallback_reason`), not synthesized; `from_metrics` reads the counters the
+  control plane really emits (`runs.*`, `agent_runs.*`) plus
+  `active_runs/max_workers/queued_runs` gauges, with latencies in seconds;
+  queue-wait p95 and queue depth are bottleneck signals; a test command that
+  cannot run is recorded as a failure, never as "0 failing tests".
+- **Candidates.** rc 5 (no tests collected) is not a pass; a run without a
+  summary line, a timeout, a drop in collected tests, or a rise in skips is
+  a regression; improvement is counted only when *failures fall* (pass-count
+  inflation is not rewarded); tests-only changes are rejected; the producer
+  is snapshot-diffed and any undeclared write inside the candidate tree is
+  rejected; test subprocesses run hermetically (own `PYTHONPATH`, no
+  bytecode, no inherited `FORGE_DB_PATH`) under a hard timeout; the baseline
+  is computed once per source digest.
+- **Guardrails.** new rules: *test weakening* (`pytest.skip/xfail`,
+  `assert True`, removed assertions in test files, `sys.exit(0)`), *network
+  egress* imports, `ctypes`/`marshal`, environment tampering; security-control
+  removal is whole-word and counts references.
+- **Ledger.** O(1) appends with an in-memory chain head, `fsync`, a process
+  lock, and rotation instead of truncation, so `verify_chain` covers the
+  whole history (rotated files included) and detects tampering or gaps.
+  Inadmissible proposals are ledgered as rejections too.
+- **Rollback / apply.** atomic per-file writes, symlink and path-escape
+  refusal, and automatic restore if an apply fails part-way.
+- **Control plane.** one self-improvement run at a time per project;
+  approvals are session-bound, single-use and swept after their 1 h TTL.

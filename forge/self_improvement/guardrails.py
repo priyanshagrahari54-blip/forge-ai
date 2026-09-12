@@ -88,7 +88,19 @@ FORBIDDEN_CONTENT_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("credential material",
      re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}")),
     ("dangerous execution",
-     re.compile(r"\b(?:eval|exec)\s*\(|\bos\.system\s*\(|shell\s*=\s*True")),
+     re.compile(r"\b(?:eval|exec)\s*\(|\bos\.system\s*\(|\bos\.popen\s*\(|shell\s*=\s*True")),
+    ("dangerous execution",
+     re.compile(r"^\s*(?:import|from)\s+(?:ctypes|marshal)\b", re.M)),
+    ("network egress",
+     re.compile(r"^\s*(?:import|from)\s+(?:socket|urllib\.request|http\.client|requests|httpx)\b", re.M)),
+    ("test weakening",
+     re.compile(r"\bpytest\.(?:skip|xfail)\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)\b")),
+    ("test weakening",
+     re.compile(r"^\s*assert\s+(?:True|1)\s*(?:#.*)?$", re.M)),
+    ("test weakening",
+     re.compile(r"^\s*(?:sys\.exit|os\._exit)\s*\(\s*0\s*\)", re.M)),
+    ("environment tampering",
+     re.compile(r"os\.environ\s*\[\s*[\"'](?:FORGE_|OPENAI_|OLLAMA_)")),
 )
 
 #: Identifiers whose *removal* from a file is treated as removing a security
@@ -204,10 +216,22 @@ class Guardrails:
                                "detail": match.group(0)[:80]})
         if original:
             for token in SECURITY_CONTROL_TOKENS:
-                if token in original and token not in text:
+                pattern = re.compile(r"\b" + re.escape(token) + r"\b")
+                before = len(pattern.findall(original))
+                after = len(pattern.findall(text))
+                if before and after < before:
                     violations.append({
                         "rule": "security control removed",
-                        "path": normalize_path(path), "detail": token})
+                        "path": normalize_path(path),
+                        "detail": f"{token} ({before} -> {after} references)"})
+            # Deleting assertions from a test file weakens verification.
+            is_test = "/tests/" in "/" + normalize_path(path) or normalize_path(path).split("/")[-1].startswith("test_")
+            if is_test:
+                before_asserts = len(re.findall(r"^\s*assert\b", original, re.M))
+                after_asserts = len(re.findall(r"^\s*assert\b", text, re.M))
+                if after_asserts < before_asserts:
+                    violations.append({"rule": "test weakening", "path": normalize_path(path),
+                                       "detail": f"assertions {before_asserts} -> {after_asserts}"})
         return violations
 
     # -- combined -------------------------------------------------------------
@@ -238,7 +262,8 @@ class Guardrails:
         return {
             "protected_paths": list(PROTECTED_PATHS),
             "credential_name_tokens": list(CREDENTIAL_NAME_TOKENS),
-            "forbidden_content_rules": sorted({rule for rule, _ in FORBIDDEN_CONTENT_PATTERNS}),
+            "forbidden_content_rules": sorted({rule for rule, _ in FORBIDDEN_CONTENT_PATTERNS}
+                                              | {"security control removed", "undeclared write"}),
             "security_control_tokens": list(SECURITY_CONTROL_TOKENS),
             "invariants": [
                 "never remove its own security controls",

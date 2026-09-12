@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -55,10 +56,21 @@ class TestOutcome:
     duration_seconds: float
     output_tail: str
     failing_tests: list[str] = field(default_factory=list)
+    skipped: int = 0
+    #: True when pytest printed a final summary line (a crash/timeout does not).
+    summary_found: bool = True
+    #: True when the process was killed by the timeout.
+    timed_out: bool = False
+
+    @property
+    def collected(self) -> int:
+        return self.passed + self.failed + self.errors + self.skipped
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 or (self.returncode == 5 and self.failed == 0)
+        """Green run: exit 0 with a real summary. Exit 5 (nothing collected)
+        is *not* success — a change that breaks collection must not pass."""
+        return self.returncode == 0 and self.summary_found and not self.timed_out
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -127,6 +139,23 @@ class CandidateComparison:
         return data
 
 
+def _tree_digest(root: Path) -> dict[str, str]:
+    """Hash every application file under ``root`` (used to detect writes a
+    change producer made outside the declared set)."""
+    digests: dict[str, str] = {}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if is_excluded(rel.parts):
+            continue
+        try:
+            digests[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return digests
+
+
 def _copy_repo(source: Path, destination: Path) -> None:
     """Copy application content only (no runtime state, caches, venvs)."""
 
@@ -155,7 +184,11 @@ class CandidateRunner:
         self.workspace = workspace
         self.test_timeout = int(test_timeout)
         self.test_args = list(test_args) if test_args is not None else ["-q", "-p", "no:cacheprovider"]
-        self._baseline_cache: tuple[Path, TestOutcome, bool] | None = None
+        #: Baseline test outcomes keyed by (tree digest, targets); the
+        #: baseline copy is identical for every candidate of one source tree,
+        #: so measuring it once per tree state is exact, not approximate.
+        self._baseline_cache: dict[tuple[str, tuple[str, ...]], TestOutcome] = {}
+        self._source_digest: str | None = None
 
     # -- isolation ------------------------------------------------------------
 
@@ -170,6 +203,8 @@ class CandidateRunner:
         candidate_root = self._new_dir("forge-candidate-")
         _copy_repo(self.root, baseline_root)
         _copy_repo(self.root, candidate_root)
+        self._source_digest = hashlib.sha256(
+            json.dumps(_tree_digest(baseline_root), sort_keys=True).encode("utf-8")).hexdigest()
         ident = "CAND-" + hashlib.sha256(
             f"{proposal.id}|{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
         return Candidate(id=ident, proposal_id=proposal.id, root=str(candidate_root),
@@ -185,6 +220,7 @@ class CandidateRunner:
               producer: ChangeProducer) -> Candidate:
         """Ask ``producer`` for changes and write them *inside the candidate*."""
         root = Path(candidate.root)
+        before_tree = _tree_digest(root)
         try:
             changes = producer(root, proposal)
         except GuardrailViolation as exc:
@@ -195,6 +231,22 @@ class CandidateRunner:
         except Exception as exc:  # producer failure is a candidate failure
             candidate.status = "failed"
             candidate.error = f"change producer failed: {exc}"
+            return candidate
+        # A producer may write into the candidate directly (the model path
+        # does, through CoderAgent). Every such write must be declared and
+        # returned; silent side-writes are a rejection, and the candidate is
+        # restored to its pre-producer state so nothing hidden is tested.
+        after_tree = _tree_digest(root)
+        side_writes = sorted(
+            path for path in set(before_tree) | set(after_tree)
+            if before_tree.get(path) != after_tree.get(path)
+            and normalize_path(path) not in {normalize_path(str(k)) for k in (changes or {})})
+        if side_writes:
+            candidate.status = "rejected"
+            candidate.error = ("change producer wrote undeclared files: "
+                               + ", ".join(side_writes[:5]))
+            candidate.guardrail_violations = [
+                {"rule": "undeclared write", "path": p} for p in side_writes[:20]]
             return candidate
         if not isinstance(changes, dict) or not changes:
             candidate.status = "failed"
@@ -224,8 +276,9 @@ class CandidateRunner:
             candidate.error = "candidate touched undeclared files: " + ", ".join(undeclared[:5])
             return candidate
         originals: dict[str, str | None] = {}
+        base_root = Path(candidate.baseline_root)
         for path in normalized:
-            target = root / path
+            target = base_root / path  # pristine copy, untouched by the producer
             if target.is_file():
                 try:
                     originals[path] = target.read_text(encoding="utf-8")
@@ -233,6 +286,10 @@ class CandidateRunner:
                     originals[path] = None
             else:
                 originals[path] = None
+        if all(p.startswith("tests/") or "/tests/" in p for p in normalized):
+            candidate.status = "rejected"
+            candidate.error = "candidate only changes tests; improvements must change behavior"
+            return candidate
         violations = self.guardrails.check_changes(normalized, originals)
         if violations:
             candidate.status = "rejected"
@@ -268,10 +325,18 @@ class CandidateRunner:
 
     def _run(self, command: list[str], cwd: Path, timeout: int) -> tuple[int | None, str, float]:
         started = time.perf_counter()
+        env = dict(os.environ)
+        # Keep candidate runs hermetic: no user site-packages surprises, no
+        # bytecode written into the copy, and never inherit a live Forge root.
+        env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+                    "PYTHONPATH": str(cwd)})
+        env.pop("FORGE_DB_PATH", None)
         try:
             process = subprocess.run(command, cwd=cwd, text=True, capture_output=True,
-                                     timeout=timeout, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+                                     timeout=timeout, check=False, env=env)
+        except subprocess.TimeoutExpired as exc:
+            return None, f"TIMEOUT after {timeout}s: {exc}", time.perf_counter() - started
+        except OSError as exc:
             return None, str(exc), time.perf_counter() - started
         return process.returncode, process.stdout + process.stderr, time.perf_counter() - started
 
@@ -284,7 +349,20 @@ class CandidateRunner:
         return TestOutcome(command=command, returncode=code, passed=parsed["passed"],
                            failed=parsed["failed"], errors=parsed["errors"],
                            duration_seconds=round(duration, 3), output_tail=output[-4000:],
-                           failing_tests=parsed["failing_tests"])
+                           failing_tests=parsed["failing_tests"], skipped=parsed["skipped"],
+                           summary_found=parsed["summary_found"],
+                           timed_out=code is None and output.startswith("TIMEOUT"))
+
+    def baseline_tests(self, root: Path, targets: Iterable[str] | None = None) -> TestOutcome:
+        """Baseline outcome, measured once per source-tree state."""
+        key = (self._source_digest or "", tuple(sorted(targets or [])))
+        cached = self._baseline_cache.get(key)
+        if cached is not None:
+            return cached
+        outcome = self.run_tests(root, targets)
+        if self._source_digest:
+            self._baseline_cache[key] = outcome
+        return outcome
 
     def run_build(self, root: Path) -> bool:
         code, _output, _duration = self._run(
@@ -317,8 +395,8 @@ class CandidateRunner:
             new_cycles = [c for c in after if tuple(sorted(c)) not in before_set]
             for cycle in new_cycles[:5]:
                 issues.append("new dependency cycle: " + " -> ".join(cycle))
-        except Exception as exc:  # intelligence unavailable: record, do not pass silently
-            issues.append(f"dependency analysis unavailable: {exc}")
+        except Exception as exc:  # fail closed: an unverifiable architecture is not clean
+            issues.append(f"dependency analysis unavailable (fail-closed): {exc}")
         dangerous = re.compile(r"^\s*(?:import|from)\s+(?:ctypes|pickle|marshal|socket)\b", re.M)
         for path in changed_list:
             target = candidate_root / path
@@ -339,8 +417,7 @@ class CandidateRunner:
         return {"passed": not issues, "issues": issues}
 
     def baseline(self, candidate: Candidate, targets: Iterable[str] | None = None) -> TestOutcome:
-        root = Path(candidate.baseline_root)
-        outcome = self.run_tests(root, targets)
+        outcome = self.baseline_tests(Path(candidate.baseline_root), targets)
         candidate.baseline_tests = outcome
         return outcome
 
@@ -354,7 +431,7 @@ class CandidateRunner:
         base_root = Path(candidate.baseline_root)
         target_list = list(targets or [])
         candidate.status = "testing"
-        candidate.baseline_tests = candidate.baseline_tests or self.run_tests(base_root, target_list or None)
+        candidate.baseline_tests = candidate.baseline_tests or self.baseline_tests(base_root, target_list or None)
         candidate.tests = self.run_tests(root, target_list or None)
         candidate.build_ok = self.run_build(root)
         candidate.security = self.run_security(root, candidate.changes)
@@ -378,18 +455,33 @@ class CandidateRunner:
         assert base is not None and cand is not None
         regressions: list[str] = []
         improvements: list[str] = []
+        if cand.timed_out:
+            regressions.append("tests: candidate run timed out")
+        if not cand.summary_found:
+            regressions.append("tests: candidate run produced no pytest summary (crash?)")
+        if cand.returncode in (2, 3, 4):
+            regressions.append(f"tests: pytest exited {cand.returncode} (interrupted/internal/usage error)")
         if not cand.ok and base.ok:
             regressions.append(f"tests: candidate failed ({cand.failed} failed, "
                                f"{cand.errors} errors) while baseline passed")
+        if base.collected and cand.collected < base.collected:
+            regressions.append(f"tests: collected count fell {base.collected} -> {cand.collected} "
+                               "(tests lost or collection broken)")
         if cand.passed < base.passed:
             regressions.append(f"tests: passed count fell {base.passed} -> {cand.passed}")
+        if cand.skipped > base.skipped:
+            regressions.append(f"tests: skips rose {base.skipped} -> {cand.skipped}")
         new_failures = sorted(set(cand.failing_tests) - set(base.failing_tests))
         if new_failures:
             regressions.append("tests: new failures " + ", ".join(new_failures[:5]))
-        if cand.failed < base.failed:
-            improvements.append(f"tests: failures fell {base.failed} -> {cand.failed}")
-        if cand.passed > base.passed:
-            improvements.append(f"tests: passed rose {base.passed} -> {cand.passed}")
+        base_bad = base.failed + base.errors
+        cand_bad = cand.failed + cand.errors
+        fixed = sorted(set(base.failing_tests) - set(cand.failing_tests))
+        if cand_bad < base_bad and cand.collected >= base.collected:
+            improvements.append(f"tests: failures fell {base_bad} -> {cand_bad}"
+                                + (" (" + ", ".join(fixed[:3]) + ")" if fixed else ""))
+        # A higher pass count alone is *not* an improvement: a candidate could
+        # add trivial tests. Only fewer failures or a metric probe count.
         if candidate.build_ok is False:
             regressions.append("build: compileall failed")
         if candidate.security and not candidate.security.get("passed", False):
@@ -412,10 +504,10 @@ class CandidateRunner:
             elif improvement > 0:
                 improvements.append(f"{metric}: improved {baseline_value} -> {candidate_value}")
         else:
-            failure_delta = (base.failed + base.errors) - (cand.failed + cand.errors)
-            improvement = float(failure_delta)
-            if failure_delta > 0:
-                pct = round(failure_delta / max(1, base.failed + base.errors) * 100.0, 2)
+            failure_delta = base_bad - cand_bad
+            improvement = float(failure_delta) if cand.collected >= base.collected else 0.0
+            if improvement > 0:
+                pct = round(failure_delta / max(1, base_bad) * 100.0, 2)
         return CandidateComparison(
             baseline_passed=base.passed, candidate_passed=cand.passed,
             baseline_failed=base.failed + base.errors, candidate_failed=cand.failed + cand.errors,
@@ -458,12 +550,15 @@ def model_change_producer(fabric: Any = None, router: Any = None) -> ChangeProdu
         if not response.success:
             raise RuntimeError(response.error or "model coding failed")
         changes: dict[str, str] = {}
-        for path in response.metadata.get("files", []):
+        for path in sorted(set(response.metadata.get("files", [])) | set(before)):
+            path = normalize_path(str(path))
             target = candidate_root / path
             if target.is_file():
                 text = target.read_text(encoding="utf-8")
                 if before.get(path) != text:
                     changes[path] = text
+            elif before.get(path) is not None:
+                raise RuntimeError(f"model deleted {path}; deletions are not permitted")
         return changes
 
     return produce
