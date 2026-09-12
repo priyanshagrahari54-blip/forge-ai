@@ -95,8 +95,17 @@ def test_model_repair_fixes_and_stops_after_green_retest(tmp_path):
 
 def test_persistent_failure_burns_exactly_the_retry_budget(tmp_path):
     write_repo(tmp_path, calc=CALC_BROKEN)
-    provider = ScriptedProvider(lambda prompt: changes_text(
-        {"calc.py": "def add(a, b):\n    return a * b\n"}))
+    attempts = {"n": 0}
+
+    def responder(prompt):
+        # Distinct (but still failing) proposals each cycle, so the loop
+        # exercises the full retry budget rather than the no-progress guard.
+        attempts["n"] += 1
+        return changes_text({"calc.py":
+                             "# attempt %d\ndef add(a, b):\n"
+                             "    return a - b\n" % attempts["n"]})
+
+    provider = ScriptedProvider(responder)
     engine, loop = loop_for(tmp_path, responder=provider, retries=2)
     result = loop.run("fix calc.py", test_paths=["test_calc.py"],
                        approved=True)
@@ -105,6 +114,27 @@ def test_persistent_failure_burns_exactly_the_retry_budget(tmp_path):
     assert result.stopped_reason == "retry_bound_reached"
     assert len(provider.calls) == 2  # bounded: never more than max_retries
     assert all(cycle.retest["passed"] is False for cycle in result.cycles)
+    # Repairs really touched the repo (and the loop reported it honestly).
+    assert result.changed_files == ["calc.py"]
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8").startswith(
+        "# attempt 2")
+
+
+def test_repeated_identical_repairs_stop_the_loop_early(tmp_path):
+    write_repo(tmp_path, calc=CALC_BROKEN)
+    provider = ScriptedProvider(lambda prompt: changes_text(
+        {"calc.py": "def add(a, b):\n    return a * b\n"}))
+    engine, loop = loop_for(tmp_path, responder=provider, retries=3)
+    result = loop.run("fix calc.py", test_paths=["test_calc.py"],
+                       approved=True)
+    assert not result.success
+    # cycle 2 is a stopped, apply-less cycle: byte-identical re-proposal
+    assert len(result.cycles) == 2
+    assert result.cycles[1].stopped and not result.cycles[1].apply
+    assert result.stopped_reason == "no_progress"
+    # cycle 1 applied + retested; cycle 2 asked once, then stopped pre-apply
+    assert len(provider.calls) == 2
+    assert result.changed_files == ["calc.py"]
 
 
 def test_invalid_model_repairs_are_rejected_before_writing(tmp_path):

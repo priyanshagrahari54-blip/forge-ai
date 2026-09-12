@@ -444,7 +444,8 @@ def _run_native_ai_run(args) -> int:
         if probe.get("has_edit_step"):
             message = (
                 "Assisted mode needs an approver for every write and "
-                "`forge native-ai` cannot prompt for approval.\n"
+                "this non-interactive command cannot prompt for "
+                "approval.\n"
                 "Re-run with --approve (pre-approves writes; DENY still "
                 "blocks them), use --mode autonomous, or approve in the "
                 "desktop/cockpit app.")
@@ -505,6 +506,77 @@ def _run_native_ai_run(args) -> int:
             print("  hint: " + describe_no_model_error(fabric=fabric)
                   .replace("\n", " ")[:300])
     return _native_exit_code(result.final_status)
+
+
+def _run_native_ai_plan(args) -> int:
+    """`forge native-ai plan "<task>"` — the planner's answer, no execution."""
+    engine = _build_native_engine(args, fabric=None)
+    out = engine.run_probe_plan(args.requirement, full=True)
+    if not out.get("ok"):
+        if getattr(args, "json", False):
+            print(json.dumps(out, indent=2))
+        else:
+            print("planner refused: %s" % out.get("error"), file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+        return 0
+    plan = out.get("plan") or {}
+    print(f"Native AI plan: {out.get('task_class')} "
+          f"({out.get('confidence')} confidence)")
+    print(f"  grounding: {len(plan.get('matched_files') or [])} file match,"
+          f" {len(plan.get('matched_symbols') or [])} symbol match")
+    for step in plan.get("steps") or []:
+        flag = "  [needs model]" if step.get("requires_neural") else ""
+        print(f"  - {step.get('kind')}: {step.get('description')}{flag}")
+        if step.get("target_files"):
+            print(f"      files: {', '.join(step['target_files'][:6])}")
+        if step.get("test_targets"):
+            print(f"      tests: {', '.join(step['test_targets'][:6])}")
+    unresolved = plan.get("unresolved_references") or []
+    if unresolved:
+        print(f"  unresolved references: {', '.join(unresolved[:8])}")
+    for note in plan.get("notes") or []:
+        print(f"  note: {note}")
+    print("  (plan only — nothing was executed)")
+    return 0
+
+
+def _run_native_ai_history(args) -> int:
+    """`forge native-ai history` — persisted run records, newest first."""
+    from forge.native.engine import list_run_records, read_run_record
+
+    root = getattr(args, "root", ".") or "."
+    run_id = getattr(args, "run", "") or ""
+    if run_id:
+        record = read_run_record(root, run_id)
+        if record is None:
+            print("no run record %r under %s"
+                  % (run_id, os.path.join(root, ".forge", "native",
+                                          "runs")),
+                  file=sys.stderr)
+            return 1
+        print(json.dumps(record, indent=2, default=str))
+        return 0
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+    entries = list_run_records(root, limit=limit)
+    if getattr(args, "json", False):
+        print(json.dumps({"runs": entries}, indent=2))
+        return 0
+    if not entries:
+        print("no native-ai run records yet (%s)"
+              % os.path.join(root, ".forge", "native", "runs"))
+        return 0
+    print(f"Native AI run history ({len(entries)} shown, newest first):")
+    for entry in entries:
+        print("  %s  %-16s %-12s %d file(s) %5.1fs  %s" % (
+            entry.get("run_id", "?"), entry.get("final_status", "?"),
+            entry.get("task_class") or "-",
+            entry.get("files_changed", 0),
+            float(entry.get("duration_seconds") or 0.0),
+            str(entry.get("requirement") or "")[:60]))
+    print("  detail: forge native-ai history --run <run_id>")
+    return 0
 
 
 def _run_native_ai_status(args) -> int:
@@ -605,7 +677,7 @@ def _native_argv_normalize(argv) -> list:
         return argv
     rest = argv[2:]
     if not rest or rest[0].startswith("-") \
-            or rest[0] in ("run", "status", "test"):
+            or rest[0] in ("run", "status", "test", "plan", "history"):
         return argv
     return argv[:2] + ["run"] + rest
 
@@ -677,7 +749,20 @@ def main() -> None:
         "status", help="Engine state, backends, and capability labels")
     native_test = native_subs.add_parser(
         "test", help="Deterministic self-test against a temp fixture")
-    for _sub in (native_run, native_status, native_test):
+    native_plan = native_subs.add_parser(
+        "plan", help="Show the deterministic plan for a task "
+                     "(nothing is executed)")
+    native_plan.add_argument("requirement", help="Engineering task text")
+    native_history = native_subs.add_parser(
+        "history", help="List persisted run records "
+                        "(--run <id> for one full record)")
+    native_history.add_argument("--limit", type=int, default=20,
+                                help="Maximum records to list "
+                                     "(default: 20, newest first)")
+    native_history.add_argument("--run", default=argparse.SUPPRESS,
+                                help="Print one full run record by id")
+    for _sub in (native_run, native_status, native_test, native_plan,
+                 native_history):
         _sub.add_argument("--root", default=argparse.SUPPRESS,
                           help="Repository root (default: .)")
         _sub.add_argument("--project", default=argparse.SUPPRESS,
@@ -958,6 +1043,10 @@ def main() -> None:
             raise SystemExit(_run_native_ai_run(args))
         if subcommand == "test":
             raise SystemExit(_run_native_ai_test(args))
+        if subcommand == "plan":
+            raise SystemExit(_run_native_ai_plan(args))
+        if subcommand == "history":
+            raise SystemExit(_run_native_ai_history(args))
         raise SystemExit(_run_native_ai_status(args))
 
     elif args.command == "models":

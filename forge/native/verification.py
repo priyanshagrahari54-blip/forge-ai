@@ -129,15 +129,31 @@ class NativeVerifier:
                 if candidate.is_file():
                     targets.append(candidate)
         else:
-            for candidate in sorted(self.root.rglob("*.py")):
-                rel_parts = candidate.relative_to(self.root).parts
-                if any(part in (".git", ".forge", "__pycache__",
-                                ".venv", "node_modules")
-                       for part in rel_parts):
-                    continue
-                targets.append(candidate)
-                if len(targets) >= MAX_COMPILE_FILES:
-                    break
+            # Pruned traversal: unlike rglob-then-filter, excluded trees
+            # (.git, node_modules, .venv, ...) are never descended into --
+            # important on a 2 GB host with a fat repo. The sample cap is
+            # disclosed in the gate evidence; selection stays deterministic
+            # (candidate list is sorted before the cap is applied).
+            import os
+            candidates: List[str] = []
+            for dirpath, dirnames, filenames in os.walk(str(self.root)):
+                dirnames[:] = sorted(
+                    d for d in dirnames
+                    if d not in (".git", ".hg", ".forge", ".svn", ".venv",
+                                 "venv", "env", "node_modules",
+                                 "__pycache__", ".pytest_cache",
+                                 ".mypy_cache", ".ruff_cache", ".tox",
+                                 ".nox", ".cache", "build", "dist")
+                    and not d.startswith(".")
+                )
+                for name in filenames:
+                    if name.endswith(".py"):
+                        candidates.append(
+                            os.path.relpath(os.path.join(dirpath, name),
+                                            str(self.root)).replace("\\",
+                                                                    "/"))
+            for rel in sorted(candidates)[:MAX_COMPILE_FILES]:
+                targets.append(self.root / rel)
         import ast
         problems: List[Dict[str, str]] = []
         checked = 0
@@ -258,6 +274,11 @@ class NativeVerifier:
             report.gates.append(GateReport(
                 name=gate.name, passed=bool(gate.passed), executed=True,
                 details=gate.details, evidence=dict(gate.evidence or {})))
+        else:
+            report.gates.append(GateReport(
+                "build", False, executed=False,
+                details="not executed (verification scoped off by the "
+                        "caller)"))
 
         if run_lint:
             gate = self.pipeline.lint()
@@ -269,6 +290,11 @@ class NativeVerifier:
                 executed=True, details=gate.details,
                 evidence=dict(gate.evidence or {},
                               configured=configured)))
+        else:
+            report.gates.append(GateReport(
+                "lint", False, executed=False,
+                details="not executed (verification scoped off by the "
+                        "caller)"))
 
         gate = self.pipeline.security(changed_files)
         report.gates.append(GateReport(

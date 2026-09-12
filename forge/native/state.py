@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from time import time_ns
 import threading
 import time
 from dataclasses import dataclass, field
@@ -330,16 +331,29 @@ def snapshot_dir(root: str | Path) -> Path:
 
 def write_snapshot(root: str | Path,
                    snapshot: NativeStatusSnapshot) -> Path:
-    """Atomically persist ``snapshot`` under ``<root>/.forge/native``."""
+    """Atomically persist ``snapshot`` under ``<root>/.forge/native``.
+
+    The temp name is unique per writer: a fixed ``.tmp`` name would let two
+    engine processes interleave writes into the same temp file before either
+    rename, publishing a corrupted snapshot.
+    """
     path = Path(root) / Path(SNAPSHOT_RELATIVE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(snapshot.to_dict(), indent=2, sort_keys=True,
                          default=str)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(payload)
-        handle.flush()
-    os.replace(str(tmp), str(path))
+    tmp = path.with_name("%s.%d.%d.tmp" % (path.name, os.getpid(),
+                                           time_ns() % 1_000_000))
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+        os.replace(str(tmp), str(path))
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
     return path
 
 

@@ -626,7 +626,8 @@ repairs, prose) works with no model attached; those are refused with
 `NEURAL_REQUIRED` and the run honestly ends `NEEDS_MODEL` — deterministic
 code is never passed off as a language model, and unperformed work is never
 reported as completed. CLI: `forge native-ai` / `... status` / `... test` /
-`forge run --native`. See `docs/A81-NATIVE-AI-ENGINE.md` for the full
+`... plan "<task>"` / `... history` / `forge run --native`. See
+`docs/A81-NATIVE-AI-ENGINE.md` for the full
 architecture, capability matrix, model-connection guides, and limitations.
 
 ## Complete Supervisor transaction

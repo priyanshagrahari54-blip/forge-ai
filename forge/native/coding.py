@@ -165,6 +165,10 @@ class NativeCodingEngine:
     #: Cap proposal payloads so a chatty model cannot exhaust the tiny host.
     MAX_FILE_BYTES = 512 * 1024
     MAX_FILES_PER_PROPOSAL = 40
+    #: Cumulative cap for one proposal: 40 files x 512 KB each would still
+    #: be 20 MB of text -- far too much for a 2 GB host to hold, diff, and
+    #: apply. Proposals stop once this budget is spent.
+    MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
     def __init__(self, root: str | Path, runtime: Any,
                  hub: Any = None, applier: Any = None,
@@ -264,12 +268,19 @@ class NativeCodingEngine:
                                   latency_ms=result.latency_ms)
         changes = result.data.get("changes") or {}
         safe: Dict[str, str] = {}
+        total_bytes = 0
         for index, (path, content) in enumerate(sorted(changes.items())):
             if index >= self.MAX_FILES_PER_PROPOSAL:
                 break
-            if isinstance(path, str) and isinstance(content, str) \
-                    and 0 < len(content.encode("utf-8")) <= self.MAX_FILE_BYTES:
-                safe[path] = content
+            if not isinstance(path, str) or not isinstance(content, str):
+                continue
+            size = len(content.encode("utf-8"))
+            if size == 0 or size > self.MAX_FILE_BYTES:
+                continue
+            if total_bytes + size > self.MAX_TOTAL_BYTES:
+                break
+            total_bytes += size
+            safe[path] = content
         return ProposalResult(
             ok=bool(safe),
             changes=safe,
@@ -348,11 +359,13 @@ class NativeCodingEngine:
                      getattr(result, "decisions", []) or []]
         errors = [str(e) for e in getattr(result, "errors", []) or []]
         ok = bool(getattr(result, "success", True) and not errors)
+        # "Blocked" means exactly one thing: the gate asked for an approval
+        # this client could not provide. A SAFE/LOCKED DENY is a refusal,
+        # not a pending approval, and must surface as an honest failure.
         blocked = (not ok) and (
-            any(str(d.get("decision", "")) in
-                ("REQUIRE_APPROVAL", "DENY") for d in decisions)
-            or any(("approval" in e.lower() or "not permitted" in e.lower())
-                   for e in errors))
+            any(str(d.get("decision", "")).upper() == "REQUIRE_APPROVAL"
+                for d in decisions)
+            or any("approval required" in e.lower() for e in errors))
         files = list(getattr(result, "changed_paths", []) or [])
         return ApplyOutcome(
             ok=ok,

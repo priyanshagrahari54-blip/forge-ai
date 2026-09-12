@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from forge.core.report import redact
 
@@ -101,6 +102,11 @@ class NativeRunReport:
 
 
 def new_run_id() -> str:
-    """Sortable, collision-resistant run id (UTC second + process time)."""
-    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-%06d" % (
-        int((time.time() % 1) * 1_000_000) % 1_000_000)
+    """Sortable, collision-free run id (UTC second + random suffix).
+
+    The uuid suffix matters: two engine processes starting in the same
+    microsecond would otherwise overwrite each other's run records under
+    ``.forge/native/runs/``.
+    """
+    return "%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+                      uuid4().hex[:12])

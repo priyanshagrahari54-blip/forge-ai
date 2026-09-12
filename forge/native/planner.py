@@ -445,8 +445,11 @@ class NativePlanner:
         symbols = getattr(intelligence, "symbols", None) if intelligence \
             else None
         if symbols is not None:
-            lowered_words = set(task_text.split())
-            for word in lowered_words:
+            # Ordered, de-duplicated word scan: iterating a set() would make
+            # symbol-match order depend on the interpreter's hash seed, and
+            # plan/ccontext fingerprints must be stable across processes.
+            ordered_words = list(dict.fromkeys(task_text.split()))
+            for word in ordered_words:
                 clean = word.strip("`'\"().,:;!?[]{}")
                 if not clean or not _SYMBOLISH_TOKEN.match(clean):
                     continue

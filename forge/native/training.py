@@ -414,6 +414,20 @@ class ModelVersionStore:
                 manifests.append(data)
         return manifests
 
+    def _artifact_ok(self, manifest: Dict[str, Any]) -> bool:
+        """Re-verify the registered artifact still exists on disk.
+
+        Registration only describes real files, so a manifest whose artifact
+        has since been deleted must never read as promotable/active.
+        """
+        raw = str(manifest.get("artifact_path") or "")
+        if not raw:
+            return False
+        path = Path(raw)
+        if not path.is_absolute():
+            path = self.root / path
+        return path.is_file()
+
     def register(self, version: str, artifact_path: str | Path,
                  dataset_sha256: str = "",
                  evaluation: Optional[Dict[str, Any]] = None,
@@ -438,20 +452,25 @@ class ModelVersionStore:
             evaluation=dict(evaluation or {}), source=source)
         directory = self._dir() / "versions"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / ("%s.json" % version)).write_text(
-            json.dumps(record.to_dict(), indent=1, sort_keys=True),
-            encoding="utf-8")
+        _atomic_write(directory / ("%s.json" % version),
+                      json.dumps(record.to_dict(), indent=1, sort_keys=True))
         return record.to_dict()
 
     def list(self) -> List[Dict[str, Any]]:
-        return [{key: value for key, value in manifest.items()
-                 if not key.startswith("_")}
-                for manifest in self._versions()]
+        out: List[Dict[str, Any]] = []
+        for manifest in self._versions():
+            clean = {key: value for key, value in manifest.items()
+                     if not key.startswith("_")}
+            clean["artifact_missing"] = not self._artifact_ok(manifest)
+            out.append(clean)
+        return out
 
     def get(self, version: str) -> Optional[Dict[str, Any]]:
         for manifest in self._versions():
             if manifest.get("version") == version:
-                return manifest
+                fresh = dict(manifest)
+                fresh["artifact_missing"] = not self._artifact_ok(manifest)
+                return fresh
         return None
 
     def active(self) -> Optional[Dict[str, Any]]:
@@ -468,13 +487,17 @@ class ModelVersionStore:
             return None
         return {"active": version,
                 "history": [dict(h) for h in data.get("history", [])],
-                "manifest": manifest}
+                "manifest": manifest,
+                # Surfaced, never hidden: a deleted artifact makes the
+                # active model unusable, and consumers must see that.
+                "artifact_missing": bool(manifest.get(
+                    "artifact_missing", False))}
 
     def promote(self, version: str) -> Dict[str, Any]:
         manifest = self.get(version)
         if manifest is None:
             raise KeyError("unknown model version: %s" % version)
-        if manifest.get("artifact_missing", False):
+        if not self._artifact_ok(manifest):
             raise ValueError("artifact for %s disappeared; re-register"
                              % version)
         evaluation = manifest.get("evaluation") or {}

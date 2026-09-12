@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from forge.core.report import redact
 from forge.memory.store import MemoryStore
@@ -261,7 +262,10 @@ class NativeMemory:
     def _next_id(self, category: MemoryCategory) -> str:
         self._sequence += 1
         stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-        return "%s-%s-%04d" % (category.value, stamp, self._sequence)
+        # uuid suffix: per-instance sequences collide across processes in the
+        # same wall-clock second, which would silently overwrite entries.
+        return "%s-%s-%04d-%s" % (category.value, stamp, self._sequence,
+                                  uuid4().hex[:8])
 
     @staticmethod
     def _shrink(payload: Dict[str, Any]) -> Dict[str, Any]:

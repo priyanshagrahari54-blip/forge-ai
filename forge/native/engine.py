@@ -198,7 +198,8 @@ class NativeAIEngine:
         """Clear a previous cancellation so the engine accepts the next run."""
         self._cancel.clear()
 
-    def run_probe_plan(self, task: str) -> Dict[str, Any]:
+    def run_probe_plan(self, task: str,
+                       full: bool = False) -> Dict[str, Any]:
         """Cheap plan probe for CLI pre-flight guidance (no execution).
 
         Only classifies and plans — touches no files, calls no tools, runs
@@ -211,10 +212,13 @@ class NativeAIEngine:
             intelligence = None
         try:
             plan = NativePlanner(intelligence).plan(task, intelligence)
-            return {"ok": True, "task_class": plan.task_class,
-                    "has_edit_step": plan.has_edit_step(),
-                    "steps": len(plan.steps),
-                    "confidence": plan.confidence}
+            out = {"ok": True, "task_class": plan.task_class,
+                   "has_edit_step": plan.has_edit_step(),
+                   "steps": len(plan.steps),
+                   "confidence": plan.confidence}
+            if full:
+                out["plan"] = plan.to_dict()
+            return out
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -338,6 +342,7 @@ class NativeAIEngine:
         self.tracker.set_retry(0, self.debug_loop.max_retries, False)
         self._run_started = perf_counter()
         applied_files: List[str] = []
+        review_failed = False
         verification = None
         needs_model = False
 
@@ -469,6 +474,12 @@ class NativeAIEngine:
                         approved=approved, task_id=report.task_id)
                     debug_done = True
                     report.debug = debug_result.to_dict()
+                    for rel in list(getattr(debug_result, "changed_files",
+                                            ()) or []):
+                        if rel not in applied_files:
+                            applied_files.append(rel)
+                            report.files_changed.append(rel)
+                            self.tracker.record_files_changed([rel])
                     report.retries = len(debug_result.cycles)
                     self.tracker.set_retry(
                         len(debug_result.cycles),
@@ -489,7 +500,9 @@ class NativeAIEngine:
                     else:
                         step.status = "failed"
                 elif step.kind == StepKind.REVIEW:
-                    self._execute_review(step, task, report, applied_files)
+                    if self._execute_review(step, task, report,
+                                            applied_files):
+                        review_failed = True
                 elif step.kind == StepKind.FINISH:
                     step.status = "done"
             if debug_done and tests_ok and report.plan:
@@ -551,14 +564,25 @@ class NativeAIEngine:
             if blocked:
                 final, task_state = "BLOCKED_APPROVAL", TaskState.BLOCKED
             elif (applied_files and (tests_ok is False
+                                     or review_failed
                                      or "tests" in failed_gates
                                      or "security" in failed_gates
                                      or "compile" in failed_gates
                                      or "diff_validation" in failed_gates)):
                 self._rollback(sorted(set(applied_files)), report)
+                if review_failed and tests_ok is not False and not (
+                        {"tests", "security", "compile",
+                         "diff_validation"} & set(failed_gates)):
+                    report.error = ("independent review gate reported "
+                                    "blocking findings; applied changes "
+                                    "were rolled back")
                 final, task_state = "FAILED", TaskState.FAILED
             elif needs_model:
                 final, task_state = "NEEDS_MODEL", TaskState.NEEDS_MODEL
+            elif review_failed:
+                # Review-only task class: the blocking finding is the
+                # deliverable itself. Surfaced as PARTIAL, never as success.
+                final, task_state = "COMPLETED", TaskState.PARTIAL
             elif verification.status == "PARTIAL":
                 final, task_state = "COMPLETED", TaskState.PARTIAL
             else:
@@ -678,33 +702,64 @@ class NativeAIEngine:
 
     def _execute_review(self, step: Any, task: str,
                         report: NativeRunReport,
-                        applied_files: List[str]) -> None:
-        """Independent review over the actual diff; deterministic gate first."""
+                        applied_files: List[str]) -> bool:
+        """Independent review over the actual diff; returns True on failure.
+
+        The deterministic gate is A32's own ``ReviewGate`` -- the same
+        conflict-marker / dynamic-exec / test-weakening severity rules the
+        supervised pipeline enforces -- plus the verification pipeline's
+        diff review. Model commentary (only when a real model is attached)
+        is attached as findings and can never override or soften the gate.
+        """
         changed = sorted(set(applied_files))
         if not changed:
             step.status = "done"
             step.result = {"note": "no changes to review"}
-            return
+            return False
         diff_text = self._diff_text()
+        review_failed = False
+        try:
+            from forge.security.review import ReviewGate
+            decision = ReviewGate(self.root).review(diff_text, changed,
+                                                    requirement=task)
+            review = decision.to_dict()
+            review["gate"] = "forge.security.review.ReviewGate"
+        except Exception as exc:  # gate unavailable is itself a failure
+            review = {"gate": "forge.security.review.ReviewGate",
+                      "verdict": "ERROR", "approved": False,
+                      "reason": "review gate unavailable: %s" % exc,
+                      "findings": [], "changed_files": changed}
+            review_failed = True
         try:
             from forge.security.verification import VerificationPipeline
-            review_gate = VerificationPipeline(self.root).review(
+            diff_gate = VerificationPipeline(self.root).review(
                 diff_text, changed)
-            report.review = {"gate": review_gate.name,
-                             "passed": bool(review_gate.passed),
-                             "details": str(review_gate.details)[:800],
-                             "evidence": dict(review_gate.evidence or {})}
-            step.status = "done" if review_gate.passed else "failed"
-            if review_gate.passed:
-                findings = self.hub.respond(ReasoningRequest(
-                    kind=ReasoningKind.REVIEW, task=task,
-                    payload={"verification": report.verification}))
-                if findings.ok:
-                    report.review["findings"] = findings.data
+            review["diff_review"] = {
+                "passed": bool(diff_gate.passed),
+                "details": str(diff_gate.details)[:800],
+                "evidence": dict(diff_gate.evidence or {})}
         except Exception as exc:
-            report.review = {"passed": False,
-                             "details": "review failed: %s" % exc}
-            step.status = "failed"
+            review["diff_review"] = {
+                "passed": False,
+                "details": "diff review unavailable: %s" % exc}
+        review["passed"] = (bool(review.get("approved", not review_failed))
+                            and bool(review["diff_review"].get("passed",
+                                                               True)))
+        review_failed = not review["passed"]
+        if not review_failed:
+            findings = self.hub.respond(ReasoningRequest(
+                kind=ReasoningKind.REVIEW, task=task,
+                payload={"verification": report.verification}))
+            if findings.ok:
+                review["findings"] = findings.data
+        report.review = review
+        step.status = "done" if not review_failed else "failed"
+        step.result = {"passed": not review_failed,
+                       "verdict": review.get("verdict", "?")}
+        self._event(report, "review_completed",
+                    {"passed": not review_failed,
+                     "verdict": review.get("verdict", "?")})
+        return review_failed
 
     # -- supporting helpers ---------------------------------------------------------
 
@@ -774,18 +829,25 @@ class NativeAIEngine:
             vrecord = self.memory.record_verification(
                 task, verification.status_dict())
             written.append({"category": "verification", "id": vrecord.id})
-            if tests_ok is False or verification.status == "FAIL":
+            review_failed_now = bool(report.review) and \
+                report.review.get("passed") is False
+            if tests_ok is False or verification.status == "FAIL" or \
+                    review_failed_now:
                 categories = sorted({
                     str(cycle.get("classification", "unknown"))
                     for cycle in (report.debug or {}).get("cycles", [])})
                 frecord = self.memory.record_failure(
-                    task, ",".join(categories) or "verification",
-                    "verification gates failed: %s; tests: %s" % (
+                    task,
+                    ",".join(categories)
+                    or ("review" if review_failed_now else "verification"),
+                    "verification gates failed: %s; tests: %s%s" % (
                         verification.failed,
-                        "failed" if tests_ok is False else "passed"))
+                        "failed" if tests_ok is False else "passed",
+                        "; review gate: failed" if review_failed_now
+                        else ""))
                 written.append({"category": "failures", "id": frecord.id})
             elif tests_ok and verification.status != "FAIL" and \
-                    not needs_model:
+                    not needs_model and not review_failed_now:
                 srecord = self.memory.record_strategy(
                     task,
                     "plan %s (%d steps, confidence %s) verified: %s%s" % (

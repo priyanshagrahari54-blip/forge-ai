@@ -90,7 +90,7 @@ tests all read it (a test asserts this file lists every capability id).
 | `task_understanding` | **[model]** for depth | Free mode: verb-lexicon classification + repository-token grounding, marked low-confidence when ambiguous (explicitly heuristics, not language understanding). Model mode: neural classification arrives through the same structured interface. |
 | `code_generation` | **[model]** | Proposals come from the routed model via the Model Fabric, then pass the A32 ChangeSet engine and A33 policy gate like any other change. Without a model: refused (`NEURAL_REQUIRED`), no file writes. |
 | `repair_generation` | **[model]** | Same gate path as code generation, inside the bounded debug loop. The failure classification and context collection are free; only the fix itself needs a model. |
-| `review_narration` | **[model]** for prose | The deterministic review gate always runs; model reviewer commentary is merged as additional findings and the gate remains mandatory. |
+| `review_narration` | **[model]** for prose | The deterministic review gate always runs — A32's own `ReviewGate` over the real diff (conflict markers, dynamic exec, test weakening, severity verdict) plus the verification pipeline's diff review. A failed review blocks the run: applied changes are rolled back and the run reports `FAILED`. Model reviewer commentary is merged as additional findings and the gate remains mandatory. |
 | `explanation` | **[model]** for prose | Template-rendered structured reports are always free; prose summaries require a model and carry its provenance. |
 | `model_training` | **[model]** + real runs | Interfaces only (§8). Dataset collection/validation work locally over real records; no trainer ships. |
 
@@ -207,7 +207,9 @@ approval, A33 token) — there is no engine API that flips it.
 
 * **compile/syntax** — `ast.parse` + in-memory `compile()` of the changed
   `.py` files (bounded: ≤400 files, ≤2 MiB each; when nothing changed, a
-  bounded sample so "no issues" is still a measured statement);
+  deterministic bounded sample so "no issues" is still a measured statement —
+  traversal prunes `.git`, `node_modules`, virtualenvs and other vendored
+  trees instead of walking them);
 * **tests** — real pytest (full suite re-run whenever files were actually
   edited — targeted runs alone can't prove repo-wide health; scoped off
   only for no-edit runs and then labeled `executed=False`);
@@ -220,7 +222,9 @@ approval, A33 token) — there is no engine API that flips it.
   paths, `.env`, declared-but-missing, conflict markers). Without a git
   worktree the material half is **skipped and said to be** (never passed).
 
-Aggregation: `all_passed` = AND over *executed* gates; skipped gates appear
+Aggregation: `all_passed` = AND over *executed* gates; every gate scoped off
+by the caller — tests, build, and lint alike — is recorded as
+`executed=False, "scoped off"`, never silently dropped; skipped gates appear
 in `skipped`; the run status becomes PARTIAL-labeled, and any failed gate
 keeps the run failed. A failed check remaining a failure is asserted in the
 tests.
@@ -239,7 +243,15 @@ Every cycle records the classification, evidence lines, proposal provenance
 (model/provider/latency), validation issues, policy decisions, retest
 result, and the recorded reason. Stop reasons are explicit:
 `tests_passed · neural_required · policy_blocked · backend_error ·
-invalid_proposal · apply_failed · retry_bound_reached · not_executed`.
+invalid_proposal · apply_failed · no_progress · retry_bound_reached ·
+not_executed` (`no_progress`: the model repeated an already-failed change
+byte-for-byte, so the loop stops instead of burning another retest).
+
+Repairs that *were* applied are recorded on the loop result's
+`changed_files`, and the engine merges them into its own change ledger:
+repair files are part of the rollback set and part of the verification
+scan (security + diff validation), exactly like first-pass edits. A denied
+or expired debug run therefore cannot leave half-repaired state on disk.
 The A32 `TestDebugLoop` stays what it was for the supervisor; the native
 loop adds the memory/verification coupling rather than replacing it.
 
@@ -328,13 +340,18 @@ of the system stores measured metadata, never transcripts.
 * **CLI** — `forge native-ai` (bare ⇒ status), `forge native-ai status`,
   `forge native-ai test` (deterministic 10-check self-test in a temp
   fixture — nothing in the user's repo changes), `forge native-ai run
-  "<task>"` (also `forge native-ai "<task>"`), all with `--root --project
-  --mode --json --config --approve --force --max-debug-retries
-  --context-tokens --no-memory`. `forge run --native` routes the same task
+  "<task>"` (also `forge native-ai "<task>"`), `forge native-ai plan
+  "<task>"` (the planner's grounding + full step list, plan only —
+  nothing is executed), and `forge native-ai history [--limit N]
+  [--run <id>]` (the persisted run records, newest first, or one full
+  record). All accept `--root --project --mode --json --config --approve
+  --force --max-debug-retries --context-tokens --no-memory` where
+  applicable. `forge run --native` routes the same task
   text through the engine instead of the raw supervisor.
-* **Exit codes** — `0` completed · `1` failed · `2` blocked (approval
-  needed/denied) · `3` needs-model (analysis ran; generative steps refused
-  honestly).
+* **Exit codes** — `0` completed · `1` failed (including policy **DENY**,
+  which is a refusal, not a pending approval) · `2` blocked (approval
+  required and not grantable non-interactively) · `3` needs-model (analysis
+  ran; generative steps refused honestly).
 
 ## 15. Security posture (layer 15)
 
@@ -372,6 +389,8 @@ steps — see §3, and refusal records are first-class report content).
 # on the G560 (or any machine), from the repository checkout:
 python -m forge.cli native-ai status
 python -m forge.cli native-ai test
+python -m forge.cli native-ai plan "fix the add function in calc.py" --root <path>
+python -m forge.cli native-ai history --root <path>
 python -m forge.cli native-ai "fix the add function in calc.py" --root <path>
 
 # full test coverage for the engine:
@@ -381,7 +400,7 @@ python -m pytest tests/test_native_ai_startup.py tests/test_native_ai_planner.py
   tests/test_native_ai_debugging.py tests/test_native_ai_memory.py \
   tests/test_native_ai_engine.py tests/test_native_ai_training.py \
   tests/test_native_ai_cli.py tests/test_native_ai_desktop.py \
-  tests/test_native_ai_windows_compat.py -q
+  tests/test_native_ai_windows_compat.py tests/test_native_ai_hardening.py -q
 
 # with a real model later (example: local Ollama already configured):
 python -m forge.cli native-ai "add a multiply function to calc.py" \
@@ -410,4 +429,12 @@ python -m forge.cli native-ai "add a multiply function to calc.py" \
    snapshot and can interleave checkpoints, so run one task at a time per
    project (the desktop dispatch queue already serializes tasks).
 8. The `run_tests` bound reuses A32's constrained pytest runner only; custom
-   test commands stay a supervisor/terminal-approved operation.
+   test commands stay a supervisor/terminal-approved operation. It inherits
+   A32's per-command 30-second timeout: a suite that needs longer reports a
+   failed/not-executed test gate honestly — it never silently passes, and
+   "make the timeout configurable" is deliberately not a native-engine
+   knob (it would be a security-relevant relaxation).
+9. Verification of repository health (compile sample, whole-suite tests) is
+   bounded for the 2 GB target; a `PASS` means "the executed gates passed",
+   with every skipped or scoped-off gate listed by name — not "provably
+   correct for all inputs".

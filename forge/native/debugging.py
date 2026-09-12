@@ -27,6 +27,8 @@ predictable.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -90,9 +92,13 @@ class NativeDebugResult:
     final_run: Optional[Dict[str, Any]] = None
     #: Why the loop stopped: tests_passed | neural_required | policy_blocked |
     #: backend_error | invalid_proposal | retry_bound_reached |
-    #: apply_failed | not_executed.
+    #: apply_failed | not_executed | no_progress.
     stopped_reason: str = ""
     failures: List[Dict[str, Any]] = field(default_factory=list)
+    #: Repository files this loop actually changed (repair applies). The
+    #: engine merges these into its own change bookkeeping so repair files
+    #: are rolled back and re-scanned exactly like EDIT-step files.
+    changed_files: List[str] = field(default_factory=list)
 
     @property
     def repairs_attempted(self) -> int:
@@ -107,6 +113,7 @@ class NativeDebugResult:
             "stopped_reason": self.stopped_reason,
             "repairs_attempted": self.repairs_attempted,
             "failures": [dict(f) for f in self.failures],
+            "changed_files": list(self.changed_files),
         }
 
 
@@ -188,6 +195,7 @@ class NativeDebugLoop:
                                     "test run produced no output"})
             return result
 
+        seen_change_hashes: List[str] = []
         for attempt in range(1, self.max_retries + 1):
             cycle = DebugCycle(attempt_number=attempt)
             result.failures.append({"attempt_number": attempt,
@@ -241,6 +249,21 @@ class NativeDebugLoop:
                 result.cycles.append(cycle)
                 break
 
+            # No-progress guard: a model that re-proposes byte-identical
+            # changes that already failed the retest is stopped here instead
+            # of burning another apply + full retest on a 2 GB host.
+            fingerprint = hashlib.sha256(json.dumps(
+                [[p, proposal.changes[p]] for p in sorted(proposal.changes)],
+                sort_keys=True).encode("utf-8")).hexdigest()
+            if fingerprint in seen_change_hashes:
+                cycle.stopped = True
+                cycle.reason = ("model repeated an already-failed change "
+                                "byte-for-byte; stopping without re-applying")
+                result.stopped_reason = "no_progress"
+                result.cycles.append(cycle)
+                break
+            seen_change_hashes.append(fingerprint)
+
             # 5a. validate the proposal structurally (zero writes).
             validation = self.coding.validate_changes(proposal.changes,
                                                       approved=approved,
@@ -276,6 +299,12 @@ class NativeDebugLoop:
                     result.stopped_reason = "apply_failed"
                 result.cycles.append(cycle)
                 break
+
+            # The repository is changed by repairs too: record the paths so
+            # the caller's rollback set and verification scan cover them.
+            for rel in list(outcome.files or []):
+                if rel not in result.changed_files:
+                    result.changed_files.append(rel)
 
             # 6. verify with a real re-run, then repeat within the bound.
             run = self.coding.run_tests(test_paths, task_id=task_id)
