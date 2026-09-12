@@ -46,7 +46,16 @@ class AgentContextBuilder:
         task: str,
         target_files: tuple[str, ...] = (),
         target_symbols: tuple[str, ...] = (),
+        memory=None,
+        project: str | None = None,
     ) -> AgentContext:
+        """Build deterministic, budgeted repository context for an agent.
+
+        ``memory``/``project`` are optional long-term-memory integration
+        points: when supplied, relevant remembered knowledge is appended as
+        ``kind="memory"`` context items so agents see what Forge already
+        knows about the task alongside repository context.
+        """
         query = ContextQuery(
             task=task,
             target_files=target_files,
@@ -81,6 +90,19 @@ class AgentContextBuilder:
                     kind="file",
                     reason="repository fallback context",
                     score=1.0,
+                ))
+
+        if memory is not None:
+            from forge.memory.integrations import recall_for_context
+
+            for index, result in enumerate(
+                    recall_for_context(memory, project or "default", task)):
+                record = result.record
+                final_pack.add(ContextItem(
+                    path=f"memory:{record.id}",
+                    kind="memory",
+                    reason=f"remembered {record.memory_type} knowledge",
+                    score=float(result.score),
                 ))
 
         fingerprint = DeterministicContextPack.fingerprint(
