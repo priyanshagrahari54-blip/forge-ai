@@ -14,13 +14,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------
+  # Primary gate: full suite on the two supported interpreter floors.
+  #
+  # The 3.8 leg is pinned to ubuntu-22.04 on purpose. `ubuntu-latest` is the
+  # Ubuntu 24.04 image, and actions/setup-python cannot provide Python 3.8
+  # there (actions/setup-python#879); 3.8 was also dropped from the 22.04 and
+  # Windows runner image caches on 2025-06-06 (actions/runner-images#12034),
+  # though the archives remain installable via setup-python on images that
+  # still have builds.
+  #
+  # The 3.8 leg installs from requirements/py38-dev.txt: every dependency has
+  # shipped a release that dropped 3.8, so the floor is pinned rather than
+  # left to resolver backtracking. The 3.11 leg installs the uncapped modern
+  # set straight from pyproject.toml, which keeps the two builds independent.
+  # ---------------------------------------------------------------------
   test:
-    name: Tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.11"]
+        include:
+          - os: ubuntu-22.04
+            python-version: "3.8"
+            requirements: "requirements/py38-dev.txt"
+          - os: ubuntu-latest
+            python-version: "3.11"
+            requirements: ""
 
     steps:
       - name: Check out repository
@@ -34,7 +55,16 @@ jobs:
       - name: Install the project and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          if [ -n "${{ matrix.requirements }}" ]; then
+            python -m pip install -r "${{ matrix.requirements }}"
+            python -m pip install -e . --no-deps
+          else
+            python -m pip install -e ".[dev]"
+          fi
+        shell: bash
+
+      - name: Report the interpreter actually in use
+        run: python -c "import sys, platform; print(sys.version); print(platform.platform())"
 
       - name: Run tests
         run: python -m pytest -q
@@ -42,5 +72,108 @@ jobs:
       - name: Compile the package
         run: python -m compileall forge
 
+      - name: Static minimum-version gate (must stay 3.8)
+        # `python -m vermin` does not work (vermin ships no __main__), so call
+        # main() directly; it propagates a non-zero exit code on a violation.
+        run: >
+          python -c "from vermin import main; main()"
+          -t=3.8- --quiet --violations
+          forge tests scripts launch_cockpit.py launch_desktop.py
+
       - name: Check for whitespace errors and conflict markers
         run: git diff --check
+
+  # ---------------------------------------------------------------------
+  # Windows 7 32-bit install gate.
+  #
+  # CPython 3.8 is the last series that runs on Windows 7 and the last with
+  # 32-bit Windows installers, so cp38/win32 *is* the target platform. This
+  # job proves the whole pinned dependency set is actually installable there,
+  # including the binary wheels (pydantic-core, PyYAML). It runs on Linux
+  # because `pip download --platform win32 --abi cp38` resolves for the
+  # target without needing to execute on it.
+  # ---------------------------------------------------------------------
+  windows32-dependency-gate:
+    name: Dependency resolution (cp38 / win32)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.8"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Resolve the pinned 3.8 lock for cp38/win32
+        run: >
+          python -m pip download -r requirements/py38-dev.txt
+          --python-version 38 --implementation cp --abi cp38
+          --platform win32 --only-binary=:all: -d dist/py38-win32
+
+      - name: Resolve the declared metadata for cp38/win32 (dev extra)
+        run: |
+          python -m pip wheel --no-deps -w dist/meta .
+          python -m pip download "$(ls dist/meta/forge_ai-*.whl)[dev]" \
+            --python-version 38 --implementation cp --abi cp38 \
+            --platform win32 --only-binary=:all: -d dist/py38-win32-meta
+
+      - name: Resolve the modern set for cp311 (must not be held back)
+        run: |
+          python -m pip download "$(ls dist/meta/forge_ai-*.whl)[dev]" \
+            --python-version 311 --implementation cp --abi cp311 \
+            --platform win_amd64 --only-binary=:all: -d dist/py311-win64
+
+  # ---------------------------------------------------------------------
+  # Windows runner smoke gate.
+  #
+  # Scope is deliberate: this runs the platform-independent compatibility
+  # gates and a byte-compile of the package on a real Windows interpreter.
+  # The full suite is not run here because four test modules drive a POSIX
+  # shell (`#!/bin/sh` fixtures, `sleep`, `chmod +x`) and cannot run on
+  # Windows at all:
+  #
+  #   tests/test_a32_gates.py
+  #   tests/test_a48_compute_security.py
+  #   tests/test_desktop_local_provider.py
+  #   tests/test_media_blender.py
+  #
+  # Those are covered by the Linux legs above. Porting them to Windows is
+  # tracked separately; until then this job is a smoke gate, not full
+  # coverage, and it says so rather than implying otherwise.
+  # ---------------------------------------------------------------------
+  windows-compat:
+    name: Windows smoke (3.8 on windows-2022)
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.8"
+
+      - name: Install the pinned 3.8 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements/py38-dev.txt
+          python -m pip install -e . --no-deps
+
+      - name: Report the interpreter actually in use
+        run: python -c "import sys, platform; print(sys.version); print(platform.platform())"
+
+      - name: Byte-compile the package on Windows
+        run: python -m compileall forge
+
+      - name: Run the platform-independent compatibility gates
+        run: python -m pytest -q tests/test_python38_compat.py tests/test_portability.py
+
+      - name: Confirm the Windows signal path is the one in use
+        run: >
+          python -c "from forge.core.portability import HAS_SIGKILL, HAS_KILLPG;
+          print('SIGKILL:', HAS_SIGKILL, 'killpg:', HAS_KILLPG);
+          assert not HAS_SIGKILL and not HAS_KILLPG"

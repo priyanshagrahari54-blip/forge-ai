@@ -100,6 +100,30 @@ Ship the whole `dist/ForgeDesktop` folder (or the single file). The
 target machine needs no Python — but it still needs a model (Ollama or an
 API key) for tasks to succeed.
 
+By default the build **excludes** `fastapi`, `starlette`, `uvicorn`,
+`pydantic`, `pydantic_core` and `modal`. The desktop app does not import
+any of them (only `forge.api` / `forge.cli` do), and `pydantic_core` is a
+Rust extension whose Windows binaries require Windows 10 — so leaving it
+out is what keeps the executable loadable on Windows 7. Add `--full` to
+bundle the API server into the same executable anyway.
+
+### Windows 7 32-bit
+
+Use the **32-bit CPython 3.8** installer from python.org — 3.8 is the last
+series that runs on Windows 7 and the last with 32-bit installers. Then:
+
+```bat
+python -m pip install -r requirements\py38.txt
+python -m pip install pyinstaller
+python scripts\build_desktop.py --onefile
+```
+
+Two honest caveats: PyInstaller states it "should work on Windows 7 or
+newer" but only *officially* supports Windows 8+, and Windows 7 must have
+TLS 1.2 enabled for the Ollama/OpenAI HTTPS calls to work. Test on the
+real machine before shipping. Full details in
+[`PYTHON38-WINDOWS7.md`](PYTHON38-WINDOWS7.md).
+
 ## Troubleshooting
 
 | Symptom | Cause → fix |

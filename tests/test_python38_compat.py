@@ -15,6 +15,7 @@ statically forbids reintroducing anything newer than 3.8:
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -260,3 +261,282 @@ def test_api_annotations_evaluate_on_python38():
                     break
     assert checked > 25, f"API walk found too few files: {checked}"
     assert not problems, "\n".join(problems[:20])
+
+
+# ---------------------------------------------------------------------------
+# Runtime (non-annotation) 3.9+/3.10+ constructs
+# ---------------------------------------------------------------------------
+# `from __future__ import annotations` stringifies *annotations only*. A
+# subscript or union evaluated at runtime is still a TypeError on 3.8, and
+# neither the checks above nor vermin catch it. These tests close that hole.
+
+def _annotation_node_ids(tree: ast.AST) -> set:
+    """Ids of every AST node that sits inside an annotation."""
+    ids = set()
+
+    def add(node):
+        if node is None:
+            return
+        for child in ast.walk(node):
+            ids.add(id(child))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = list(node.args.args) + list(node.args.kwonlyargs)
+            if node.args.vararg:
+                args.append(node.args.vararg)
+            if node.args.kwarg:
+                args.append(node.args.kwarg)
+            for arg in args:
+                add(arg.annotation)
+            add(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            add(node.annotation)
+    return ids
+
+
+def _runtime_construct_problems(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return []  # the grammar gate already reports this
+    in_annotation = _annotation_node_ids(tree)
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if id(node) in in_annotation:
+            continue
+        # Runtime builtin-generic subscript: `alias = list[int]`,
+        # `cast(dict[str, int], x)`, `set[str]()`. There is no legitimate
+        # runtime subscript of the `list`/`dict`/... type objects, so this
+        # has no false positives.
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in BUILTIN_GENERICS):
+            problems.append(
+                "%s:%d: runtime %s[...] needs 3.9+ (use typing.%s outside "
+                "annotations)" % (path, node.lineno, node.value.id,
+                                  node.value.id.capitalize()))
+        # Runtime PEP 604 union. Deliberately narrow: only `X | None` and
+        # `list[...] | Y` are flagged, because a bare `Name | Name` cannot be
+        # told apart from a real bitwise OR (regex flags, set unions, chmod
+        # mode bits all appear in this codebase). `X | None` is never a
+        # meaningful bitwise operation, so it is unambiguous.
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            sides = (node.left, node.right)
+            has_none = any(isinstance(s, ast.Constant) and s.value is None
+                           for s in sides)
+            has_generic = any(
+                isinstance(s, ast.Subscript) and isinstance(s.value, ast.Name)
+                and s.value.id in BUILTIN_GENERICS for s in sides)
+            if has_none or has_generic:
+                problems.append(
+                    "%s:%d: runtime `X | Y` union needs 3.10+ (use "
+                    "typing.Optional/Union outside annotations)"
+                    % (path, node.lineno))
+    return problems
+
+
+def test_no_runtime_post38_constructs_outside_annotations():
+    problems: list[str] = []
+    checked = 0
+    for path in _iter_files():
+        if "__pycache__" in str(path) or path.resolve() == SELF:
+            continue
+        checked += 1
+        problems.extend(_runtime_construct_problems(path))
+    assert checked > 400, f"runtime walk found too few files: {checked}"
+    assert not problems, "\n".join(problems[:20])
+
+
+# ---------------------------------------------------------------------------
+# The declared floor must agree with everything that states it
+# ---------------------------------------------------------------------------
+
+def _toml_sections(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in text.splitlines():
+        header = re.match(r"^\[([^\]]+)\]\s*$", line)
+        if header:
+            current = header.group(1).strip()
+            sections.setdefault(current, [])
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return sections
+
+
+def _toml_string_array(lines: list[str], key: str) -> list[str]:
+    """Return the strings inside the `key = [ ... ]` array, if present."""
+    collecting = False
+    depth = 0
+    buffer: list[str] = []
+    for line in lines:
+        if not collecting:
+            if re.match(r"^\s*%s\s*=\s*\[" % re.escape(key), line):
+                collecting = True
+                depth = 1
+                buffer.append(line.split("[", 1)[1])
+            continue
+        buffer.append(line)
+        depth += line.count("[") - line.count("]")
+        if depth <= 0:
+            break
+    body = "\n".join(buffer)
+    return [a or b for a, b in re.findall(r'"([^"]*)"|\'([^\']*)\'', body)]
+
+
+def _pyproject() -> str:
+    return (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_minimum_python_matches_requires_python():
+    """`forge doctor` and `pyproject.toml` must name the same floor.
+
+    They disagreed before (the CLI claimed >=3.11 while the metadata said
+    >=3.8), which made `forge doctor` call a supported interpreter "TOO OLD".
+    """
+    from forge.core.portability import MINIMUM_PYTHON
+
+    text = _pyproject()
+    match = re.search(r'^requires-python\s*=\s*"([^"]+)"', text,
+                      re.MULTILINE)
+    assert match, "pyproject.toml has no requires-python"
+    declared = match.group(1).strip()
+    floor_match = re.fullmatch(r">=\s*(\d+)\.(\d+)", declared)
+    assert floor_match, f"unexpected requires-python form: {declared!r}"
+    declared_floor = (int(floor_match.group(1)), int(floor_match.group(2)))
+    assert MINIMUM_PYTHON == declared_floor, (
+        "MINIMUM_PYTHON %s != requires-python %s"
+        % (MINIMUM_PYTHON, declared_floor))
+    assert declared_floor == (3, 8), (
+        "this suite guards the 3.8 floor; requires-python says %s. If the "
+        "floor really moved, this test and docs must move with it."
+        % declared)
+
+
+# ---------------------------------------------------------------------------
+# Dependency ceilings (offline: metadata only, no network)
+# ---------------------------------------------------------------------------
+# Every one of these projects has shipped a release that dropped Python 3.8.
+# The newest release of each that still admits 3.8, verified against PyPI
+# `Requires-Python`:
+#
+#   pydantic 2.10.6 · fastapi 0.124.4 · uvicorn 0.33.0 · pytest 8.3.5
+#
+# An unbounded ">=X" would let a 3.8 install drift onto a release that
+# cannot run there.
+
+#: project -> exclusive ceiling that still admits 3.8, as a version tuple.
+KNOWN_GOOD_CEILING = {
+    "pydantic": (2, 11, 0),
+    "fastapi": (0, 125, 0),
+    "uvicorn": (0, 34, 0),
+    "pytest": (8, 4, 0),
+}
+
+
+def _applies_to_python38(marker: str) -> bool:
+    """Does this PEP 508 marker select Python 3.8?
+
+    Anything this function does not recognise is treated as applying, so a new
+    marker form cannot silently bypass the ceiling check.
+    """
+    if not marker:
+        return True
+    if re.search(r"python_version\s*<\s*['\"]3\.9['\"]", marker):
+        return True
+    if re.search(r"python_version\s*>=\s*['\"]3\.9['\"]", marker):
+        return False
+    return True
+
+
+def _parse_version(text: str) -> tuple:
+    parts = []
+    for chunk in re.split(r"[.+!]", text.split("-")[0]):
+        digits = re.match(r"(\d+)", chunk)
+        parts.append(int(digits.group(1)) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _requirement_entries() -> list[tuple[str, str]]:
+    """(requirement string, section) for runtime + dev dependencies."""
+    sections = _toml_sections(_pyproject())
+    entries = [(req, "dependencies")
+               for req in _toml_string_array(sections.get("project", []),
+                                             "dependencies")]
+    entries += [(req, "optional-dependencies")
+                for req in _toml_string_array(
+                    sections.get("project.optional-dependencies", []), "dev")]
+    return entries
+
+
+def _split_requirement(req: str) -> tuple[str, str, str]:
+    """(name, specifiers, marker) for a PEP 508 requirement string."""
+    name_spec, _, marker = req.partition(";")
+    match = re.match(r"^\s*([A-Za-z0-9_.\-]+)\s*(.*)$", name_spec)
+    assert match, f"unparseable requirement: {req!r}"
+    return match.group(1).lower(), match.group(2).strip(), marker.strip()
+
+
+def test_python38_dependency_requirements_are_ceilinged():
+    """Each 3.8 branch of every dependency must be capped below the release
+    that dropped 3.8."""
+    entries = _requirement_entries()
+    assert len(entries) >= 8, f"too few requirements parsed: {entries}"
+    seen = set()
+    problems = []
+    for req, section in entries:
+        name, specifiers, marker = _split_requirement(req)
+        if name not in KNOWN_GOOD_CEILING:
+            continue
+        if not _applies_to_python38(marker):
+            continue  # the modern (>=3.9) branch may stay uncapped
+        seen.add(name)
+        ceilings = [_parse_version(m.group(1))
+                    for m in re.finditer(r"<\s*([0-9][0-9.]*)", specifiers)]
+        if not ceilings:
+            problems.append("%s (%s): %r has no upper bound, so a 3.8 install "
+                            "can drift onto a release that dropped 3.8"
+                            % (name, section, req))
+            continue
+        if min(ceilings) > KNOWN_GOOD_CEILING[name]:
+            problems.append(
+                "%s (%s): ceiling %s is above the last 3.8-capable release "
+                "%s" % (name, section, min(ceilings),
+                        KNOWN_GOOD_CEILING[name]))
+    assert seen == set(KNOWN_GOOD_CEILING), (
+        "expected a 3.8-marked entry for each of %s, found %s"
+        % (sorted(KNOWN_GOOD_CEILING), sorted(seen)))
+    assert not problems, "\n".join(problems)
+
+
+def test_py38_lock_pins_versions_that_admit_38():
+    """`requirements/py38.txt` must pin inside the known-good ceilings."""
+    lock = ROOT / "requirements" / "py38.txt"
+    assert lock.exists(), "requirements/py38.txt is missing"
+    pins = {}
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("-r"):
+            continue
+        match = re.match(r"^([A-Za-z0-9_.\-]+)==([0-9][0-9.]*)$", line)
+        assert match, f"unpinned or unparseable line in py38.txt: {line!r}"
+        pins[match.group(1).lower()] = match.group(2)
+    for name, ceiling in KNOWN_GOOD_CEILING.items():
+        if name == "pytest":
+            continue  # pytest lives in py38-dev.txt
+        assert name in pins, f"py38.txt does not pin {name}"
+        assert _parse_version(pins[name]) < ceiling, (
+            "py38.txt pins %s==%s, at or above the last 3.8-capable release "
+            "%s" % (name, pins[name], ceiling))
+
+    dev = (ROOT / "requirements" / "py38-dev.txt").read_text(encoding="utf-8")
+    match = re.search(r"^pytest==([0-9][0-9.]*)$", dev, re.MULTILINE)
+    assert match, "py38-dev.txt does not pin pytest"
+    assert _parse_version(match.group(1)) < KNOWN_GOOD_CEILING["pytest"], (
+        "py38-dev.txt pins pytest==%s; pytest 8.4+ requires Python 3.9"
+        % match.group(1))

@@ -7,6 +7,7 @@ import platform
 import shutil
 import sys
 
+from forge.core.portability import MINIMUM_PYTHON, MINIMUM_PYTHON_STRING
 from forge.core.supervisor import Supervisor
 from forge.intelligence.analyzer import ProjectAnalyzer
 from forge.intelligence.report import generate_report
@@ -258,7 +259,8 @@ def _run_doctor(args) -> int:
 
     environment = {
         "python": platform.python_version(),
-        "python_ok": sys.version_info >= (3, 11),
+        "python_ok": sys.version_info >= MINIMUM_PYTHON,
+        "python_minimum": MINIMUM_PYTHON_STRING,
         "platform": platform.platform(),
         "cwd": os.getcwd(),
         "ollama_binary": shutil.which("ollama") or "",
@@ -273,8 +275,10 @@ def _run_doctor(args) -> int:
         return 0 if report.ready else 1
 
     print("Forge Doctor")
-    print(f"  Python: {environment['python']} "
-          f"({'ok (>=3.11)' if environment['python_ok'] else 'TOO OLD - Forge needs >=3.11'})")
+    python_verdict = (
+        "ok (>=%s)" % MINIMUM_PYTHON_STRING if environment["python_ok"]
+        else "TOO OLD - Forge needs >=%s" % MINIMUM_PYTHON_STRING)
+    print(f"  Python: {environment['python']} {python_verdict}")
     print(f"  Platform: {environment['platform']}")
     print(f"  Ollama binary: {environment['ollama_binary'] or 'not found on PATH'}")
     print("  OPENAI_API_KEY: "

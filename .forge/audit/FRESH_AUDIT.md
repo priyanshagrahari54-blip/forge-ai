@@ -16,7 +16,7 @@ Status vocabulary used throughout: `COMPLETE` · `PARTIAL` · `SIMULATED` · `MI
 | `main` (local + origin) | `16007dc` |
 | Repository | `priyanshagrahari54-blip/forge-ai` (GitHub) |
 | Shallow clone | yes — deepened with `git fetch --unshallow` during audit |
-| Python | 3.11 (repo requires >=3.11), pytest 9.1.1 in `.venv` |
+| Python | 3.11 in `.venv`, pytest 9.1.1. The repo's declared floor is **3.8** (`requires-python` in `pyproject.toml`); CI tests 3.8 and 3.11. The earlier note here saying ">=3.11" was wrong. See `docs/PYTHON38-WINDOWS7.md`. |
 | Source | 60,881 LOC Python across 225 files (`forge/` + `tests/`) |
 | Test baseline (pre-change) | **1403 passed, 2 skipped** (176 s) |
 | Docs | 44 stage docs in `docs/A*.md`, README.md, `.forge/project.yaml` |
