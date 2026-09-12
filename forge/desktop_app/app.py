@@ -70,6 +70,7 @@ class ForgeDesktopApp(tk.Tk):
         self._selected_task = ""
         self._event_cursor = 0
         self._log_lines = 0
+        self._agent_lines: list[str] = []
         self._current_project = tk.StringVar()
         self._mode = tk.StringVar(value="assisted")
         self._readiness: dict[str, Any] = {}
@@ -196,6 +197,21 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+
+        # Agent activity (A81): live per-role status for the latest
+        # parallel execution, fed by the polling snapshot.
+        agents_tab = ttk.Frame(self._notebook, padding=4)
+        self._agent_text = tk.Text(agents_tab, wrap=tk.WORD,
+                                   state=tk.DISABLED, height=18,
+                                   bg="#0d1117", fg="#e6edf3",
+                                   insertbackground="#e6edf3",
+                                   font=("Courier", 9))
+        agents_scroll = ttk.Scrollbar(agents_tab,
+                                      command=self._agent_text.yview)
+        self._agent_text.configure(yscrollcommand=agents_scroll.set)
+        self._agent_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        agents_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._notebook.add(agents_tab, text="Agent activity")
         paned.add(right, weight=3)
 
     def _build_statusbar(self) -> None:
@@ -289,6 +305,7 @@ class ForgeDesktopApp(tk.Tk):
             return
         self._render_tasks(snapshot.get("tasks", []))
         self._render_approvals(snapshot.get("approvals", []))
+        self._render_agents(snapshot.get("agent_activity", {}))
         selected = snapshot.get("selected")
         if selected:
             self._render_selected(selected)
@@ -370,6 +387,47 @@ class ForgeDesktopApp(tk.Tk):
                        command=lambda i=approval_id: self._decide(i, True)).pack(side=tk.RIGHT, padx=2)
             ttk.Button(row, text="Deny",
                        command=lambda i=approval_id: self._decide(i, False)).pack(side=tk.RIGHT)
+
+    def _render_agents(self, activity: dict[str, Any]) -> None:
+        """Render the latest execution's per-role agent activity."""
+        self._agent_text.configure(state=tk.NORMAL)
+        self._agent_text.delete("1.0", tk.END)
+        lines: list[str] = []
+        self._agent_lines: list[str] = []
+        if not activity or not activity.get("present"):
+            lines.append("No parallel execution yet.")
+            lines.append("(Submit a parallel execution from the cockpit's")
+            lines.append("Agent Activity view to see live agent states.)")
+        else:
+            lines.append(f"Execution {str(activity.get('execution_id', ''))[:8]} "
+                         f"- {activity.get('status', '')}")
+            lines.append(str(activity.get("requirement", ""))[:100])
+            lines.append("-" * 60)
+            for agent in activity.get("activity", {}).get("agents", []):
+                role = str(agent.get("role", ""))[:12].ljust(12)
+                state = str(agent.get("state", "idle"))[:12].ljust(12)
+                task_id = str(agent.get("task_id", ""))[:12]
+                attempts = agent.get("attempts", 0)
+                lines.append(f"{role} {state}  task={task_id} "
+                             f"attempts={attempts}")
+                locks = agent.get("held_locks") or []
+                if locks:
+                    lines.append(f"{'':12} locks: {', '.join(locks)[:48]}")
+                if agent.get("blocked_reason"):
+                    lines.append(f"{'':12} blocked: "
+                                 f"{str(agent['blocked_reason'])[:48]}")
+                if agent.get("error"):
+                    lines.append(f"{'':12} error: "
+                                 f"{str(agent['error'])[:48]}")
+            counts = activity.get("activity", {}).get("counts", {})
+            if counts:
+                lines.append("-" * 60)
+                lines.append(" ".join(f"{k}={v}" for k, v in
+                                      sorted(counts.items())))
+        for line in lines[:MAX_LOG_LINES // 50]:
+            self._agent_text.insert(tk.END, line + "\n")
+        self._agent_lines = list(lines)
+        self._agent_text.configure(state=tk.DISABLED)
 
     def _append_event(self, event: dict[str, Any]) -> None:
         etype = event.get("event_type", event.get("type", "event"))

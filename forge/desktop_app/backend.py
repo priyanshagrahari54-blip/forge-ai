@@ -361,7 +361,7 @@ class DesktopBackend:
         """
         snapshot: dict[str, Any] = {
             "at": time.time(), "project_id": project_id,
-            "tasks": [], "approvals": [],
+            "tasks": [], "approvals": [], "agent_activity": {},
             "selected": None, "events": [], "event_cursor": event_cursor,
             "errors": {},
         }
@@ -373,6 +373,14 @@ class DesktopBackend:
             snapshot["approvals"] = self.list_approvals(project_id)
         except BackendError as exc:
             snapshot["errors"]["approvals"] = str(exc)
+        try:
+            # A81 agent-activity view: latest parallel execution's
+            # per-role states, locks, and message trail.
+            plane = self._require_plane()
+            snapshot["agent_activity"] = (
+                plane.agent_activity_for_project(project_id))
+        except Exception as exc:
+            snapshot["errors"]["agent_activity"] = str(exc)
         if selected_task_id:
             try:
                 snapshot["selected"] = self.get_task(project_id,

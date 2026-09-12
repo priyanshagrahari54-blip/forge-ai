@@ -124,6 +124,30 @@ class OrchestrationSubmitRequest(BaseModel):
     chain: bool = False
 
 
+# -- A81 parallel executions ----------------------------------------------------
+
+class ExecutionTaskSpec(BaseModel):
+    id: str = Field(default="", max_length=32)
+    role: str = Field(min_length=1, max_length=32)
+    description: str = Field(min_length=1, max_length=2000)
+    kind: str = Field(default="parallel",
+                      pattern="^(sequential|parallel|dependent)$")
+    dependencies: List[str] = Field(default_factory=list, max_length=40)
+    reads: List[str] = Field(default_factory=list, max_length=200)
+    writes: List[str] = Field(default_factory=list, max_length=200)
+    resources: List[str] = Field(default_factory=list, max_length=20)
+    priority: int = Field(default=0, ge=-1000, le=1000)
+    max_retries: int = Field(default=0, ge=0, le=10)
+    timeout: Optional[float] = Field(default=None, gt=0, le=3600)
+
+
+class ExecutionSubmitRequest(BaseModel):
+    requirement: str = Field(min_length=1, max_length=8000)
+    tasks: List[ExecutionTaskSpec] = Field(min_length=1, max_length=40)
+    max_workers: Optional[int] = Field(default=None, ge=1, le=8)
+    mode: str = Field(default="")
+
+
 # -- A39 vision ---------------------------------------------------------------
 
 class VisionAnalyzeRequest(BaseModel):

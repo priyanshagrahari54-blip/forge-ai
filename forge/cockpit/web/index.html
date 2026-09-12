@@ -63,6 +63,9 @@
         <a href="#/orchestrations" data-route="orchestrations">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="4" r="1.6" fill="none" stroke="currentColor"/><circle cx="8" cy="12" r="1.6" fill="none" stroke="currentColor"/><circle cx="13" cy="8" r="1.6" fill="none" stroke="currentColor"/><path d="M4.5 7.3 6.6 4.9M4.5 8.7l2.1 2.4M9.4 4.9l2.1 2.4M9.4 11.1l2.1-2.4" stroke="currentColor"/></svg>
           <span>Orchestrations</span></a>
+        <a href="#/executions" data-route="executions">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="5" height="3.5" rx="1" fill="none" stroke="currentColor"/><rect x="9.5" y="2.5" width="5" height="3.5" rx="1" fill="none" stroke="currentColor"/><rect x="1.5" y="10" width="5" height="3.5" rx="1" fill="none" stroke="currentColor"/><rect x="9.5" y="10" width="5" height="3.5" rx="1" fill="none" stroke="currentColor"/><path d="M4 6v1.6a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V6M4 10V8.4" fill="none" stroke="currentColor"/></svg>
+          <span>Agent Activity</span></a>
         <a href="#/vision" data-route="vision">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor"/></svg>
           <span>Vision</span></a>
@@ -474,6 +477,36 @@
     <div id="orch-list"></div>
   </section>
   <section class="surface hidden" id="orch-detail"></section>
+</template>
+
+<template id="tpl-executions">
+  <div class="view-head">
+    <h2>Agent Activity</h2>
+    <p class="muted">Parallel task graphs: the supervisor runs ready,
+    conflict-free tasks concurrently — never parallelizing file
+    conflicts — with bounded concurrency, retries, and live per-agent
+    status below.</p>
+  </div>
+  <section class="surface">
+    <form id="exec-form">
+      <label for="exec-requirement">Requirement</label>
+      <textarea id="exec-requirement" rows="2"
+        placeholder="e.g. Research the layout, review and document the codebase"></textarea>
+      <button type="submit" class="primary">Run parallel execution</button>
+    </form>
+    <p class="muted">Submits the standard team graph: research and
+    planning in parallel, then security + review + performance in
+    parallel, then documentation — read-only, A33-gated, no file
+    conflicts.</p>
+  </section>
+  <section class="surface">
+    <div class="section-header">
+      <h3>Executions</h3>
+      <button id="exec-refresh" class="ghost">Refresh</button>
+    </div>
+    <div id="exec-list"></div>
+  </section>
+  <section class="surface hidden" id="exec-detail"></section>
 </template>
 
 <template id="tpl-tasks">

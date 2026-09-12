@@ -596,3 +596,229 @@ class Supervisor:
             if audit_log is not None:
                 result["audit_events"] = audit_log.to_dict()
             return result
+
+    # ------------------------------------------------------------------
+    # A81: parallel task graph execution
+    # ------------------------------------------------------------------
+
+    def execute_parallel(
+        self,
+        requirement: str,
+        graph,
+        workers,
+        *,
+        max_workers: int = 4,
+        mode: OperationMode = OperationMode.ASSISTED,
+        policy=None,
+        approval_store=None,
+        audit_log=None,
+        approval_callback: ApprovalCallback | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        control: SupervisorControl | None = None,
+        state_store=None,
+        run_id: str = "",
+        retry_backoff: float = 0.0,
+    ) -> dict[str, Any]:
+        """Execute a dependency-aware task graph concurrently (A81).
+
+        The supervisor owns the concurrency decision: the
+        :class:`~forge.orchestration.scheduler.ParallelTaskScheduler`
+        only runs tasks that are ready, conflict-free, lock-available,
+        and within the bounded worker budget. Two tasks are never
+        dispatched concurrently when they write the same file, share an
+        exclusive resource, or are on the same sequential lane.
+
+        **A33 security** — every dispatch passes two gates before any
+        work happens: the fine-grained ``Resource.AGENT / execute``
+        policy for the role, and the A32 :class:`PolicyGate` for every
+        declared read and write (``read_file`` / ``write_file``).
+        ``DENY`` fails the task closed (``DENIED``, never retried);
+        ``REQUIRE_APPROVAL`` consults ``approval_callback`` and redeems
+        the minted token — a stale or ungranted token fails closed.
+
+        **A32 atomicity** — a checkpoint is created before the first
+        dispatch; when the run ends FAILED or CANCELLED, exactly the
+        files declared by succeeded tasks are rolled back through that
+        checkpoint (and unstaged), so a failed parallel run leaves the
+        worktree as it found it. A SUCCEEDED run keeps its changes.
+
+        Returns a report dict with the run's status, per-task outcomes,
+        structured messages, events, and the agent-activity snapshot the
+        desktop views render.
+        """
+        from forge.orchestration import (
+            ParallelTaskScheduler, TaskDeniedError, TaskGraph)
+        from forge.security.approvals import enforce_with_token
+        from forge.security.permissions import PermissionManager
+        from forge.security.policy import (PermissionRequest, PolicyDecision,
+                                           Resource)
+        from forge.security.policy_gate import PolicyGate
+        from forge.tools.checkpoint import CheckpointManager
+
+        if not isinstance(graph, TaskGraph):
+            raise TypeError("graph must be a TaskGraph")
+        graph.validate()
+        run_id = run_id or uuid4().hex
+        started = perf_counter()
+        mode = OperationMode(mode)
+        permissions = PermissionManager(mode=mode, policy=policy,
+                                        store=approval_store,
+                                        agent="forge-supervisor",
+                                        audit=audit_log)
+        gate = PolicyGate(permissions)
+        checkpoint_manager = CheckpointManager(self.root)
+        checkpoint = checkpoint_manager.create(f"parallel-run-{run_id}")
+
+        def dispatch_gate(role: str, task_id: str) -> None:
+            """A33: authorize one agent dispatch; raise on denial."""
+            if policy is None:
+                return
+            permission = PermissionRequest(
+                agent="forge-supervisor", resource=Resource.AGENT,
+                operation="execute", scope=role, task_id=task_id,
+                reason=f"parallel dispatch of role {role}")
+            evaluation = policy.evaluate(permission)
+            if evaluation.decision == PolicyDecision.ALLOW:
+                return
+            if evaluation.decision == PolicyDecision.DENY:
+                raise TaskDeniedError(
+                    f"dispatch of {role} denied by policy: "
+                    f"{evaluation.reason or 'denied'}")
+            token = ""
+            if approval_callback is not None:
+                from forge.tools.change_applier import ApprovalQuery
+                query = ApprovalQuery(
+                    items=(), agent="forge-supervisor", task_id=task_id,
+                    capability=role,
+                    fingerprint=f"agent-dispatch:{task_id}",
+                    label=f"Dispatch agent {role}")
+                try:
+                    token = approval_callback(query) or ""
+                except TaskCancelled:
+                    raise
+                except Exception:
+                    token = ""
+            allowed, reason = enforce_with_token(
+                approval_store, token, permission,
+                fingerprint=f"agent-dispatch:{task_id}")
+            if not allowed:
+                raise TaskDeniedError(reason or "dispatch approval not granted")
+
+        def file_gate(operation: str, path: str, role: str,
+                      task_id: str) -> None:
+            """A32/A33: authorize one file read or write."""
+            decision = gate.evaluate(
+                operation=operation, path=path, tool="agent",
+                risk="LOW", capability="coding",
+                agent=role, task_id=task_id)
+            if decision.decision == PolicyDecision.DENY:
+                raise TaskDeniedError(
+                    f"{operation} {path!r} denied: {decision.reason}")
+            if decision.decision == PolicyDecision.REQUIRE_APPROVAL:
+                token = ""
+                if approval_callback is not None:
+                    from forge.tools.change_applier import (
+                        ApprovalItem, ApprovalQuery)
+                    query = ApprovalQuery(
+                        items=(ApprovalItem(
+                            operation=operation, path=path, tool="agent",
+                            risk="LOW",
+                            reason=decision.reason or "write approval"),),
+                        agent=role, task_id=task_id,
+                        capability="coding",
+                        fingerprint=f"parallel:{task_id}:{path}",
+                        label=f"{operation} {path}")
+                    try:
+                        token = approval_callback(query) or ""
+                    except TaskCancelled:
+                        raise
+                    except Exception:
+                        token = ""
+                if token:
+                    decision = gate.evaluate(
+                        operation=operation, path=path, tool="agent",
+                        risk="LOW", capability="coding",
+                        agent=role, task_id=task_id,
+                        approval_token_id=token)
+                if not decision.allowed:
+                    raise TaskDeniedError(
+                        f"{operation} {path!r} not approved: "
+                        f"{decision.reason}")
+
+        def make_gated(role: str, raw_worker):
+            def gated(work_item):
+                task = work_item.task
+                dispatch_gate(role, task.id)
+                for path in sorted(task.reads):
+                    file_gate("read_file", path, role, task.id)
+                for path in sorted(task.writes):
+                    file_gate("write_file", path, role, task.id)
+                return raw_worker(work_item)
+            return gated
+
+        scheduler = ParallelTaskScheduler(
+            graph, {role: make_gated(role, worker)
+                    for role, worker in dict(workers).items()},
+            max_workers=max_workers, run_id=run_id,
+            requirement=requirement, project=self.state.project_name,
+            state_store=state_store, control=control, on_event=on_event,
+            retry_backoff=retry_backoff)
+        try:
+            report = scheduler.run()
+        except Exception:
+            # Scheduler itself failed (should not happen for a validated
+            # graph): roll back whatever the run touched before re-raising.
+            checkpoint_manager.rollback(
+                checkpoint, sorted({p for task in graph.tasks
+                                    for p in task.writes}))
+            checkpoint_manager.cleanup(checkpoint)
+            raise
+
+        cancelled = report.status == "CANCELLED"
+        accepted = report.succeeded
+        # What the run accepted (kept): declared writes of succeeded
+        # tasks. What must be restored on a non-accepted run: declared
+        # writes of every task that was *attempted* — a failing task
+        # may have modified its files before it failed, and a cancelled
+        # run likewise, so atomicity covers all of them.
+        touched = sorted({path for task in graph.tasks
+                          if task.status.value == "SUCCEEDED"
+                          for path in task.writes})
+        attempted = sorted({path for task in graph.tasks
+                            if task.attempts > 0
+                            for path in task.writes})
+        rollback = False
+        if not accepted:
+            # A32 atomicity: a failed/cancelled run leaves no partial
+            # change set behind — every file the run attempted is
+            # restored to its pre-run state.
+            checkpoint_manager.rollback(checkpoint, attempted)
+            rollback = True
+        checkpoint_manager.cleanup(checkpoint)
+        self.set_stage("PARALLEL")
+        self.stage_history.append({
+            "stage": "PARALLEL",
+            "details": {"run_id": run_id, "status": report.status,
+                        "tasks": len(graph.tasks)},
+        })
+        result: dict[str, Any] = {
+            "run_id": run_id,
+            "requirement": requirement,
+            "mode": mode.value,
+            "status": report.status,
+            "accepted": accepted,
+            "cancelled": cancelled,
+            "summary": report.summary,
+            "counts": report.counts,
+            "tasks": [task.to_dict() for task in report.tasks],
+            "messages": report.messages,
+            "events": report.events,
+            "files": touched,
+            "rollback": rollback,
+            "checkpoint_id": checkpoint.id,
+            "activity": scheduler.activity.snapshot(),
+            "duration_seconds": round(report.duration_seconds, 3),
+        }
+        if audit_log is not None:
+            result["audit_events"] = audit_log.to_dict()
+        return result
