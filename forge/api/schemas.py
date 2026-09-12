@@ -343,46 +343,42 @@ class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
 
 
-# -- Managed agents: first-party Creation Engine -----------------------------------
+# -- agent creation engine (first-party) -------------------------------------------
 
-class ManagedAgentSpecRequest(BaseModel):
-    spec: dict
+class EngineCreateRequest(BaseModel):
     template: str = Field(default="", max_length=32)
+    name: str = Field(default="", max_length=48)
+    spec: Optional[dict] = None
+    overrides: Optional[dict] = None
 
 
-class ManagedAgentTemplateRequest(BaseModel):
-    template: str = Field(min_length=2, max_length=32)
-    name: str = Field(min_length=3, max_length=48)
-    purpose: str = Field(default="", max_length=1000)
-
-
-class ManagedAgentUpdateRequest(BaseModel):
+class EngineUpdateRequest(BaseModel):
     spec: dict
-    bump: str = Field(default="patch", max_length=16)
     reason: str = Field(default="", max_length=300)
 
 
-class ManagedAgentVersionRequest(BaseModel):
-    version: str = Field(default="", max_length=32)
-    bump: str = Field(default="patch", max_length=16)
-    reason: str = Field(default="", max_length=300)
+class EngineGrantRequest(BaseModel):
+    index: int = Field(ge=0, le=100)
 
 
-class ManagedAgentGrantRequest(BaseModel):
-    resource: str = Field(min_length=2, max_length=32)
-    operation: str = Field(min_length=2, max_length=32)
-    scope: str = Field(default="", max_length=512)
-    effect: str = Field(default="REQUIRE_APPROVAL", max_length=32)
+class EngineVersionRequest(BaseModel):
+    notes: str = Field(default="", max_length=280)
+    kind: str = Field(default="patch", max_length=16)
 
 
-class ManagedToolCall(BaseModel):
+class EngineToolCall(BaseModel):
     tool: str = Field(min_length=1, max_length=64)
     args: dict = Field(default_factory=dict)
 
 
-class ManagedAgentRunRequest(BaseModel):
+class EngineRunRequest(BaseModel):
     requirement: str = Field(min_length=1, max_length=4000)
-    approval_id: str = Field(default="", max_length=200)
-    tool_calls: List[ManagedToolCall] = Field(default_factory=list,
-                                              max_length=8)
+    approval_token_id: str = Field(default="", max_length=200)
+    test_command: str = Field(default="", max_length=256)
+    tool_calls: List[EngineToolCall] = Field(default_factory=list,
+                                             max_length=8)
     approved: bool = False
+
+
+class EngineImportRequest(BaseModel):
+    payload: dict

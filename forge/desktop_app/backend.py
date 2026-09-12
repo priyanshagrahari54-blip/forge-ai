@@ -320,89 +320,6 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
-    # -- managed agents (Creation Engine) ------------------------------------
-
-    def managed_templates(self, project_id: str) -> list[dict[str, Any]]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        try:
-            return [dict(item) for item in
-                    plane.managed_templates(session)["templates"]]
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
-
-    def list_managed_agents(self, project_id: str) -> list[dict[str, Any]]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        try:
-            return [dict(item) for item in
-                    plane.managed_list(session)["agents"]]
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
-
-    def get_managed_agent(self, project_id: str,
-                          name: str) -> dict[str, Any]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        try:
-            return dict(plane.managed_get(session, name))
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
-
-    def create_managed_agent(self, project_id: str, template: str,
-                             name: str, purpose: str = "") -> dict[str, Any]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        if not name.strip():
-            raise BackendError("Give the agent a name first.")
-        try:
-            return dict(plane.managed_create_from_template(
-                session, template, name, purpose))
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
-
-    def _managed_action(self, operation: str, project_id: str,
-                        name: str) -> dict[str, Any]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        try:
-            result = getattr(plane, operation)(session, name)
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
-        return dict(result)
-
-    def validate_managed_agent(self, project_id: str,
-                               name: str) -> dict[str, Any]:
-        return self._managed_action("managed_validate", project_id, name)
-
-    def test_managed_agent(self, project_id: str,
-                           name: str) -> dict[str, Any]:
-        return self._managed_action("managed_test", project_id, name)
-
-    def enable_managed_agent(self, project_id: str,
-                             name: str) -> dict[str, Any]:
-        return self._managed_action("managed_enable", project_id, name)
-
-    def pause_managed_agent(self, project_id: str,
-                            name: str) -> dict[str, Any]:
-        return self._managed_action("managed_pause", project_id, name)
-
-    def disable_managed_agent(self, project_id: str,
-                              name: str) -> dict[str, Any]:
-        return self._managed_action("managed_disable", project_id, name)
-
-    def retire_managed_agent(self, project_id: str,
-                             name: str) -> dict[str, Any]:
-        return self._managed_action("managed_retire", project_id, name)
-
-    def version_managed_agent(self, project_id: str, name: str, *,
-                              bump: str = "patch") -> dict[str, Any]:
-        plane = self._require_plane()
-        session = self._session_for(project_id)
-        try:
-            return dict(plane.managed_version(session, name, bump=bump))
-        except Exception as exc:
-            raise BackendError(str(exc)) from exc
 
     # -- files --------------------------------------------------------------
 
@@ -433,6 +350,127 @@ class DesktopBackend:
             text = text[:max_chars]
         return {"path": rel_path, "content": text, "truncated": truncated,
                 "size": candidate.stat().st_size}
+
+    # -- agent manager (creation engine) ----------------------------------------
+
+    def _engine_for(self, project_id: str):
+        from forge.agents.creation import AgentCreationEngine
+
+        plane = self._require_plane()
+        try:
+            project = plane.get_project(project_id)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        if not hasattr(self, "_agent_engines"):
+            self._agent_engines: dict[str, Any] = {}
+        engine = self._agent_engines.get(project_id)
+        if engine is None:
+            store = str(Path(project.root) / ".forge" / "agent-engine.json")
+            try:
+                engine = AgentCreationEngine(store_path=store)
+            except ValueError as exc:
+                raise BackendError(f"Agent store error: {exc}") from exc
+            self._agent_engines[project_id] = engine
+        return engine
+
+    def agents_templates(self) -> list[dict[str, Any]]:
+        from forge.agents.creation import AgentCreationEngine
+
+        return AgentCreationEngine().templates()
+
+    def agents_list(self, project_id: str) -> list[dict[str, Any]]:
+        return [package.manifest()
+                for package in self._engine_for(project_id).list()]
+
+    def agents_create(self, project_id: str, template: str,
+                      name: str) -> dict[str, Any]:
+        engine = self._engine_for(project_id)
+        try:
+            package = engine.create_from_template(
+                template, name, created_by=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return package.to_dict()
+
+    def agents_show(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._engine_for(project_id).get(name).to_dict()
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _agents_lifecycle(self, operation: str, project_id: str,
+                          name: str) -> dict[str, Any]:
+        engine = self._engine_for(project_id)
+        try:
+            if operation == "validate":
+                return engine.validate(name, actor=self.actor)
+            if operation == "test":
+                return engine.benchmark(name, actor=self.actor)
+            return getattr(engine, operation)(
+                name, actor=self.actor).to_dict()
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agents_validate(self, project_id: str,
+                        name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("validate", project_id, name)
+
+    def agents_test(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("test", project_id, name)
+
+    def agents_enable(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("enable", project_id, name)
+
+    def agents_pause(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("pause", project_id, name)
+
+    def agents_resume(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("resume", project_id, name)
+
+    def agents_disable(self, project_id: str,
+                       name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("disable", project_id, name)
+
+    def agents_retire(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("retire", project_id, name)
+
+    def agents_grant(self, project_id: str, name: str,
+                     index: int) -> dict[str, Any]:
+        try:
+            grant = self._engine_for(project_id).grant_permission(
+                name, index, approver=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "grant": grant}
+
+    def agents_revoke(self, project_id: str, name: str,
+                      index: int) -> dict[str, Any]:
+        try:
+            revoked = self._engine_for(project_id).revoke_permission(
+                name, index, approver=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "revoked": revoked}
+
+    def agents_update(self, project_id: str, name: str,
+                      spec: dict[str, Any],
+                      reason: str = "") -> dict[str, Any]:
+        try:
+            package = self._engine_for(project_id).update(
+                name, spec, actor=self.actor, reason=reason)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return package.to_dict()
+
+    def agents_version(self, project_id: str, name: str, *,
+                       kind: str = "patch",
+                       notes: str = "") -> dict[str, Any]:
+        try:
+            record = self._engine_for(project_id).publish_version(
+                name, kind=kind, notes=notes, actor=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "release": record}
 
     # -- polling snapshot ----------------------------------------------------
 

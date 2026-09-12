@@ -4574,179 +4574,231 @@ class ControlPlane:
                            for definition in factory.list()]}
 
 
-    # -- managed agents: first-party Creation Engine ---------------------------
+    # -- agent creation engine (first-party) ---------------------------
 
-    def _managed_engine(self, session: Session):
-        from forge.agents.creation_engine import AgentCreationEngine
+    def _creation_engine(self, session: Session):
+        from forge.agents.creation import AgentCreationEngine
 
-        if not hasattr(self, "_managed_engines"):
-            self._managed_engines: dict[str, Any] = {}
-        engine = self._managed_engines.get(session.id)
+        if not hasattr(self, "_creation_engines"):
+            self._creation_engines: dict[str, Any] = {}
+        engine = self._creation_engines.get(session.id)
         if engine is None:
-            engine = AgentCreationEngine(session.id)
-            self._managed_engines[session.id] = engine
+            engine = AgentCreationEngine()
+            self._creation_engines[session.id] = engine
         return engine
 
-    def _sync_managed_limits(self, package: Any) -> None:
+    def _engine_runtime(self, session: Session):
+        from forge.agents.mediation import GatedAgentRuntime
+        from forge.runtime.defaults import create_default_runtime
+        from forge.security.permissions import PermissionManager
+        from forge.security.policy_gate import PolicyGate
+        from forge.tools.checkpoint import CheckpointManager
+
+        if not hasattr(self, "_engine_runtimes"):
+            self._engine_runtimes: dict[str, Any] = {}
+        runtime = self._engine_runtimes.get(session.id)
+        if runtime is None:
+            project = self.get_project(session.project_id)
+            root = str(project.root)
+            try:
+                mode = OperationMode(session.profile)
+            except ValueError:
+                mode = OperationMode.ASSISTED
+            permissions = PermissionManager(
+                mode=mode, policy=self.policy,
+                store=self.approval_store, agent="forge-agent-engine",
+                audit=self.audit)
+            runtime = GatedAgentRuntime(
+                fabric=self.fabric, policy_gate=PolicyGate(permissions),
+                tool_runtime=create_default_runtime(permissions, root),
+                memory_root=str(Path(root) / ".forge" / "agent-memory"),
+                project_root=root,
+                checkpoint_manager=CheckpointManager(root))
+            self._engine_runtimes[session.id] = runtime
+        return runtime
+
+    def engine_templates(self) -> dict[str, Any]:
+        from forge.agents.creation import AgentCreationEngine
+
+        return {"templates": AgentCreationEngine().templates()}
+
+    def engine_create(self, session: Session, *, template: str = "",
+                      name: str = "",
+                      spec: dict[str, Any] | None = None,
+                      overrides: dict[str, Any] | None = None,
+                      ) -> dict[str, Any]:
+        engine = self._creation_engine(session)
         try:
-            limits = package.spec.resource_limits
-            self._agent_governor().set_limits(
-                package.name,
-                max_runs_per_hour=limits.max_runs_per_hour,
-                max_concurrent=limits.max_concurrent)
-        except Exception:
-            pass
-
-    def managed_templates(self, session: Session) -> dict[str, Any]:
-        from forge.agents.templates import list_templates
-
-        del session
-        return {"templates": list_templates()}
-
-    def managed_create(self, session: Session, spec: dict[str, Any], *,
-                       template: str = "") -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        try:
-            package = engine.create(dict(spec or {}),
-                                    session.actor, template=template)
+            if spec is not None:
+                package = engine.create_from_spec(
+                    spec, created_by=session.actor)
+            else:
+                package = engine.create_from_template(
+                    template, name, created_by=session.actor,
+                    overrides=overrides)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
-        self._sync_managed_limits(package)
-        self._audit(session.actor, "managed-agents", "create", True,
+        self._audit(session.actor, "engine", "create", True,
                     task_id=session.active_task or session.id,
-                    reason=f"{package.name} v{package.version} "
-                           f"template={template or '-'}")
+                    reason="%s template=%s"
+                    % (package.name, template or "-"))
         return package.to_dict()
 
-    def managed_create_from_template(self, session: Session, template: str,
-                                     name: str, purpose: str = ""
-                                     ) -> dict[str, Any]:
-        engine = self._managed_engine(session)
+    def engine_update(self, session: Session, name: str,
+                      spec: dict[str, Any],
+                      reason: str = "") -> dict[str, Any]:
+        engine = self._creation_engine(session)
         try:
-            package = engine.create_from_template(
-                template, name, session.actor, purpose)
+            package = engine.update(name, spec, actor=session.actor,
+                                    reason=reason)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
-        self._sync_managed_limits(package)
-        self._audit(session.actor, "managed-agents", "create", True,
+        self._audit(session.actor, "engine", "update", True,
                     task_id=session.active_task or session.id,
-                    reason=f"{package.name} v{package.version} "
-                           f"template={template}")
+                    reason="%s -> %s" % (name, package.version))
         return package.to_dict()
 
-    def managed_list(self, session: Session) -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        return {"agents": [package.to_dict()
+    def engine_list(self, session: Session) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        return {"agents": [package.manifest()
                            for package in engine.list()]}
 
-    def managed_get(self, session: Session, name: str) -> dict[str, Any]:
-        engine = self._managed_engine(session)
+    def engine_get(self, session: Session, name: str) -> dict[str, Any]:
         try:
-            return engine.require(name).to_dict()
+            return self._creation_engine(session).get(name).to_dict()
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
 
-    def managed_update(self, session: Session, name: str,
-                       spec: dict[str, Any], *, bump: str = "patch",
-                       reason: str = "") -> dict[str, Any]:
-        engine = self._managed_engine(session)
+    def _engine_lifecycle(self, session: Session, name: str,
+                          operation: str) -> dict[str, Any]:
+        engine = self._creation_engine(session)
         try:
-            package = engine.update(name, dict(spec or {}),
-                                    session.actor, bump=bump, reason=reason)
+            if operation == "validate":
+                report = engine.validate(name, actor=session.actor)
+                self._audit(session.actor, "engine", "validate",
+                            report["valid"],
+                            task_id=session.active_task or session.id,
+                            reason=name)
+                return report
+            if operation == "test":
+                report = engine.benchmark(name, actor=session.actor,
+                                          fabric=self.fabric)
+                self._audit(session.actor, "engine", "test",
+                            report["passed"],
+                            task_id=session.active_task or session.id,
+                            reason="%s score=%s" % (name,
+                                                    report["score"]))
+                return report
+            action = getattr(engine, operation)
+            package = action(name, actor=session.actor)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
-        self._sync_managed_limits(package)
-        self._audit(session.actor, "managed-agents", "update", True,
+        self._audit(session.actor, "engine", operation, True,
                     task_id=session.active_task or session.id,
-                    reason=f"{name} v{package.version}")
+                    reason="%s -> %s" % (name, package.state))
         return package.to_dict()
 
-    def managed_version(self, session: Session, name: str, *,
-                        version: str = "", bump: str = "",
-                        reason: str = "") -> dict[str, Any]:
-        engine = self._managed_engine(session)
+    def engine_validate(self, session: Session,
+                        name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "validate")
+
+    def engine_test(self, session: Session, name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "test")
+
+    def engine_enable(self, session: Session, name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "enable")
+
+    def engine_pause(self, session: Session, name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "pause")
+
+    def engine_resume(self, session: Session, name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "resume")
+
+    def engine_disable(self, session: Session,
+                       name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "disable")
+
+    def engine_retire(self, session: Session, name: str) -> dict[str, Any]:
+        return self._engine_lifecycle(session, name, "retire")
+
+    def engine_grant(self, session: Session, name: str, index: int, *,
+                     approver: str = "") -> dict[str, Any]:
+        engine = self._creation_engine(session)
         try:
-            if version:
-                package = engine.set_version(name, version, session.actor,
-                                             reason)
-            else:
-                package = engine.bump(name, session.actor,
-                                      bump or "patch", reason)
+            grant = engine.grant_permission(
+                name, index, approver=approver or session.actor)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
-        self._audit(session.actor, "managed-agents", "version", True,
+        self._audit(session.actor, "engine", "grant", True,
                     task_id=session.active_task or session.id,
-                    reason=f"{name} v{package.version}")
+                    reason="%s #%d by %s"
+                    % (name, index, grant["approver"]))
+        return {"agent": name, "grant": grant}
+
+    def engine_revoke(self, session: Session, name: str, index: int, *,
+                      approver: str = "") -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            revoked = engine.revoke_permission(
+                name, index, approver=approver or session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "engine", "revoke", True,
+                    task_id=session.active_task or session.id,
+                    reason="%s #%d" % (name, index))
+        return {"agent": name, "revoked": revoked}
+
+    def engine_version(self, session: Session, name: str, *,
+                       notes: str = "",
+                       kind: str = "patch") -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            record = engine.publish_version(
+                name, kind=kind, notes=notes, actor=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "engine", "version", True,
+                    task_id=session.active_task or session.id,
+                    reason="%s %s" % (name, record["version"]))
+        return {"agent": name, "release": record}
+
+    def engine_export(self, session: Session, name: str) -> dict[str, Any]:
+        try:
+            payload = self._creation_engine(session).export_package(name)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "engine", "export", True,
+                    task_id=session.active_task or session.id,
+                    reason=name)
+        return payload
+
+    def engine_import(self, session: Session,
+                      payload: Any) -> dict[str, Any]:
+        engine = self._creation_engine(session)
+        try:
+            package = engine.import_package(payload,
+                                            created_by=session.actor)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        self._audit(session.actor, "engine", "import", True,
+                    task_id=session.active_task or session.id,
+                    reason="%s (ungranted)" % package.name)
         return package.to_dict()
 
-    def managed_validate(self, session: Session, name: str) -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        try:
-            result = engine.validate(name, session.actor)
-        except ValueError as exc:
-            raise InvalidRequest(str(exc)) from exc
-        self._audit(session.actor, "managed-agents", "validate", True,
-                    task_id=session.active_task or session.id, reason=name)
-        return result
+    def engine_run(self, session: Session, name: str, requirement: str, *,
+                   approval_token_id: str = "",
+                   test_command: str = "",
+                   tool_calls: list[dict[str, Any]] | None = None,
+                   approved: bool = False) -> dict[str, Any]:
+        """Run an enabled created agent through the mediated runtime.
 
-    def managed_test(self, session: Session, name: str) -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        try:
-            report = engine.test(name, session.actor, self.fabric)
-        except ValueError as exc:
-            raise InvalidRequest(str(exc)) from exc
-        self._audit(session.actor, "managed-agents", "test",
-                    bool(report.get("success")),
-                    task_id=session.active_task or session.id,
-                    reason=f"{name} {report.get('passed')}/"
-                           f"{report.get('total')}")
-        return report
-
-    def _managed_transition(self, session: Session, name: str,
-                            action: str) -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        try:
-            package = getattr(engine, action)(name, session.actor)
-        except ValueError as exc:
-            raise InvalidRequest(str(exc)) from exc
-        self._audit(session.actor, "managed-agents", action, True,
-                    task_id=session.active_task or session.id,
-                    reason=f"{name} -> {package.state}")
-        return package.to_dict()
-
-    def managed_enable(self, session: Session, name: str) -> dict[str, Any]:
-        return self._managed_transition(session, name, "enable")
-
-    def managed_pause(self, session: Session, name: str) -> dict[str, Any]:
-        return self._managed_transition(session, name, "pause")
-
-    def managed_disable(self, session: Session, name: str) -> dict[str, Any]:
-        return self._managed_transition(session, name, "disable")
-
-    def managed_retire(self, session: Session, name: str) -> dict[str, Any]:
-        return self._managed_transition(session, name, "retire")
-
-    def managed_grant(self, session: Session, name: str,
-                      grant: dict[str, Any]) -> dict[str, Any]:
-        engine = self._managed_engine(session)
-        try:
-            package = engine.grant_permission(name, dict(grant or {}),
-                                              session.actor)
-        except ValueError as exc:
-            raise InvalidRequest(str(exc)) from exc
-        self._sync_managed_limits(package)
-        self._audit(session.actor, "managed-agents", "grant", True,
-                    task_id=session.active_task or session.id,
-                    reason=f"{name} v{package.version}")
-        return package.to_dict()
-
-    def managed_run(self, session: Session, name: str, requirement: str, *,
-                    approval_id: str = "",
-                    tool_calls: list[dict[str, Any]] | None = None,
-                    approved: bool = False) -> dict[str, Any]:
-        from forge.agents.managed_executor import (
-            ManagedExecutionError, execute_managed_agent)
-        from forge.runtime.defaults import create_default_runtime
+        The AGENT/execute policy gate runs first under the agent's own
+        identity — so the A33 store refuses any self-approval — and the
+        mediated runtime then enforces lifecycle, tools, memory,
+        verification, and resource limits.
+        """
+        from forge.agents.creation import agent_identity
+        from forge.agents.mediation import MediationError
         from forge.security.approvals import enforce_with_token
         from forge.security.policy import (PermissionEvaluation,
                                            PermissionRequest)
@@ -4754,120 +4806,73 @@ class ControlPlane:
         if not isinstance(requirement, str) or not requirement.strip() \
                 or len(requirement) > 4000:
             raise InvalidRequest("Requirement must be 1-4000 characters.")
-        engine = self._managed_engine(session)
+        engine = self._creation_engine(session)
         try:
-            package = engine.require(name)
+            package = engine.get(name)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
-        # Pre-gate AGENT/execute so REQUIRE_APPROVAL files a decidable
-        # request (like legacy agent_run) instead of raising.
-        agent_id = f"forge-managed:{package.name}"
+        if package.state != "enabled":
+            raise InvalidRequest(
+                "Agent %s is %s; only enabled agents can run"
+                % (name, package.state))
+        identity = agent_identity(name)
         permission = PermissionRequest(
-            agent=agent_id, resource=Resource.AGENT,
-            operation="execute", scope=package.name,
+            agent=identity, resource=Resource.AGENT,
+            operation="execute", scope=name,
             task_id=session.active_task or session.id,
-            reason=f"managed agent run {package.name}")
-        policy = self.policy if self.policy is not None else PermissionPolicy()
+            reason="mediated run of created agent %s" % name,
+            details=(("agent", name),))
+        policy = self.policy if self.policy is not None \
+            else PermissionPolicy()
         evaluation = policy.evaluate(permission)
         self.audit.record_evaluation(permission, evaluation)
         if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL \
-                and approval_id:
+                and approval_token_id:
             allowed, _reason = enforce_with_token(
-                self.approval_store, approval_id, permission)
+                self.approval_store, approval_token_id, permission)
             if allowed:
                 evaluation = PermissionEvaluation(
                     decision=PolicyDecision.ALLOW, reason=_reason,
                     risk=permission.risk, scope=permission.scope,
                     request_id=permission.request_id)
         if evaluation.decision == PolicyDecision.REQUIRE_APPROVAL:
-            filed = self.approval_store.submit(ApprovalRequest(
-                agent=agent_id, resource=Resource.AGENT,
-                operation="execute", scopes=(package.name,),
+            request = self.approval_store.submit(ApprovalRequest(
+                agent=identity, resource=Resource.AGENT,
+                operation="execute", scopes=(name,),
                 task_id=session.active_task or session.id,
-                reason=f"Managed agent run {package.name}",
-                consequences="The agent runs one bounded step through "
-                             "the Model Fabric, Tool Runtime, memory, "
+                reason="Mediated run of created agent %s" % name,
+                consequences="The agent runs through the Model Fabric, "
+                             "PolicyGate, Tool Runtime, namespaced memory, "
                              "verification, and checkpoints."))
-            self._audit(session.actor, "managed-agents", "run", False,
+            self._audit(session.actor, "engine", "run", False,
                         task_id=session.active_task or session.id,
                         reason="approval required")
             return {"allowed": False, "approval_required": True,
-                    "approval_request_id": filed.id, "run": None}
+                    "approval_request_id": request.id, "run": None}
         if evaluation.decision != PolicyDecision.ALLOW:
-            self._audit(session.actor, "managed-agents", "run", False,
+            self._audit(session.actor, "engine", "run", False,
                         task_id=session.active_task or session.id,
                         reason=evaluation.reason)
             return {"allowed": False, "approval_required": False,
-                    "approval_request_id": "",
-                    "reason": evaluation.reason or "denied by policy",
-                    "run": None}
-        project = self.get_project(session.project_id)
-        permissions = PermissionManager(
-            mode=OperationMode(session.profile), policy=self.policy,
-            store=self.approval_store, agent=agent_id, audit=self.audit)
+                    "approval_request_id": "", "run": None,
+                    "reason": evaluation.reason or "denied by policy"}
         try:
-            from forge.security.verification import VerificationPipeline
-            from forge.tools.checkpoint import CheckpointManager
-
-            result = execute_managed_agent(
-                package, requirement,
-                fabric=self.fabric, policy=policy,
-                approval_store=self.approval_store,
-                approval_token_id=approval_id,
-                policy_gate=PolicyGate(permissions),
-                runtime=create_default_runtime(permissions, project.root),
+            report = self._engine_runtime(session).run(
+                package, requirement, actor=session.actor,
+                test_command=test_command,
                 tool_calls=list(tool_calls or []), approved=approved,
-                memory_store=self._agent_memory_store(),
-                verifier=VerificationPipeline(project.root),
-                checkpoint_manager=CheckpointManager(project.root),
-                governor=self._agent_governor(),
-                actor=session.actor,
-                task_id=session.active_task or session.id)
-        except ManagedExecutionError as exc:
-            self._audit(session.actor, "managed-agents", "run", False,
+                approval_token_id=approval_token_id)
+        except MediationError as exc:
+            self._audit(session.actor, "engine", "run", False,
                         task_id=session.active_task or session.id,
-                        reason=f"{name}: {str(exc)[:200]}")
-            raise InvalidRequest(str(exc)) from exc
-        self._audit(session.actor, "managed-agents", "run", True,
+                        reason="%s %s" % (exc.code, exc))
+            raise InvalidRequest("%s: %s" % (exc.code, exc)) from exc
+        self._audit(session.actor, "engine", "run", True,
                     task_id=session.active_task or session.id,
-                    reason=f"{name} run={result['run_id']}")
+                    reason="%s run=%s success=%s"
+                    % (name, report["run_id"], report["success"]))
         return {"allowed": True, "approval_required": False,
-                "approval_request_id": "", "run": result}
-
-    def list_managed_approvals(self, session: Session
-                               ) -> list[dict[str, Any]]:
-        visible = []
-        for request in self.approval_store.pending():
-            if request.agent.startswith("forge-managed:") \
-                    and request.task_id in (session.id,
-                                            session.active_task):
-                visible.append(request.to_dict())
-        return visible
-
-    def decide_managed_approval(self, session: Session, approval_id: str,
-                                approved: bool) -> dict[str, Any]:
-        request = self.approval_store.get_request(approval_id)
-        if request is None \
-                or not request.agent.startswith("forge-managed:") \
-                or request.task_id not in (session.id, session.active_task):
-            raise ApprovalNotFoundError(
-                f"Unknown approval: {approval_id!r}")
-        try:
-            decided = self.approval_store.decide(
-                approval_id, approved, session.actor)
-        except ValueError as exc:
-            raise ApprovalConflictError(str(exc)) from exc
-        token_id = ""
-        if approved:
-            token = self.approval_store.issue(
-                approval_id, decided_by=session.actor,
-                ttl_seconds=self.config.approval_token_ttl, max_uses=1)
-            token_id = token.id
-        self._audit(session.actor, "managed-agents",
-                    "approve" if approved else "deny", True,
-                    task_id=request.task_id,
-                    reason=f"managed approval {approval_id}")
-        return {"approval": decided.to_dict(), "token_id": token_id}
+                "approval_request_id": "", "run": report}
 
 
     # -- compute (A48) --------------------------------------------------------------------
