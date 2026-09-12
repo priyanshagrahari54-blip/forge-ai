@@ -239,9 +239,9 @@ def test_factory_creates_structured_package():
 
 def test_factory_rejects_duplicates_and_invalid():
     engine = AgentCreationEngine()
-    engine.create_from_spec(full_spec())
+    engine.create_from_spec(full_spec(), created_by="tester")
     with pytest.raises(ValueError):
-        engine.create_from_spec(full_spec())
+        engine.create_from_spec(full_spec(), created_by="tester")
     with pytest.raises(ValueError):
         engine.create_from_spec({"name": "bad!!!"})
     with pytest.raises(ValueError):
@@ -272,7 +272,8 @@ def test_engine_creates_from_every_template():
 
 def validated_engine() -> AgentCreationEngine:
     engine = AgentCreationEngine()
-    engine.create_from_template("research", "scout-one")
+    engine.create_from_template("research", "scout-one",
+                                created_by="tester")
     engine.validate("scout-one", actor="tester")
     return engine
 
@@ -300,7 +301,7 @@ def test_lifecycle_happy_path():
 
 def test_lifecycle_refuses_skips():
     engine = AgentCreationEngine()
-    engine.create_from_template("coding", "skippy")
+    engine.create_from_template("coding", "skippy", created_by="op")
     with pytest.raises(ValueError):
         engine.enable("skippy", actor="op")
     with pytest.raises(ValueError):
@@ -314,7 +315,7 @@ def test_lifecycle_refuses_skips():
 
 def test_lifecycle_pause_disable_rules():
     engine = AgentCreationEngine()
-    engine.create_from_template("coding", "pausy")
+    engine.create_from_template("coding", "pausy", created_by="op")
     engine.validate("pausy", actor="op")
     engine.benchmark("pausy", actor="op")
     with pytest.raises(ValueError):
@@ -338,7 +339,8 @@ def test_retired_is_terminal():
 
 def test_enable_requires_passing_benchmark():
     engine = AgentCreationEngine()
-    package = engine.create_from_template("security", "strict-one")
+    package = engine.create_from_template("security", "strict-one",
+                                          created_by="op")
     engine.validate("strict-one", actor="op")
     package.spec["capabilities"] = ["bogus"]
     report = engine.benchmark("strict-one", actor="op")
@@ -349,7 +351,8 @@ def test_enable_requires_passing_benchmark():
 
 def test_benchmark_failure_blocks_testing():
     engine = AgentCreationEngine()
-    package = engine.create_from_template("security", "strict-one")
+    package = engine.create_from_template("security", "strict-one",
+                                          created_by="op")
     engine.validate("strict-one", actor="op")
     # Corrupt the stored spec in-memory: benchmark must fail closed and
     # the package must stay validated (import path re-validates anyway).
@@ -547,7 +550,7 @@ def test_corrupt_store_fails_closed(tmp_path: Path):
 
 def test_package_from_dict_revalidates():
     package = AgentCreationEngine().create_from_template(
-        "coding", "strict-two")
+        "coding", "strict-two", created_by="op")
     payload = package.to_dict()
     payload["state"] = "hyper-enabled"
     with pytest.raises(ValueError):
@@ -556,3 +559,152 @@ def test_package_from_dict_revalidates():
     payload["version"] = "v9"
     with pytest.raises(ValueError):
         AgentPackage.from_dict(payload)
+
+
+# -- hardening ------------------------------------------------------------
+
+def test_self_admin_matching_is_case_insensitive():
+    engine = AgentCreationEngine()
+    for actor in ("Ego", "AGENT:EGO", "Agent:Ego", "FORGE-MANAGED:EGO",
+                  " agent:ego ", "AGENT:OTHER"):
+        with pytest.raises(ValueError):
+            engine.create_from_spec(full_spec("ego"), created_by=actor)
+
+
+def test_anonymous_administration_refused():
+    engine = AgentCreationEngine()
+    engine.create_from_spec(full_spec("named"), created_by="op")
+    with pytest.raises(ValueError, match="anonymous"):
+        engine.validate("named", actor="")
+    with pytest.raises(ValueError, match="anonymous"):
+        engine.validate("named", actor="   ")
+
+
+def test_grant_expected_pin_detects_moved_index():
+    engine = validated_engine()
+    reviewed = dict(engine.get("scout-one").spec["permissions"][0])
+    engine.grant_permission("scout-one", 0, approver="op",
+                            expected=dict(reviewed))
+    assert len(engine.get("scout-one").grants) == 1
+    engine.revoke_permission("scout-one", 0, approver="op")
+    # A spec update shifts index 0 to a different permission...
+    spec = dict(engine.get("scout-one").spec)
+    spec["permissions"] = [
+        {"resource": "memory", "operation": "write", "scope": "",
+         "risk": "LOW", "reason": "Record notes."},
+        reviewed,
+    ]
+    engine.update("scout-one", spec, actor="op")
+    with pytest.raises(ValueError, match="changed since it was reviewed"):
+        engine.grant_permission("scout-one", 0, approver="op",
+                                expected=reviewed)
+
+
+def test_grant_rejects_bool_index():
+    engine = validated_engine()
+    with pytest.raises(ValueError, match="out of range"):
+        engine.grant_permission("scout-one", True, approver="op")
+
+
+def test_enable_needs_fresh_benchmark_after_spec_change():
+    engine = AgentCreationEngine()
+    engine.create_from_template("research", "stale-one", created_by="op")
+    engine.validate("stale-one", actor="op")
+    engine.benchmark("stale-one", actor="op")
+    engine.enable("stale-one", actor="op")
+    spec = dict(engine.get("stale-one").spec)
+    spec["purpose"] = "A changed purpose invalidates the old benchmark."
+    engine.update("stale-one", spec, actor="op")
+    engine.validate("stale-one", actor="op")
+    with pytest.raises(ValueError, match="since its latest benchmark"):
+        engine.enable("stale-one", actor="op")
+    # Re-running the benchmark self-heals.
+    engine.benchmark("stale-one", actor="op")
+    assert engine.enable("stale-one", actor="op").state == "enabled"
+
+
+def test_resume_refuses_after_failed_rebenchmark():
+    engine = AgentCreationEngine()
+    engine.create_from_template("research", "wobbly", created_by="op")
+    engine.validate("wobbly", actor="op")
+    engine.benchmark("wobbly", actor="op")
+    engine.enable("wobbly", actor="op")
+    engine.pause("wobbly", actor="op")
+    engine.get("wobbly").spec["capabilities"] = ["bogus"]
+    report = engine.benchmark("wobbly", actor="op")
+    assert report["passed"] is False
+    with pytest.raises(ValueError, match="failed its latest benchmark"):
+        engine.resume("wobbly", actor="op")
+
+
+def test_spec_rejects_wildcard_terminal_scope():
+    payload = full_spec()
+    payload["permissions"] = [
+        {"resource": "terminal", "operation": "execute", "scope": "**",
+         "risk": "HIGH", "reason": "Run anything."}]
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(payload).check()
+
+
+def test_spec_rejects_bad_filesystem_scope():
+    payload = full_spec()
+    payload["permissions"] = [
+        {"resource": "filesystem", "operation": "read",
+         "scope": "/etc/**", "risk": "LOW", "reason": "Read."}]
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(payload).check()
+
+
+def test_spec_requires_run_tests_tool_for_require_tests():
+    payload = full_spec()
+    payload["verification_requirements"] = {"require_tests": True}
+    with pytest.raises(ValueError, match="run_tests"):
+        AgentSpec.from_dict(payload).check()
+    payload["tools"] = ["read_file", "memory_read", "run_tests"]
+    AgentSpec.from_dict(payload).check()
+
+
+def test_spec_version_envelope_round_trip():
+    spec = AgentSpec.from_dict(full_spec()).check()
+    assert spec.to_dict()["spec_version"] == "1.0"
+    bad = dict(full_spec())
+    bad["spec_version"] = "2.0"
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(bad)
+
+
+def test_spec_from_dict_refuses_silent_coercion():
+    payload = full_spec()
+    payload["resource_limits"] = {"max_runs_per_hour": "many"}
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(payload)
+    payload = full_spec()
+    payload["resource_limits"] = {"max_runs_per_hour": True}
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(payload)
+    payload = full_spec()
+    payload["name"] = 42
+    with pytest.raises(ValueError):
+        AgentSpec.from_dict(payload)
+
+
+def test_store_refuses_duplicate_names(tmp_path: Path):
+    engine = AgentCreationEngine()
+    engine.create_from_template("coding", "dup-one", created_by="t")
+    stored = engine.get("dup-one").to_dict()
+    payload = {"store_version": 1,
+               "packages": {"a": stored, "b": dict(stored)}}
+    store = tmp_path / "dup.json"
+    store.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="twice"):
+        AgentCreationEngine(store_path=str(store))
+
+
+def test_store_refuses_concurrent_write(tmp_path: Path):
+    store = str(tmp_path / "race.json")
+    left = AgentCreationEngine(store_path=store)
+    left.create_from_template("coding", "left-one", created_by="t")
+    right = AgentCreationEngine(store_path=store)
+    right.create_from_template("coding", "right-one", created_by="t")
+    with pytest.raises(ValueError, match="changed on disk"):
+        left.validate("left-one", actor="t")

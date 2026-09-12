@@ -435,10 +435,12 @@ class DesktopBackend:
         return self._agents_lifecycle("retire", project_id, name)
 
     def agents_grant(self, project_id: str, name: str,
-                     index: int) -> dict[str, Any]:
+                     index: int,
+                     expected: dict[str, Any] | None = None
+                     ) -> dict[str, Any]:
         try:
             grant = self._engine_for(project_id).grant_permission(
-                name, index, approver=self.actor)
+                name, index, approver=self.actor, expected=expected)
         except ValueError as exc:
             raise BackendError(str(exc)) from exc
         return {"agent": name, "grant": grant}

@@ -23,15 +23,27 @@ Checks:
 * ``permission-boundary`` — an unlisted tool is refused, a grant-shaped
   tool is refused, and a self-granted approval is refused (needs a
   runtime).
+* ``grant-enforcement`` — an allowlisted power tool with no recorded
+  grant is refused (needs a runtime; skipped when the spec lists no
+  power tool).
 * ``model-smoke`` — the fabric routes the spec's required capability and
   the response echoes a marker (needs a fabric).
+
+The boundary checks (``spec-valid``, ``lifecycle-gate``,
+``isolation-memory``, ``permission-boundary``, ``grant-enforcement``)
+are mandatory: the verdict requires all of them green no matter how low
+the spec's ``min_benchmark_score`` goes. The report carries the
+benchmarked spec's fingerprint so enablement can bind the result to the
+current spec instead of a stale one.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import time
 from typing import Any
 
+from forge.agents.creation import spec_fingerprint
 from forge.agents.specs import (
     AgentSpec,
     KNOWN_TOOLS,
@@ -42,6 +54,34 @@ from forge.agents.specs import (
 )
 
 MARKER = "FORGE-AGENT-BENCH-OK"
+
+#: Checks that must pass for any passing verdict, regardless of the
+#: spec's min_benchmark_score. A low score bar can excuse weak
+#: capabilities, never broken boundaries.
+MANDATORY_CHECKS = frozenset({
+    "spec-valid",
+    "lifecycle-gate",
+    "isolation-memory",
+    "permission-boundary",
+    "grant-enforcement",
+})
+
+
+def _denied_probe_args(tool: str) -> dict[str, Any]:
+    """Plausible args so the grant probe reaches the grant check."""
+    if tool in ("read_file", "delete_file"):
+        return {"path": "bench-denied.txt"}
+    if tool == "write_file":
+        return {"path": "bench-denied.txt", "content": "bench"}
+    if tool in ("terminal", "run_tests"):
+        return {"command": ["bench-denied"]}
+    if tool == "search":
+        return {"query": "bench-denied"}
+    if tool == "memory_read":
+        return {"key": "bench-denied"}
+    if tool == "memory_write":
+        return {"key": "bench-denied", "value": "bench"}
+    return {}
 
 
 def _check(name: str, description: str, status: str,
@@ -60,16 +100,19 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
                         runtime: Any = None) -> dict[str, Any]:
     """Benchmark one created agent package. ``package`` may be an
     :class:`AgentPackage` or its ``to_dict()`` form."""
-    from forge.agents.mediation import GatedAgentRuntime, MediationError
+    from forge.agents.mediation import (TOOL_GRANTS, GatedAgentRuntime,
+                                          MediationError)
 
     if isinstance(package, dict):
         name = str(package.get("name", ""))
         spec_dict = package.get("spec", {})
         state = str(package.get("state", ""))
+        version = str(package.get("version", ""))
     else:
         name = str(getattr(package, "name", ""))
         spec_dict = getattr(package, "spec", {}) or {}
         state = str(getattr(package, "state", ""))
+        version = str(getattr(package, "version", "") or "")
     checks: list[dict[str, Any]] = []
 
     # 1. The stored spec re-validates.
@@ -167,16 +210,17 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
     # 7-9. Runtime-mediated boundaries (need a runtime; build an
     # ephemeral one so benchmarks never touch real agent memory).
     mediated = runtime
+    tmp_dir = ""
     if mediated is None:
-        tmp = tempfile.mkdtemp(prefix="forge-agent-bench-")
-        mediated = GatedAgentRuntime(memory_root=tmp)
+        tmp_dir = tempfile.mkdtemp(prefix="forge-agent-bench-")
+        mediated = GatedAgentRuntime(memory_root=tmp_dir)
     probe = {"name": name, "spec": spec_dict, "state": state}
 
     disabled_probe = dict(probe)
     disabled_probe["state"] = "disabled" if state != "disabled" \
         else "created"
     try:
-        mediated.run(disabled_probe, "benchmark probe")
+        mediated.run(disabled_probe, "benchmark probe", actor="benchmark")
         checks.append(_check(
             "lifecycle-gate",
             "Runtime refuses non-enabled agents", "failed",
@@ -242,7 +286,7 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
         self_refused = False
         try:
             mediated.run(enabled_probe, "benchmark probe",
-                         approver="agent:%s" % name)
+                         actor="benchmark", approver="agent:%s" % name)
         except MediationError as exc:
             self_refused = exc.code == "SELF_GRANT"
         if tool_refused and grant_refused and self_refused:
@@ -263,7 +307,43 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
                              "are refused",
                              "failed", str(exc)))
 
-    # 10. Model smoke test (needs a fabric).
+    # 10. Grant enforcement: power tools need recorded grants.
+    try:
+        granted_probe = dict(probe)
+        granted_probe["state"] = "enabled"
+        granted_probe["grants"] = []
+        stored_tools = _stored_section(spec_dict, "tools")
+        power = [tool for tool in stored_tools if tool in TOOL_GRANTS] \
+            if isinstance(stored_tools, list) else []
+        if not power:
+            checks.append(_check(
+                "grant-enforcement",
+                "Ungranted power tools are refused", "skipped",
+                "the spec lists no power tool"))
+        else:
+            try:
+                mediated.execute_tool(
+                    granted_probe, power[0], run_id="bench-grant",
+                    **_denied_probe_args(power[0]))
+                checks.append(_check(
+                    "grant-enforcement",
+                    "Ungranted power tools are refused", "failed",
+                    "ungranted %r executed" % (power[0],)))
+            except MediationError as exc:
+                checks.append(_check(
+                    "grant-enforcement",
+                    "Ungranted power tools are refused",
+                    "passed" if exc.code == "TOOL_DENIED" else "failed",
+                    exc.code))
+    except Exception as exc:
+        checks.append(_check("grant-enforcement",
+                             "Ungranted power tools are refused",
+                             "failed", str(exc)))
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # 11. Model smoke test (needs a fabric).
     if fabric is None:
         checks.append(_check("model-smoke",
                              "Fabric routes the required capability and "
@@ -308,8 +388,15 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
                         .verification_requirements.min_benchmark_score)
     except ValueError:
         minimum = 1.0
-    verdict = bool(executed) and score >= minimum
+    mandatory_failed = [check["name"] for check in checks
+                        if check["name"] in MANDATORY_CHECKS
+                        and check["status"] != "passed"]
+    verdict = bool(executed) and score >= minimum \
+        and not mandatory_failed
+    fingerprint = spec_fingerprint(
+        spec_dict if isinstance(spec_dict, dict) else {})
     return {"agent": name, "at": time.time(), "checks": checks,
             "executed": len(executed), "passed_count": len(passed),
             "score": round(score, 4), "min_score": minimum,
-            "passed": verdict}
+            "passed": verdict, "spec_hash": fingerprint,
+            "version": version}

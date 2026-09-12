@@ -81,10 +81,20 @@ class FakeGate:
                                reason="fake-%s" % self.decision.lower())
 
 
+def grant_all(engine: AgentCreationEngine, name: str,
+              approver: str = "tester") -> None:
+    """Grant every requested permission (grants reset state, so test
+    flows do this before validation)."""
+    count = len(engine.get(name).spec.get("permissions", []))
+    for index in range(count):
+        engine.grant_permission(name, index, approver=approver)
+
+
 def enabled_engine(name: str = "mediated-one",
                    template: str = "research") -> AgentCreationEngine:
     engine = AgentCreationEngine()
     engine.create_from_template(template, name, created_by="tester")
+    grant_all(engine, name)
     engine.validate(name, actor="tester")
     report = engine.benchmark(name, actor="tester")
     assert report["passed"]
@@ -105,14 +115,14 @@ def test_only_enabled_agents_run():
     engine = enabled_engine()
     runtime = runtime_for(fabric=FakeFabric())
     package = engine.get("mediated-one")
-    report = runtime.run(package, "summarize the repo")
+    report = runtime.run(package, "summarize the repo", actor="tester")
     assert report["success"] and report["agent"] == "mediated-one"
     for state in ("created", "validated", "tested", "paused",
                   "disabled", "retired"):
         probe = {"name": package.name, "spec": package.spec,
                  "state": state}
         with pytest.raises(MediationError) as caught:
-            runtime.run(probe, "summarize the repo")
+            runtime.run(probe, "summarize the repo", actor="tester")
         assert caught.value.code == "NOT_ENABLED"
 
 
@@ -120,7 +130,7 @@ def test_run_validates_requirement():
     engine = enabled_engine()
     runtime = runtime_for(fabric=FakeFabric())
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("mediated-one"), "   ")
+        runtime.run(engine.get("mediated-one"), "   ", actor="tester")
     assert caught.value.code == "BAD_REQUIREMENT"
 
 
@@ -128,7 +138,8 @@ def test_no_fabric_refuses_without_fabrication():
     engine = enabled_engine()
     runtime = runtime_for()
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("mediated-one"), "write code")
+        runtime.run(engine.get("mediated-one"), "write code",
+                    actor="tester")
     assert caught.value.code == "NO_MODEL"
 
 
@@ -138,16 +149,17 @@ def test_model_failure_is_honest():
     fabric.generate = lambda request: FakeResponse("", success=False)
     runtime = runtime_for(fabric=fabric)
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("mediated-one"), "write code")
+        runtime.run(engine.get("mediated-one"), "write code",
+                    actor="tester")
     assert caught.value.code == "MODEL_FAILED"
 
 
 def test_model_request_honors_spec_bounds():
     engine = enabled_engine(name="bounded-one", template="coding")
     fabric = FakeFabric()
-    runtime = runtime_for(fabric=fabric)
+    runtime = runtime_for(fabric=fabric, tool_runtime=FakeToolRuntime())
     report = runtime.run(engine.get("bounded-one"), "fix it",
-                         test_command=sys.executable + " -V")
+                         actor="tester")
     assert report["success"]
     request = fabric.requests[0]
     assert request.capability == "coding"
@@ -157,7 +169,8 @@ def test_model_request_honors_spec_bounds():
 def test_run_records_subsystem_evidence():
     engine = enabled_engine(name="evident", template="research")
     runtime = runtime_for(fabric=FakeFabric())
-    report = runtime.run(engine.get("evident"), "summarize")
+    report = runtime.run(engine.get("evident"), "summarize",
+                         actor="tester")
     evidence = report["evidence"]
     assert evidence["lifecycle"] == "enabled"
     assert evidence["model"]["model"] == "fake-model"
@@ -195,7 +208,7 @@ def test_memory_namespaces_are_isolated():
 def test_memory_bounds_enforced():
     engine = AgentCreationEngine()
     engine.create_from_template(
-        "research", "forgetful",
+        "research", "forgetful", created_by="t",
         overrides={"memory_policy": {"max_entries": 1,
                                      "max_bytes_per_entry": 64}})
     engine.validate("forgetful", actor="t")
@@ -215,13 +228,13 @@ def test_memory_bounds_enforced():
 def test_memory_none_retention_writes_nothing():
     engine = AgentCreationEngine()
     engine.create_from_template(
-        "research", "volatile",
+        "research", "volatile", created_by="t",
         overrides={"memory_policy": {"retention": "none"}})
     engine.validate("volatile", actor="t")
     engine.benchmark("volatile", actor="t")
     engine.enable("volatile", actor="t")
     runtime = runtime_for(fabric=FakeFabric())
-    report = runtime.run(engine.get("volatile"), "hello")
+    report = runtime.run(engine.get("volatile"), "hello", actor="tester")
     assert report["success"] and report["memory_key"] == ""
 
 
@@ -256,8 +269,9 @@ def test_tool_allowlist_enforced():
 def test_tool_budget_enforced():
     engine = AgentCreationEngine()
     engine.create_from_template(
-        "research", "thrifty",
+        "research", "thrifty", created_by="t",
         overrides={"resource_limits": {"max_tool_calls_per_run": 1}})
+    grant_all(engine, "thrifty", approver="t")
     engine.validate("thrifty", actor="t")
     engine.benchmark("thrifty", actor="t")
     engine.enable("thrifty", actor="t")
@@ -282,7 +296,7 @@ def test_mutating_tools_need_the_gate():
     package = engine.get("coder-gated")
     with pytest.raises(MediationError) as caught:
         runtime.execute_tool(package, "write_file", run_id="r1",
-                             path="x.md", content="x")
+                             path="src/x.md", content="x")
     assert caught.value.code == "GATE_DENIED"
     assert tools.calls == []
     assert gate.calls and gate.calls[0][1]["operation"] == "write_file"
@@ -342,39 +356,43 @@ def test_real_gate_denies_unapproved_write(tmp_path: Path):
     runtime, root = _real_runtime(tmp_path)  # assisted: writes need approval
     with pytest.raises(MediationError) as caught:
         runtime.execute_tool(engine.get("writer"), "write_file",
-                             run_id="r1", path="note.md", content="hi")
+                             run_id="r1", path="src/note.md", content="hi")
     assert caught.value.code == "GATE_DENIED"
-    assert not (root / "note.md").exists()
+    assert not (root / "src" / "note.md").exists()
 
 
 def test_approved_write_captures_checkpoint(tmp_path: Path):
     engine = enabled_engine(name="writer-ok", template="coding")
     runtime, root = _real_runtime(tmp_path)
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests" / "test_note.py").write_text(
+        "def test_note():\n    assert True\n")
     report = runtime.run(
-        engine.get("writer-ok"), "write a note",
+        engine.get("writer-ok"), "write a note", actor="tester",
         tool_calls=[{"tool": "write_file",
-                     "args": {"path": "note.md", "content": "hi"}}],
-        approved=True, test_command=sys.executable + " -V")
+                     "args": {"path": "src/note.md", "content": "hi"}}],
+        approved=True)
     assert report["success"] is True
     assert report["checkpoint_id"]  # snapshot taken before the write
-    assert (root / "note.md").read_text() == "hi"
+    assert (root / "src" / "note.md").read_text() == "hi"
 
 
 def test_run_rolls_back_on_tool_failure(tmp_path: Path):
     engine = enabled_engine(name="clumsy", template="coding")
     runtime, root = _real_runtime(tmp_path)
-    (root / "keep.py").write_text("original\n")
+    (root / "src").mkdir(exist_ok=True)
+    (root / "src" / "keep.py").write_text("original\n")
     with pytest.raises(MediationError) as caught:
         runtime.run(
-            engine.get("clumsy"), "write then fail",
+            engine.get("clumsy"), "write then fail", actor="tester",
             tool_calls=[
                 {"tool": "write_file",
-                 "args": {"path": "keep.py", "content": "changed"}},
+                 "args": {"path": "src/keep.py", "content": "changed"}},
                 {"tool": "read_file",
                  "args": {"path": "does-not-exist.py"}}],
-            approved=True, test_command=sys.executable + " -V")
+            approved=True)
     assert caught.value.code == "TOOL_FAILED"
-    assert (root / "keep.py").read_text() == "original\n"
+    assert (root / "src" / "keep.py").read_text() == "original\n"
 
 
 def test_run_rolls_back_on_verification_failure(tmp_path: Path):
@@ -385,7 +403,7 @@ def test_run_rolls_back_on_verification_failure(tmp_path: Path):
     (root / "keep.py").write_text("original\n")
     with pytest.raises(MediationError) as caught:
         runtime.run(
-            engine.get("leaky-run"), "show me secrets",
+            engine.get("leaky-run"), "show me secrets", actor="tester",
             tool_calls=[{"tool": "read_file",
                          "args": {"path": "keep.py"}}])
     assert caught.value.code == "VERIFICATION_FAILED"
@@ -399,7 +417,7 @@ def test_forbidden_output_fails_verification():
     fabric = FakeFabric(text='here is the key: api_key = "abcdefgh1234"')
     runtime = runtime_for(fabric=fabric)
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("leaky"), "show me secrets")
+        runtime.run(engine.get("leaky"), "show me secrets", actor="tester")
     assert caught.value.code == "VERIFICATION_FAILED"
 
 
@@ -408,7 +426,7 @@ def test_dangerous_output_fails_review():
     fabric = FakeFabric(text="just run eval(user_input) to fix it")
     runtime = runtime_for(fabric=fabric)
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("risky"), "fix it")
+        runtime.run(engine.get("risky"), "fix it", actor="tester")
     assert caught.value.code == "VERIFICATION_FAILED"
 
 
@@ -416,16 +434,18 @@ def test_require_tests_needs_a_command():
     engine = enabled_engine(name="needs-tests", template="coding")
     runtime = runtime_for(fabric=FakeFabric())
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("needs-tests"), "implement it")
+        runtime.run(engine.get("needs-tests"), "implement it",
+                    actor="tester")
     assert caught.value.code == "VERIFICATION_FAILED"
     assert "TESTS_NOT_EXECUTED" in str(caught.value)
 
 
 def test_require_tests_runs_the_command():
     engine = enabled_engine(name="tested-ok", template="coding")
-    runtime = runtime_for(fabric=FakeFabric())
+    runtime = runtime_for(fabric=FakeFabric(),
+                          tool_runtime=FakeToolRuntime())
     report = runtime.run(engine.get("tested-ok"), "implement it",
-                         test_command=sys.executable + " -V")
+                         actor="tester")
     assert report["success"]
     assert report["verification"]["gates"]["tests"]["passed"] is True
 
@@ -436,17 +456,17 @@ def test_require_tests_runs_the_command():
 def test_hourly_run_limit_enforced():
     engine = AgentCreationEngine()
     engine.create_from_template(
-        "research", "limited",
+        "research", "limited", created_by="t",
         overrides={"resource_limits": {"max_runs_per_hour": 1}})
     engine.validate("limited", actor="t")
     engine.benchmark("limited", actor="t")
     engine.enable("limited", actor="t")
     runtime = runtime_for(fabric=FakeFabric())
     package = engine.get("limited")
-    assert runtime.run(package, "one")["success"]
+    assert runtime.run(package, "one", actor="t")["success"]
     # Second run in the same hour is refused with no model call.
     with pytest.raises(MediationError) as caught:
-        runtime.run(package, "two")
+        runtime.run(package, "two", actor="t")
     assert caught.value.code == "RATE_LIMITED"
 
 
@@ -457,7 +477,7 @@ def test_runtime_refuses_self_approval():
     engine = enabled_engine()
     runtime = runtime_for(fabric=FakeFabric())
     with pytest.raises(MediationError) as caught:
-        runtime.run(engine.get("mediated-one"), "do it",
+        runtime.run(engine.get("mediated-one"), "do it", actor="tester",
                     approver="agent:mediated-one")
     assert caught.value.code == "SELF_GRANT"
 
@@ -510,7 +530,7 @@ def test_benchmark_scores_and_skips_honestly():
     package = engine.get("mediated-one")
     report = run_agent_benchmark(package)
     assert report["passed"] and report["score"] == 1.0
-    assert report["executed"] == 9
+    assert report["executed"] == 10
     smoke = [check for check in report["checks"]
              if check["name"] == "model-smoke"][0]
     assert smoke["status"] == "skipped"
@@ -529,7 +549,8 @@ def test_benchmark_reports_all_checks():
                      "permissions-bounded", "memory-isolated",
                      "verification-declared", "limits-bounded",
                      "lifecycle-gate", "isolation-memory",
-                     "permission-boundary", "model-smoke"}
+                     "permission-boundary", "grant-enforcement",
+                     "model-smoke"}
 
 
 def test_benchmark_fails_corrupt_spec():
@@ -658,10 +679,9 @@ def test_plane_engine_run_allowed_flow(tmp_path: Path):
             overrides={"model_requirements": {"min_context_window": 1024}})
         plane.engine_validate(session, "plane-runner")
         tested = plane.engine_test(session, "plane-runner")
-        assert tested["passed"]  # 9/10 with smoke failing clears 0.8
+        assert tested["passed"]  # smoke failing still clears 0.8
         plane.engine_enable(session, "plane-runner")
-        result = plane.engine_run(session, "plane-runner", "summarize",
-                                  test_command=sys.executable + " -V")
+        result = plane.engine_run(session, "plane-runner", "summarize")
         assert result["allowed"] is True
         assert result["run"]["success"] is True
         assert result["run"]["evidence"]["model"]["model"] == "m/a34"
@@ -677,12 +697,14 @@ def test_plane_engine_run_with_tools(tmp_path: Path):
         plane.engine_create(
             session, template="coding", name="plane-reader",
             overrides={"model_requirements": {"min_context_window": 1024}})
+        for _index in range(len(plane.engine_get(
+                session, "plane-reader")["spec"]["permissions"])):
+            plane.engine_grant(session, "plane-reader", _index)
         plane.engine_validate(session, "plane-reader")
         assert plane.engine_test(session, "plane-reader")["passed"]
         plane.engine_enable(session, "plane-reader")
         result = plane.engine_run(
             session, "plane-reader", "read the app",
-            test_command=sys.executable + " -V",
             tool_calls=[{"tool": "read_file", "args": {"path": "app.py"}}])
         assert result["allowed"] is True
         calls = result["run"]["tools"]
@@ -704,7 +726,7 @@ def test_plane_engine_run_denied_by_policy(tmp_path: Path):
                             name="plane-blocked")
         plane.engine_validate(session, "plane-blocked")
         tested = plane.engine_test(session, "plane-blocked")
-        assert tested["passed"]  # 9/10 with smoke failing clears 0.8
+        assert tested["passed"]  # smoke failing still clears 0.8
         plane.engine_enable(session, "plane-blocked")
         result = plane.engine_run(session, "plane-blocked", "summarize")
         assert result["allowed"] is False
@@ -788,6 +810,11 @@ def test_api_engine_update_and_run(tmp_path: Path):
             json={"spec": spec, "reason": "test"})
         assert response.status_code == 200, response.text
         assert response.json()["version"] == "1.0.1"
+        for _index in range(len(spec["permissions"])):
+            granted = client.post(
+                "/api/v1/engine/agents/api-runner/grant", headers=headers,
+                json={"index": _index})
+            assert granted.status_code == 200
         client.post("/api/v1/engine/agents/api-runner/validate",
                     headers=headers)
         tested = client.post("/api/v1/engine/agents/api-runner/test",
@@ -799,7 +826,6 @@ def test_api_engine_update_and_run(tmp_path: Path):
         result = client.post(
             "/api/v1/engine/agents/api-runner/run", headers=headers,
             json={"requirement": "read the app",
-                  "test_command": sys.executable + " -V",
                   "tool_calls": [{"tool": "read_file",
                                   "args": {"path": "app.py"}}]})
         assert result.status_code == 200, result.text
@@ -1037,3 +1063,192 @@ def test_policy_decision_values_stable():
     assert PolicyDecision.ALLOW.value == "ALLOW"
     assert PolicyDecision.DENY.value == "DENY"
     assert PolicyDecision.REQUIRE_APPROVAL.value == "REQUIRE_APPROVAL"
+
+
+# -- grant enforcement -----------------------------------------------------
+
+def test_ungranted_power_tool_refused():
+    engine = AgentCreationEngine()
+    engine.create_from_template("research", "bare", created_by="t")
+    engine.validate("bare", actor="t")
+    engine.benchmark("bare", actor="t")
+    engine.enable("bare", actor="t")
+    runtime = runtime_for(fabric=FakeFabric(),
+                          tool_runtime=FakeToolRuntime())
+    with pytest.raises(MediationError) as caught:
+        runtime.execute_tool(engine.get("bare"), "read_file", run_id="r1",
+                             path="app.py")
+    assert caught.value.code == "TOOL_DENIED"
+    assert "no grant" in str(caught.value)
+
+
+def test_grant_scope_must_cover_filesystem_path():
+    engine = enabled_engine(name="scoped", template="coding")
+    runtime = runtime_for(fabric=FakeFabric(),
+                          tool_runtime=FakeToolRuntime(),
+                          policy_gate=FakeGate("ALLOW"))
+    package = engine.get("scoped")
+    with pytest.raises(MediationError) as caught:
+        runtime.execute_tool(package, "write_file", run_id="r1",
+                             path="elsewhere/x.md", content="x")
+    assert caught.value.code == "TOOL_DENIED"
+    result = runtime.execute_tool(package, "write_file", run_id="r1",
+                                  path="src/x.md", content="x")
+    assert result["success"]
+
+
+def _terminal_spec(name: str) -> dict:
+    return {
+        "name": name,
+        "purpose": "Run pinned commands.",
+        "capabilities": ["coding"],
+        "tools": ["terminal"],
+        "permissions": [
+            {"resource": "terminal", "operation": "execute",
+             "scope": "pytest", "risk": "MEDIUM", "reason": "Tests."},
+        ],
+        "model_requirements": {"capabilities": ["coding"]},
+        "memory_policy": {"retention": "session"},
+        "verification_requirements": {},
+        "resource_limits": {},
+    }
+
+
+def _terminal_agent(name: str = "term") -> AgentCreationEngine:
+    engine = AgentCreationEngine()
+    engine.create_from_spec(_terminal_spec(name), created_by="t")
+    engine.grant_permission(name, 0, approver="t")
+    engine.validate(name, actor="t")
+    engine.benchmark(name, actor="t")
+    engine.enable(name, actor="t")
+    return engine
+
+
+def test_terminal_grant_pins_exact_executable():
+    engine = _terminal_agent()
+    tools = FakeToolRuntime()
+    runtime = runtime_for(fabric=FakeFabric(), tool_runtime=tools,
+                          policy_gate=FakeGate("ALLOW"))
+    package = engine.get("term")
+    with pytest.raises(MediationError) as caught:
+        runtime.execute_tool(package, "terminal", run_id="r1",
+                             command=["/bin/sh", "-c", "id"])
+    assert caught.value.code == "TOOL_DENIED"
+    result = runtime.execute_tool(package, "terminal", run_id="r1",
+                                  command=["pytest", "-q"])
+    assert result["success"]
+    assert tools.calls and tools.calls[0][0] == "terminal"
+
+
+def test_token_chain_shared_between_gate_and_runtime():
+    engine = _terminal_agent(name="chained")
+    tools = FakeToolRuntime()
+    gate = FakeGate("ALLOW")
+    runtime = runtime_for(fabric=FakeFabric(), tool_runtime=tools,
+                          policy_gate=gate)
+    runtime.execute_tool(engine.get("chained"), "terminal", run_id="r1",
+                         command=["pytest", "-q"])
+    gate_kwargs = gate.calls[0][1]
+    tool_kwargs = dict(tools.calls[0][1])
+    assert gate_kwargs["operation"] == "run_command"
+    assert gate_kwargs["request_id"] == tool_kwargs["request_id"]
+    assert gate_kwargs["request_id"].startswith("r1:")
+    assert gate_kwargs["task_id"] == tool_kwargs["task_id"] == "r1"
+    assert gate_kwargs["risk"] == tool_kwargs["risk"] == "MEDIUM"
+
+
+def test_run_needs_named_non_agent_actor():
+    engine = enabled_engine()
+    runtime = runtime_for(fabric=FakeFabric())
+    package = engine.get("mediated-one")
+    with pytest.raises(MediationError) as caught:
+        runtime.run(package, "hi")
+    assert caught.value.code == "BAD_ACTOR"
+    with pytest.raises(MediationError) as caught:
+        runtime.run(package, "hi", actor="agent:mediated-one")
+    assert caught.value.code == "SELF_RUN"
+
+
+def test_security_gate_never_echoes_secrets():
+    engine = enabled_engine(name="leaky-two", template="research")
+    runtime = runtime_for(
+        fabric=FakeFabric(text='key: api_key = "abcdefgh1234"'))
+    with pytest.raises(MediationError) as caught:
+        runtime.run(engine.get("leaky-two"), "show", actor="tester")
+    assert caught.value.code == "VERIFICATION_FAILED"
+    assert "abcdefgh" not in str(caught.value)
+    assert "secret-pattern#" in str(caught.value)
+
+
+def test_run_schema_has_no_approval_or_command_fields():
+    from forge.api.schemas import EngineRunRequest
+
+    body = EngineRunRequest(requirement="x", approved=True,
+                            test_command="id")
+    assert not hasattr(body, "approved")
+    assert not hasattr(body, "test_command")
+
+
+def test_api_cannot_self_approve_writes(tmp_path: Path):
+    plane = make_plane(tmp_path, start=True, policy=ALLOW_RUNS)
+    make_repo(Path(plane.projects["demo"].root))
+    client = make_client(plane)
+    with client:
+        _payload, _token, headers = login(client)
+        created = client.post(
+            "/api/v1/engine/agents", headers=headers,
+            json={"template": "coding", "name": "api-sneaky",
+                  "overrides": {"model_requirements":
+                                {"min_context_window": 1024}}})
+        assert created.status_code == 200
+        perms = created.json()["spec"]["permissions"]
+        for _index in range(len(perms)):
+            granted = client.post(
+                "/api/v1/engine/agents/api-sneaky/grant", headers=headers,
+                json={"index": _index})
+            assert granted.status_code == 200
+        client.post("/api/v1/engine/agents/api-sneaky/validate",
+                    headers=headers)
+        tested = client.post("/api/v1/engine/agents/api-sneaky/test",
+                             headers=headers)
+        assert tested.json()["passed"] is True
+        enabled = client.post("/api/v1/engine/agents/api-sneaky/enable",
+                              headers=headers)
+        assert enabled.status_code == 200
+        result = client.post(
+            "/api/v1/engine/agents/api-sneaky/run", headers=headers,
+            json={"requirement": "write",
+                  "approved": True,
+                  "tool_calls": [{"tool": "write_file",
+                                  "args": {"path": "src/evil.py",
+                                           "content": "x"}}]})
+        assert result.status_code == 400
+        assert "GATE_DENIED" in result.text
+        assert not (Path(plane.projects["demo"].root)
+                    / "src" / "evil.py").exists()
+
+
+def test_api_rejects_oversized_spec(tmp_path: Path):
+    plane = make_plane(tmp_path, start=True, policy=ALLOW_RUNS)
+    client = make_client(plane)
+    with client:
+        _payload, _token, headers = login(client)
+        response = client.post(
+            "/api/v1/engine/agents", headers=headers,
+            json={"spec": {"name": "big", "purpose": "x" * 70000}})
+        assert response.status_code == 400
+        assert "exceeds" in response.text
+
+
+def test_cli_grant_expect_pin(tmp_path: Path, monkeypatch, capsys):
+    code, _out = run_cli(
+        ["agents", "create", "--template", "research",
+         "--name", "cli-pin"], tmp_path, monkeypatch, capsys)
+    assert code == 0
+    code, out = run_cli(["agents", "show", "cli-pin"], tmp_path,
+                        monkeypatch, capsys)
+    assert code == 0 and "permission[0]" in out
+    code, _out = run_cli(
+        ["agents", "grant", "cli-pin", "0", "--expect-json", "{}"],
+        tmp_path, monkeypatch, capsys)
+    assert code != 0

@@ -380,6 +380,25 @@ def _agents_engine(args):
         raise SystemExit(2)
 
 
+def _load_spec_file(spec_path: str):
+    """Load a JSON spec file with bounds and clean errors."""
+    try:
+        size = os.path.getsize(spec_path)
+    except OSError as exc:
+        raise ValueError("cannot read spec file %r: %s" % (spec_path, exc))
+    if size > 64 * 1024:
+        raise ValueError("spec file %r exceeds 64KB" % (spec_path,))
+    try:
+        with open(spec_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ValueError("cannot parse spec file %r: %s" % (spec_path, exc))
+    if not isinstance(payload, dict):
+        raise ValueError("spec file %r must hold a JSON object"
+                         % (spec_path,))
+    return payload
+
+
 def _agents_overrides(items) -> dict:
     overrides: dict = {}
     for item in items or []:
@@ -448,6 +467,18 @@ def _run_agents(args) -> int:
                   f"template={manifest['template'] or '-'}")
             print(f"  grants={manifest['grants']} "
                   f"spec={manifest['spec_hash']}")
+            for pos, entry in enumerate(
+                    package.spec.get("permissions", [])):
+                print(f"  permission[{pos}] {entry.get('resource')}/"
+                      f"{entry.get('operation')} "
+                      f"scope={entry.get('scope')} "
+                      f"risk={entry.get('risk')}")
+            for pos, grant in enumerate(package.grants or []):
+                granted = grant.get("permission", {})
+                print(f"  grant[{pos}] {granted.get('resource')}/"
+                      f"{granted.get('operation')} "
+                      f"scope={granted.get('scope')} "
+                      f"by={grant.get('approver')}")
         return 0
 
     try:
@@ -470,8 +501,7 @@ def _run_agents(args) -> int:
         if subcommand == "create":
             spec_path = getattr(args, "spec", "")
             if spec_path:
-                with open(spec_path, encoding="utf-8") as handle:
-                    payload = json.load(handle)
+                payload = _load_spec_file(spec_path)
                 if getattr(args, "name", ""):
                     payload["name"] = args.name
                 package = engine.create_from_spec(
@@ -530,9 +560,23 @@ def _run_agents(args) -> int:
             return show_package(package)
 
         if subcommand == "grant":
+            expected = getattr(args, "expect_json", "")
+            if expected:
+                try:
+                    expected = json.loads(expected)
+                except ValueError as exc:
+                    print(f"Bad --expect-json: {exc}", file=sys.stderr)
+                    return 2
+                if not isinstance(expected, dict):
+                    print("Bad --expect-json: want a JSON object",
+                          file=sys.stderr)
+                    return 2
+            else:
+                expected = None
             grant = engine.grant_permission(
                 args.name, args.index,
-                approver=getattr(args, "approver", "") or actor)
+                approver=getattr(args, "approver", "") or actor,
+                expected=expected)
             if as_json:
                 _emit_json({"agent": args.name, "grant": grant})
             else:
@@ -560,8 +604,7 @@ def _run_agents(args) -> int:
                 print("forge agents update needs --spec FILE "
                       "(full replacement spec)", file=sys.stderr)
                 return 2
-            with open(spec_path, encoding="utf-8") as handle:
-                payload = json.load(handle)
+            payload = _load_spec_file(spec_path)
             package = engine.update(
                 args.name, payload, actor=actor,
                 reason=getattr(args, "reason", "") or "")
@@ -583,22 +626,25 @@ def _run_agents(args) -> int:
 
         if subcommand == "run":
             from forge.models import ModelFabric
+            from forge.runtime.defaults import create_default_runtime
             from forge.security.policy_gate import PolicyGate
             from forge.security.permissions import (
                 OperationMode, PermissionManager)
             from forge.tools.checkpoint import CheckpointManager
 
             package = engine.get(args.name)
+            permissions = PermissionManager(mode=OperationMode.ASSISTED)
             runtime = GatedAgentRuntime(
                 fabric=ModelFabric.from_defaults(),
-                policy_gate=PolicyGate(PermissionManager(
-                    mode=OperationMode.ASSISTED)),
+                policy_gate=PolicyGate(permissions),
+                tool_runtime=create_default_runtime(permissions, "."),
                 memory_root=".forge/agent-memory", project_root=".",
                 checkpoint_manager=CheckpointManager("."))
+            # Tests-required specs run the harness's fixed pytest suite
+            # through the attached runtime; callers supply no command.
             try:
                 report = runtime.run(
-                    package, args.requirement, actor=actor,
-                    test_command=getattr(args, "test_command", ""))
+                    package, args.requirement, actor=actor)
             except MediationError as exc:
                 if as_json:
                     _emit_json({"agent": args.name, "success": False,
@@ -795,6 +841,9 @@ def main() -> None:
     grant_parser.add_argument("--approver", default="",
                               help="Approver identity (default: --actor); "
                               "never the agent itself")
+    grant_parser.add_argument("--expect-json", default="",
+                              help="JSON of the reviewed permission entry; "
+                              "refuses when the spec moved under it")
     _agents_common(grant_parser)
     revoke_parser = agents_subs.add_parser(
         "revoke", help="Revoke one grant (operator only)")
@@ -824,9 +873,6 @@ def main() -> None:
         "run", help="Run an enabled agent through the mediated runtime")
     run_parser.add_argument("name")
     run_parser.add_argument("--requirement", required=True)
-    run_parser.add_argument("--test-command", default="",
-                            help="Command satisfying require_tests, when "
-                            "the spec demands it")
     _agents_common(run_parser)
     agents_parser.add_argument("--store", default="",
                                help="Agent store path (default: "

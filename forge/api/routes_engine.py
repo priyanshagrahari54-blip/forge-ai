@@ -121,7 +121,8 @@ async def engine_grant(name: str, body: EngineGrantRequest,
                        current: Authed = Depends(authed_mutation),
                        plane: ControlPlane = Depends(get_plane)):
     try:
-        return plane.engine_grant(current.session, name, body.index)
+        return plane.engine_grant(current.session, name, body.index,
+                                  expected=body.expect)
     except InvalidRequest as exc:
         raise _bad(exc) from None
 
@@ -158,9 +159,7 @@ async def engine_run(name: str, body: EngineRunRequest,
         return plane.engine_run(
             current.session, name, body.requirement,
             approval_token_id=body.approval_token_id,
-            test_command=body.test_command,
             tool_calls=[{"tool": call.tool, "args": dict(call.args)}
-                        for call in body.tool_calls],
-            approved=body.approved)
+                        for call in body.tool_calls])
     except InvalidRequest as exc:
         raise _bad(exc) from None

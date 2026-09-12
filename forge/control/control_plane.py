@@ -4576,6 +4576,27 @@ class ControlPlane:
 
     # -- agent creation engine (first-party) ---------------------------
 
+    #: Remote-supplied engine payload bounds (specs, overrides, imports,
+    #: per-call tool args). The mediated runtime re-validates everything
+    #: structurally; these caps bound parse/transport cost first.
+    ENGINE_MAX_SPEC_BYTES = 64 * 1024
+    ENGINE_MAX_TOOL_ARGS_BYTES = 8 * 1024
+    ENGINE_MAX_TOOL_CALLS = 25
+
+    def _check_engine_payload(self, payload, what: str) -> None:
+        """Refuse oversized engine payloads before they parse further."""
+        if payload is None:
+            return
+        try:
+            size = len(json.dumps(payload, sort_keys=True, default=str))
+        except (TypeError, ValueError) as exc:
+            raise InvalidRequest(
+                "Engine %s is not valid JSON data." % what) from exc
+        if size > self.ENGINE_MAX_SPEC_BYTES:
+            raise InvalidRequest(
+                "Engine %s exceeds %d bytes." % (
+                    what, self.ENGINE_MAX_SPEC_BYTES))
+
     def _creation_engine(self, session: Session):
         from forge.agents.creation import AgentCreationEngine
 
@@ -4627,6 +4648,8 @@ class ControlPlane:
                       spec: dict[str, Any] | None = None,
                       overrides: dict[str, Any] | None = None,
                       ) -> dict[str, Any]:
+        self._check_engine_payload(spec, "spec")
+        self._check_engine_payload(overrides, "overrides")
         engine = self._creation_engine(session)
         try:
             if spec is not None:
@@ -4647,6 +4670,7 @@ class ControlPlane:
     def engine_update(self, session: Session, name: str,
                       spec: dict[str, Any],
                       reason: str = "") -> dict[str, Any]:
+        self._check_engine_payload(spec, "spec")
         engine = self._creation_engine(session)
         try:
             package = engine.update(name, spec, actor=session.actor,
@@ -4722,11 +4746,14 @@ class ControlPlane:
         return self._engine_lifecycle(session, name, "retire")
 
     def engine_grant(self, session: Session, name: str, index: int, *,
-                     approver: str = "") -> dict[str, Any]:
+                     approver: str = "",
+                     expected: dict[str, Any] | None = None
+                     ) -> dict[str, Any]:
         engine = self._creation_engine(session)
         try:
             grant = engine.grant_permission(
-                name, index, approver=approver or session.actor)
+                name, index, approver=approver or session.actor,
+                expected=expected)
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
         self._audit(session.actor, "engine", "grant", True,
@@ -4774,6 +4801,7 @@ class ControlPlane:
 
     def engine_import(self, session: Session,
                       payload: Any) -> dict[str, Any]:
+        self._check_engine_payload(payload, "import payload")
         engine = self._creation_engine(session)
         try:
             package = engine.import_package(payload,
@@ -4787,15 +4815,17 @@ class ControlPlane:
 
     def engine_run(self, session: Session, name: str, requirement: str, *,
                    approval_token_id: str = "",
-                   test_command: str = "",
-                   tool_calls: list[dict[str, Any]] | None = None,
-                   approved: bool = False) -> dict[str, Any]:
+                   tool_calls: list[dict[str, Any]] | None = None
+                   ) -> dict[str, Any]:
         """Run an enabled created agent through the mediated runtime.
 
         The AGENT/execute policy gate runs first under the agent's own
         identity — so the A33 store refuses any self-approval — and the
         mediated runtime then enforces lifecycle, tools, memory,
-        verification, and resource limits.
+        verification, and resource limits. There is deliberately no
+        caller approval flag and no caller test command on this path:
+        tool approvals arrive only as redeemable approval tokens, and
+        tests-required specs run the harness's fixed pytest suite.
         """
         from forge.agents.creation import agent_identity
         from forge.agents.mediation import MediationError
@@ -4806,6 +4836,20 @@ class ControlPlane:
         if not isinstance(requirement, str) or not requirement.strip() \
                 or len(requirement) > 4000:
             raise InvalidRequest("Requirement must be 1-4000 characters.")
+        calls = list(tool_calls or [])
+        if len(calls) > self.ENGINE_MAX_TOOL_CALLS:
+            raise InvalidRequest(
+                "At most %d tool calls per run." % self.ENGINE_MAX_TOOL_CALLS)
+        for call in calls:
+            args = call.get("args", {}) if isinstance(call, dict) else None
+            try:
+                size = len(json.dumps(args, sort_keys=True, default=str))
+            except (TypeError, ValueError):
+                size = self.ENGINE_MAX_TOOL_ARGS_BYTES + 1
+            if size > self.ENGINE_MAX_TOOL_ARGS_BYTES:
+                raise InvalidRequest(
+                    "Tool call args exceed %d bytes."
+                    % self.ENGINE_MAX_TOOL_ARGS_BYTES)
         engine = self._creation_engine(session)
         try:
             package = engine.get(name)
@@ -4859,8 +4903,7 @@ class ControlPlane:
         try:
             report = self._engine_runtime(session).run(
                 package, requirement, actor=session.actor,
-                test_command=test_command,
-                tool_calls=list(tool_calls or []), approved=approved,
+                tool_calls=calls,
                 approval_token_id=approval_token_id)
         except MediationError as exc:
             self._audit(session.actor, "engine", "run", False,

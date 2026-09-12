@@ -29,10 +29,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from forge.models.capabilities import ALL_CAPABILITIES, is_capability
-from forge.security.policy import RESOURCE_OPERATIONS, Resource
+from forge.security.policy import (RESOURCE_OPERATIONS, Resource,
+                                   validate_scope)
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,48}$")
 ROLE_RE = re.compile(r"^[a-z][a-z0-9_-]{2,32}$")
+
+#: Envelope version for serialized agent specs. Unknown versions fail
+#: closed at parse time so newer/foreign payloads can never slip through
+#: an older validator.
+SPEC_VERSION = "1.0"
+SPEC_VERSION_RE = re.compile(r"^1\.0$")
 
 MAX_PURPOSE = 500
 MAX_CAPABILITIES = 12
@@ -72,6 +79,52 @@ def _issues_for_name(name: Any) -> list[str]:
     return []
 
 
+def _strict_int(value: Any, field: str) -> int:
+    """Parse an integer bound without silent coercion.
+
+    Booleans, fractional numbers, and non-numeric strings are refused
+    instead of being truncated or crashed on with a confusing error.
+    """
+    if isinstance(value, bool):
+        raise ValueError("%s must be an integer, not a boolean" % field)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+        return int(value.strip())
+    raise ValueError("%s must be an integer" % field)
+
+
+def _strict_float(value: Any, field: str) -> float:
+    """Parse a float bound without silent coercion."""
+    if isinstance(value, bool):
+        raise ValueError("%s must be a number, not a boolean" % field)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            raise ValueError(
+                "%s must be a number" % field) from None
+    raise ValueError("%s must be a number" % field)
+
+
+def _strict_str_list(value: Any, field: str) -> tuple[str, ...]:
+    """Parse a string list; non-lists fail closed (never TypeError)."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("%s must be a list of strings" % field)
+    if any(not isinstance(entry, str) for entry in value):
+        raise ValueError("%s must be a list of strings" % field)
+    return tuple(entry.strip().lower() for entry in value)
+
+
+def _not_bool_int(value: Any) -> bool:
+    """True for genuine ints (booleans are not valid bounds)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 @dataclass(frozen=True)
 class PermissionRequestSpec:
     """One *requested* permission grant. Requests are inert until an
@@ -100,8 +153,8 @@ class PermissionRequestSpec:
                 % (self.operation, self.resource,
                    sorted(RESOURCE_OPERATIONS[resource])))
         if not isinstance(self.scope, str) or len(self.scope) > MAX_SCOPE:
-            issues.append("permission scope must be a string of 1-%d "
-                          "characters (empty means the resource-default "
+            issues.append("permission scope must be a string of at most "
+                          "%d characters (empty means the resource-default "
                           "minimal scope)" % MAX_SCOPE)
         # A blank terminal scope would be an unbounded shell grant — pin
         # a concrete executable instead.
@@ -109,6 +162,17 @@ class PermissionRequestSpec:
             issues.append("terminal permission requests must pin a concrete "
                           "scope (executable); blank terminal scopes are "
                           "rejected")
+        if resource == Resource.TERMINAL and self.scope.strip() in (
+                "*", "**"):
+            issues.append("terminal permission scopes must pin a concrete "
+                          "executable; wildcard-only scopes are rejected")
+        if resource == Resource.FILESYSTEM and isinstance(self.scope, str) \
+                and len(self.scope) <= MAX_SCOPE:
+            try:
+                validate_scope(Resource.FILESYSTEM, self.scope)
+            except ValueError as exc:
+                issues.append("permission scope %r is invalid: %s"
+                              % (self.scope, exc))
         if self.risk not in RISKS:
             issues.append("permission risk %r must be one of %s"
                           % (self.risk, sorted(RISKS)))
@@ -127,10 +191,15 @@ class PermissionRequestSpec:
     def from_dict(cls, payload: Any) -> "PermissionRequestSpec":
         if not isinstance(payload, dict):
             raise ValueError("permission entries must be objects")
+        scope = payload.get("scope", "")
+        if scope is None:
+            scope = ""
+        if not isinstance(scope, str):
+            raise ValueError("permission scope must be a string")
         return cls(
             resource=str(payload.get("resource", "")).strip().lower(),
             operation=str(payload.get("operation", "")).strip().lower(),
-            scope=str(payload.get("scope", "") or ""),
+            scope=scope,
             risk=str(payload.get("risk", "NONE")).strip().upper(),
             reason=str(payload.get("reason", "")).strip(),
         )
@@ -154,7 +223,7 @@ class ModelRequirements:
             issues.append("model_requirements.capabilities must come from "
                           "the canonical vocabulary: %s"
                           % (", ".join(ALL_CAPABILITIES),))
-        if not isinstance(self.min_context_window, int) \
+        if not _not_bool_int(self.min_context_window) \
                 or self.min_context_window < 0 \
                 or self.min_context_window > 1000000:
             issues.append("model_requirements.min_context_window must be "
@@ -182,17 +251,23 @@ class ModelRequirements:
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("model_requirements must be an object")
-        caps = payload.get("capabilities", ["coding"])
-        if isinstance(caps, str):
-            caps = [caps]
+        raw_cost = payload.get("max_cost_per_token")
+        raw_latency = payload.get("max_latency_ms")
         return cls(
-            capabilities=tuple(str(cap).strip().lower()
-                               for cap in caps),
-            min_context_window=int(payload.get("min_context_window", 0)),
+            capabilities=_strict_str_list(
+                payload.get("capabilities", ["coding"]),
+                "model_requirements.capabilities"),
+            min_context_window=_strict_int(
+                payload.get("min_context_window", 0),
+                "model_requirements.min_context_window"),
             prefer_local=bool(payload.get("prefer_local", False)),
             prefer_free=bool(payload.get("prefer_free", False)),
-            max_cost_per_token=payload.get("max_cost_per_token"),
-            max_latency_ms=payload.get("max_latency_ms"))
+            max_cost_per_token=(
+                None if raw_cost is None else _strict_float(
+                    raw_cost, "model_requirements.max_cost_per_token")),
+            max_latency_ms=(
+                None if raw_latency is None else _strict_float(
+                    raw_latency, "model_requirements.max_latency_ms")))
 
 
 @dataclass(frozen=True)
@@ -207,10 +282,10 @@ class MemoryPolicy:
         if self.retention not in RETENTIONS:
             issues.append("memory_policy.retention must be one of %s"
                           % sorted(RETENTIONS))
-        if not isinstance(self.max_entries, int) \
+        if not _not_bool_int(self.max_entries) \
                 or not 1 <= self.max_entries <= 10000:
             issues.append("memory_policy.max_entries must be 1-10000")
-        if not isinstance(self.max_bytes_per_entry, int) \
+        if not _not_bool_int(self.max_bytes_per_entry) \
                 or not 1 <= self.max_bytes_per_entry <= 1048576:
             issues.append("memory_policy.max_bytes_per_entry must be "
                           "1-1048576")
@@ -235,9 +310,11 @@ class MemoryPolicy:
         return cls(
             retention=str(payload.get("retention", "session")).strip(
             ).lower(),
-            max_entries=int(payload.get("max_entries", 200)),
-            max_bytes_per_entry=int(payload.get("max_bytes_per_entry",
-                                                20480)),
+            max_entries=_strict_int(payload.get("max_entries", 200),
+                                    "memory_policy.max_entries"),
+            max_bytes_per_entry=_strict_int(
+                payload.get("max_bytes_per_entry", 20480),
+                "memory_policy.max_bytes_per_entry"),
             allow_cross_agent_read=bool(
                 payload.get("allow_cross_agent_read", False)))
 
@@ -252,7 +329,8 @@ class VerificationRequirements:
     def validate(self) -> list[str]:
         issues: list[str] = []
         score = self.min_benchmark_score
-        if not isinstance(score, (int, float)) \
+        if isinstance(score, bool) \
+                or not isinstance(score, (int, float)) \
                 or not 0.0 <= float(score) <= 1.0:
             issues.append("verification_requirements.min_benchmark_score "
                           "must be 0.0-1.0")
@@ -274,8 +352,9 @@ class VerificationRequirements:
             require_review=bool(payload.get("require_review", True)),
             require_security_scan=bool(
                 payload.get("require_security_scan", True)),
-            min_benchmark_score=float(
-                payload.get("min_benchmark_score", 1.0)))
+            min_benchmark_score=_strict_float(
+                payload.get("min_benchmark_score", 1.0),
+                "verification_requirements.min_benchmark_score"))
 
 
 @dataclass(frozen=True)
@@ -287,18 +366,19 @@ class ResourceLimits:
 
     def validate(self) -> list[str]:
         issues: list[str] = []
-        if not isinstance(self.max_runs_per_hour, int) \
+        if not _not_bool_int(self.max_runs_per_hour) \
                 or not 1 <= self.max_runs_per_hour <= 1000:
             issues.append("resource_limits.max_runs_per_hour must be "
                           "1-1000")
-        if not isinstance(self.max_concurrent, int) \
+        if not _not_bool_int(self.max_concurrent) \
                 or not 1 <= self.max_concurrent <= 20:
             issues.append("resource_limits.max_concurrent must be 1-20")
-        if not isinstance(self.max_tool_calls_per_run, int) \
+        if not _not_bool_int(self.max_tool_calls_per_run) \
                 or not 0 <= self.max_tool_calls_per_run <= 500:
             issues.append("resource_limits.max_tool_calls_per_run must be "
                           "0-500")
-        if not isinstance(self.max_wall_seconds, (int, float)) \
+        if isinstance(self.max_wall_seconds, bool) \
+                or not isinstance(self.max_wall_seconds, (int, float)) \
                 or not 1 <= float(self.max_wall_seconds) <= 3600:
             issues.append("resource_limits.max_wall_seconds must be "
                           "1-3600")
@@ -316,11 +396,18 @@ class ResourceLimits:
         if not isinstance(payload, dict):
             raise ValueError("resource_limits must be an object")
         return cls(
-            max_runs_per_hour=int(payload.get("max_runs_per_hour", 60)),
-            max_concurrent=int(payload.get("max_concurrent", 2)),
-            max_tool_calls_per_run=int(
-                payload.get("max_tool_calls_per_run", 50)),
-            max_wall_seconds=float(payload.get("max_wall_seconds", 600.0)))
+            max_runs_per_hour=_strict_int(
+                payload.get("max_runs_per_hour", 60),
+                "resource_limits.max_runs_per_hour"),
+            max_concurrent=_strict_int(
+                payload.get("max_concurrent", 2),
+                "resource_limits.max_concurrent"),
+            max_tool_calls_per_run=_strict_int(
+                payload.get("max_tool_calls_per_run", 50),
+                "resource_limits.max_tool_calls_per_run"),
+            max_wall_seconds=_strict_float(
+                payload.get("max_wall_seconds", 600.0),
+                "resource_limits.max_wall_seconds"))
 
 
 @dataclass(frozen=True)
@@ -385,6 +472,11 @@ class AgentSpec:
                 or self.template.strip().lower() not in TEMPLATES):
             issues.append("template %r is unknown; expected one of %s"
                           % (self.template, sorted(TEMPLATES)))
+        if self.verification_requirements.require_tests \
+                and "run_tests" not in tools:
+            issues.append("verification_requirements.require_tests needs "
+                          "the run_tests tool: the mediated runtime runs "
+                          "the project pytest suite and nothing else")
         # Model requirements must be satisfiable by the agent's own
         # capabilities: an agent cannot require what it does not declare.
         for cap in self.model_requirements.capabilities:
@@ -402,6 +494,7 @@ class AgentSpec:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "spec_version": SPEC_VERSION,
             "name": self.name,
             "purpose": self.purpose,
             "capabilities": list(self.capabilities),
@@ -421,22 +514,43 @@ class AgentSpec:
     def from_dict(cls, payload: Any) -> "AgentSpec":
         if not isinstance(payload, dict):
             raise ValueError("an agent spec must be an object")
-        name = str(payload.get("name", "")).strip().lower()
-        purpose = str(payload.get("purpose", "")).strip()
-        caps = payload.get("capabilities", [])
-        if isinstance(caps, str):
-            caps = [caps]
-        tools = payload.get("tools", [])
-        if isinstance(tools, str):
-            tools = [tools]
+        version = payload.get("spec_version", SPEC_VERSION)
+        if version is None:
+            version = SPEC_VERSION
+        if not isinstance(version, str) or not SPEC_VERSION_RE.match(
+                version.strip().lower()):
+            raise ValueError(
+                "spec_version %r is unknown; expected something like %r"
+                % (payload.get("spec_version"), SPEC_VERSION))
+        raw_name = payload.get("name", "")
+        if raw_name is None:
+            raw_name = ""
+        if not isinstance(raw_name, str):
+            raise ValueError("name must be a string")
+        raw_purpose = payload.get("purpose", "")
+        if raw_purpose is None:
+            raw_purpose = ""
+        if not isinstance(raw_purpose, str):
+            raise ValueError("purpose must be a string")
         permissions = payload.get("permissions", [])
         if not isinstance(permissions, list):
             raise ValueError("permissions must be a list")
+        raw_role = payload.get("role", "")
+        if raw_role is None:
+            raw_role = ""
+        if not isinstance(raw_role, str):
+            raise ValueError("role must be a string")
+        raw_template = payload.get("template", "")
+        if raw_template is None:
+            raw_template = ""
+        if not isinstance(raw_template, str):
+            raise ValueError("template must be a string")
         return cls(
-            name=name,
-            purpose=purpose,
-            capabilities=tuple(str(cap).strip().lower() for cap in caps),
-            tools=tuple(str(tool).strip().lower() for tool in tools),
+            name=raw_name.strip().lower(),
+            purpose=raw_purpose.strip(),
+            capabilities=_strict_str_list(payload.get("capabilities", []),
+                                          "capabilities"),
+            tools=_strict_str_list(payload.get("tools", []), "tools"),
             permissions=tuple(PermissionRequestSpec.from_dict(entry)
                               for entry in permissions),
             model_requirements=ModelRequirements.from_dict(
@@ -447,8 +561,8 @@ class AgentSpec:
                 payload.get("verification_requirements")),
             resource_limits=ResourceLimits.from_dict(
                 payload.get("resource_limits")),
-            role=str(payload.get("role", "")).strip().lower(),
-            template=str(payload.get("template", "")).strip().lower(),
+            role=raw_role.strip().lower(),
+            template=raw_template.strip().lower(),
         )
 
 
@@ -475,6 +589,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "MEDIUM", "Write implementation files via change sets."),
             _perm("terminal", "execute", "pytest",
                   "MEDIUM", "Run the repository test suite."),
+            _perm("git", "status", "",
+                  "LOW", "Inspect the working tree status (read-only)."),
             _perm("memory", "read", "",
                   "LOW", "Recall the agent's own prior run notes."),
             _perm("memory", "write", "",
@@ -505,6 +621,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "LOW", "Read public documentation and sources."),
             _perm("network", "request", "docs/**",
                   "LOW", "Fetch cited reference pages."),
+            _perm("git", "status", "",
+                  "LOW", "Inspect the working tree status (read-only)."),
             _perm("memory", "read", "",
                   "LOW", "Recall the agent's own prior findings."),
             _perm("memory", "write", "",
@@ -534,6 +652,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "LOW", "Read-only security inspection."),
             _perm("terminal", "execute", "security-scan",
                   "MEDIUM", "Run read-only scanners and test collectors."),
+            _perm("git", "status", "",
+                  "LOW", "Inspect the working tree status (read-only)."),
             _perm("memory", "read", "",
                   "LOW", "Recall the agent's own prior findings."),
             _perm("memory", "write", "",
@@ -565,6 +685,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "MEDIUM", "Write game code and scene files."),
             _perm("terminal", "execute", "pytest",
                   "MEDIUM", "Run game logic tests."),
+            _perm("git", "status", "",
+                  "LOW", "Inspect the working tree status (read-only)."),
             _perm("memory", "read", "",
                   "LOW", "Recall the agent's own prior run notes."),
             _perm("memory", "write", "",
@@ -594,8 +716,10 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "LOW", "Read OS sources and build files."),
             _perm("filesystem", "write", "kernel/**",
                   "HIGH", "Write OS component sources via review."),
-            _perm("terminal", "execute", "build-and-test",
-                  "HIGH", "Run OS build and test commands."),
+            _perm("terminal", "execute", "pytest",
+                  "HIGH", "Run the OS component pytest suite."),
+            _perm("git", "status", "",
+                  "LOW", "Inspect the working tree status (read-only)."),
             _perm("memory", "read", "",
                   "LOW", "Recall the agent's own prior run notes."),
             _perm("memory", "write", "",

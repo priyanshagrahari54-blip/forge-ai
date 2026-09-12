@@ -359,6 +359,7 @@ class EngineUpdateRequest(BaseModel):
 
 class EngineGrantRequest(BaseModel):
     index: int = Field(ge=0, le=100)
+    expect: Optional[dict] = None
 
 
 class EngineVersionRequest(BaseModel):
@@ -372,12 +373,14 @@ class EngineToolCall(BaseModel):
 
 
 class EngineRunRequest(BaseModel):
+    # Deliberately no approval flag and no test command: remote callers
+    # can neither self-approve tool writes (approval flows through
+    # redeemable approval tokens) nor choose the verification command
+    # (tests-required specs run the harness's fixed pytest suite).
     requirement: str = Field(min_length=1, max_length=4000)
     approval_token_id: str = Field(default="", max_length=200)
-    test_command: str = Field(default="", max_length=256)
     tool_calls: List[EngineToolCall] = Field(default_factory=list,
                                              max_length=8)
-    approved: bool = False
 
 
 class EngineImportRequest(BaseModel):

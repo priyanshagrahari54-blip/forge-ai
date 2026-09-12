@@ -32,10 +32,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.agents.specs import AgentSpec, build_template, template_names
+from forge.agents.specs import (AgentSpec, PermissionRequestSpec,
+                                build_template, template_names)
 
 STORE_VERSION = 1
 MAX_PACKAGES = 100
+MAX_STORE_BYTES = 4 * 1024 * 1024
 MAX_HISTORY = 50
 MAX_BENCHMARKS = 20
 MAX_NOTES = 280
@@ -63,8 +65,9 @@ def agent_identity(name: str) -> str:
 
 
 def spec_fingerprint(spec: dict[str, Any]) -> str:
+    """Full SHA-256 over the canonical spec JSON (change detection)."""
     canonical = json.dumps(spec, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def bump_version(version: str, kind: str) -> str:
@@ -72,7 +75,7 @@ def bump_version(version: str, kind: str) -> str:
     if match is None:
         raise ValueError("version %r is not semver" % (version,))
     major, minor, patch = (int(part) for part in match.groups())
-    kind = (kind or "").strip().lower()
+    kind = str(kind or "").strip().lower()
     if kind == "major":
         return "%d.0.0" % (major + 1,)
     if kind == "minor":
@@ -82,22 +85,41 @@ def bump_version(version: str, kind: str) -> str:
     raise ValueError("kind must be major, minor, or patch")
 
 
+def _is_self_admin(name: str, actor: str) -> bool:
+    """True when ``actor`` is the agent itself in any spelling.
+
+    Matches the bare name, ``agent:<name>``, ``forge-managed:<name>``,
+    and any ``agent:*`` identity, case-insensitively — administration
+    is operator work, never something an agent does to itself.
+    """
+    candidate = (actor or "").strip().lower()
+    if not candidate:
+        return False
+    lowered = (name or "").strip().lower()
+    if candidate == lowered or candidate == "agent:%s" % lowered \
+            or candidate == "forge-managed:%s" % lowered:
+        return True
+    return candidate.startswith("agent:")
+
+
 def _refuse_self_admin(name: str, actor: str, action: str) -> str:
-    """Refuse administration by the agent itself (or any agent identity).
+    """Refuse administration by the agent itself (or by nobody).
 
     Creating, validating, testing, moving, updating, versioning, or
-    granting for an agent is operator work. Returns the stripped actor.
+    granting for an agent is operator work by a NAMED operator: empty
+    actors are refused too. Returns the stripped actor.
     """
-    actor = (actor or "").strip()
-    lowered = actor.strip()
-    if lowered == name or lowered == agent_identity(name) \
-            or lowered == "forge-managed:%s" % name \
-            or lowered.lower().startswith("agent:"):
+    stripped = (actor or "").strip()
+    if not stripped:
+        raise ValueError(
+            "refused: cannot %s anonymously; administration needs a "
+            "named operator identity" % (action,))
+    if _is_self_admin(name, stripped):
         raise ValueError(
             "refused: agents cannot %s themselves (%s); administration "
             "needs a distinct operator identity"
-            % (action, actor or "anonymous"))
-    return actor
+            % (action, stripped))
+    return stripped
 
 
 @dataclass
@@ -167,6 +189,32 @@ class AgentPackage:
         version = str(payload.get("version", ""))
         if _VERSION_RE.match(version) is None:
             raise ValueError("version %r is not semver" % (version,))
+        for section in ("grants", "versions", "benchmarks", "transitions"):
+            entries = payload.get(section, [])
+            if not isinstance(entries, list) or any(
+                    not isinstance(entry, dict) for entry in entries):
+                raise ValueError(
+                    "package section %r must hold objects" % (section,))
+        for grant in payload.get("grants", []):
+            try:
+                problems = PermissionRequestSpec.from_dict(
+                    grant.get("permission")).validate()
+            except ValueError as exc:
+                raise ValueError(
+                    "stored grant is corrupt: %s" % (exc,)) from exc
+            if problems:
+                raise ValueError("stored grant is corrupt: %s"
+                                 % ("; ".join(problems),))
+            if not isinstance(grant.get("approver"), str):
+                raise ValueError("stored grant needs a string approver")
+        for record in payload.get("versions", []):
+            if _VERSION_RE.match(str(record.get("version", ""))) is None:
+                raise ValueError("stored version %r is not semver"
+                                 % (record.get("version"),))
+        for transition in payload.get("transitions", []):
+            if transition.get("to") not in STATES:
+                raise ValueError("stored transition target %r is unknown"
+                                 % (transition.get("to"),))
         package = cls(
             name=str(payload.get("name", "")),
             spec=spec,
@@ -191,14 +239,26 @@ class AgentCreationEngine:
     def __init__(self, store_path: str = "") -> None:
         self.store_path = store_path
         self._packages: dict[str, AgentPackage] = {}
+        self._store_stat: tuple[float, int] | None = None
         if store_path:
             self._load()
 
     # -- persistence ---------------------------------------------------
 
+    def _stat_store(self) -> tuple[float, int] | None:
+        try:
+            info = os.stat(self.store_path)
+        except OSError:
+            return None
+        return (info.st_mtime, info.st_size)
+
     def _load(self) -> None:
         if not os.path.exists(self.store_path):
+            self._store_stat = None
             return
+        if os.path.getsize(self.store_path) > MAX_STORE_BYTES:
+            raise ValueError("agent store %r exceeds %d bytes"
+                             % (self.store_path, MAX_STORE_BYTES))
         with open(self.store_path, encoding="utf-8") as handle:
             payload = json.load(handle)
         if not isinstance(payload, dict) \
@@ -206,16 +266,29 @@ class AgentCreationEngine:
                 or not isinstance(payload.get("packages"), dict):
             raise ValueError("agent store %r is corrupt or unsupported"
                              % (self.store_path,))
+        stored = payload["packages"]
+        if len(stored) > MAX_PACKAGES:
+            raise ValueError("agent store %r holds %d packages (limit %d)"
+                             % (self.store_path, len(stored), MAX_PACKAGES))
         packages: dict[str, AgentPackage] = {}
-        for name, entry in payload["packages"].items():
+        for _key, entry in stored.items():
             package = AgentPackage.from_dict(entry)
+            if package.name in packages:
+                raise ValueError("agent store %r lists %r twice"
+                                 % (self.store_path, package.name))
             packages[package.name] = package
-            del name
         self._packages = packages
+        self._store_stat = self._stat_store()
 
     def _save(self) -> None:
         if not self.store_path:
             return
+        if self._store_stat is not None \
+                and os.path.exists(self.store_path) \
+                and self._stat_store() != self._store_stat:
+            raise ValueError(
+                "agent store %r changed on disk; reload before writing"
+                % (self.store_path,))
         directory = os.path.dirname(os.path.abspath(self.store_path))
         os.makedirs(directory, exist_ok=True)
         payload = {"store_version": STORE_VERSION,
@@ -226,7 +299,10 @@ class AgentCreationEngine:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fdatasync(handle.fileno())
             os.replace(tmp, self.store_path)
+            self._store_stat = self._stat_store()
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -305,8 +381,7 @@ class AgentCreationEngine:
                 "agent %r cannot move %s -> %s (allowed: %s)"
                 % (package.name, package.state, to_state,
                    ", ".join(allowed) or "none — retired is terminal"))
-        previous = package.transitions[-1]["to"] if package.transitions \
-            else package.state
+        previous = package.state
         package.state = to_state
         package.updated_at = time.time()
         package.transitions.append(
@@ -389,14 +464,28 @@ class AgentCreationEngine:
         report["state"] = package.state
         return report
 
+    def _require_fresh_benchmark(self, package: AgentPackage) -> None:
+        """Enablement needs a passing benchmark of the CURRENT spec.
+
+        A missing, failing, or stale (older-spec) latest benchmark
+        refuses, so broader power can never ride an outdated result
+        back to ``enabled``. Re-running the benchmark self-heals.
+        """
+        if not package.benchmarks:
+            raise ValueError("agent %r was never benchmarked"
+                             % (package.name,))
+        latest = package.benchmarks[-1]
+        if not isinstance(latest, dict) or not latest.get("passed"):
+            raise ValueError("agent %r failed its latest benchmark"
+                             % (package.name,))
+        if latest.get("spec_hash") != spec_fingerprint(package.spec):
+            raise ValueError(
+                "agent %r changed since its latest benchmark; re-run the "
+                "benchmark before enabling" % (package.name,))
+
     def enable(self, name: str, *, actor: str = "") -> AgentPackage:
         package = self.get(name)
-        if package.state == "tested" and not package.benchmarks:
-            raise ValueError("agent %r was never benchmarked" % (name,))
-        if package.state == "tested" and package.benchmarks \
-                and not package.benchmarks[-1].get("passed"):
-            raise ValueError("agent %r failed its latest benchmark"
-                             % (name,))
+        self._require_fresh_benchmark(package)
         return self._transition(package, "enabled", actor)
 
     def pause(self, name: str, *, actor: str = "") -> AgentPackage:
@@ -407,6 +496,7 @@ class AgentCreationEngine:
         if package.state != "paused":
             raise ValueError("agent %r is %s; only paused agents resume"
                              % (name, package.state))
+        self._require_fresh_benchmark(package)
         return self._transition(package, "enabled", actor)
 
     def disable(self, name: str, *, actor: str = "") -> AgentPackage:
@@ -435,24 +525,36 @@ class AgentCreationEngine:
     # -- grants (never self-granted) --------------------------------------
 
     def grant_permission(self, name: str, index: int, *,
-                         approver: str = "") -> dict[str, Any]:
+                         approver: str = "",
+                         expected: dict[str, Any] | None = None
+                         ) -> dict[str, Any]:
         """Grant one requested permission. The approver must be a named
         identity distinct from the agent itself — self-grants raise.
-        Grants widen power, so the lifecycle resets to ``created``."""
+        ``expected`` optionally pins the permission entry the operator
+        reviewed, so a spec change between listing and granting refuses
+        instead of granting a re-pointed index. Grants widen power, so
+        the lifecycle resets to ``created``."""
         package = self.get(name)
         approver = (approver or "").strip()
         if not approver:
             raise ValueError("grants need a named approver")
-        if approver == agent_identity(package.name):
+        if _is_self_admin(package.name, approver):
             raise ValueError(
                 "refused: agents cannot grant themselves permissions "
                 "(%s)" % approver)
         if package.state == "retired":
             raise ValueError("retired agents cannot gain permissions")
         requested = list(package.spec.get("permissions", []))
-        if not isinstance(index, int) or not 0 <= index < len(requested):
+        if isinstance(index, bool) or not isinstance(index, int) \
+                or not 0 <= index < len(requested):
             raise ValueError("permission index %r is out of range" % (index,))
         entry = dict(requested[index])
+        if expected is not None and (
+                not isinstance(expected, dict)
+                or dict(expected) != entry):
+            raise ValueError(
+                "permission #%d changed since it was reviewed; re-list "
+                "before granting" % (index,))
         if any(grant.get("permission") == entry for grant in package.grants):
             raise ValueError("permission is already granted")
         grant = {"permission": entry, "approver": approver,
@@ -470,12 +572,13 @@ class AgentCreationEngine:
         approver = (approver or "").strip()
         if not approver:
             raise ValueError("revocations need a named approver")
-        if approver == agent_identity(package.name):
+        if _is_self_admin(package.name, approver):
             raise ValueError("refused: agents cannot change their own "
                              "permissions (%s)" % approver)
         if package.state == "retired":
             raise ValueError("retired agents cannot change permissions")
-        if not isinstance(index, int) or not 0 <= index < len(package.grants):
+        if isinstance(index, bool) or not isinstance(index, int) \
+                or not 0 <= index < len(package.grants):
             raise ValueError("grant index %r is out of range" % (index,))
         revoked = package.grants.pop(index)
         self._reset_to_created(package, approver, "revocation")
