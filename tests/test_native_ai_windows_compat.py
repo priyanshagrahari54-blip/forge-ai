@@ -93,6 +93,11 @@ _STDLIB_FALLBACK = {
     "urllib", "uuid",
 }
 
+#: Import roots that are always permitted (not third-party): the forge
+#: package itself and the ``__future__`` directive module, which
+#: ``sys.stdlib_module_names`` does not list on every interpreter.
+_ALLOWED_IMPORT_ROOTS = {"forge", "__future__"}
+
 
 @pytest.mark.parametrize("path", _native_files(), ids=lambda p: p.name)
 def test_native_modules_have_no_third_party_module_scope_imports(path):
@@ -110,7 +115,7 @@ def test_native_modules_have_no_third_party_module_scope_imports(path):
                 and node.module:
             names = [node.module.split(".")[0]]
         for name in names:
-            if name == "forge":
+            if name in _ALLOWED_IMPORT_ROOTS:
                 continue
             assert name in stdlib, (
                 "%s imports third-party %r at module scope; the native "
