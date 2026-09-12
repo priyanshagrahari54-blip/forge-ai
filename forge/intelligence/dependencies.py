@@ -32,6 +32,9 @@ class DependencyGraph:
     _by_target: dict[str, list[Dependency]] = field(
         default_factory=lambda: defaultdict(list), init=False, repr=False
     )
+    _by_resolved: dict[str, list[Dependency]] = field(
+        default_factory=lambda: defaultdict(list), init=False, repr=False
+    )
 
     def add(
         self,
@@ -52,6 +55,8 @@ class DependencyGraph:
             self.dependencies.append(dependency)
             self._by_source[source].append(dependency)
             self._by_target[target].append(dependency)
+            if resolved_path is not None:
+                self._by_resolved[resolved_path].append(dependency)
 
     def dependencies_of(self, source: str) -> list[str]:
         return [
@@ -63,6 +68,22 @@ class DependencyGraph:
         return [
             dependency.source
             for dependency in self._by_target.get(target, [])
+        ]
+
+    # Performance optimization (Bolt ⚡): Fast O(1) lookups for resolved path relationships
+    def resolved_dependencies_of(self, source: str) -> list[str]:
+        """Return resolved file paths that source depends on."""
+        return [
+            dependency.resolved_path
+            for dependency in self._by_source.get(source, [])
+            if dependency.resolved_path is not None
+        ]
+
+    def dependents_of_resolved(self, resolved_path: str) -> list[str]:
+        """Return source file paths that depend on the given resolved_path."""
+        return [
+            dependency.source
+            for dependency in self._by_resolved.get(resolved_path, [])
         ]
 
     def internal_dependencies_of(self, source: str) -> list[Dependency]:

@@ -43,19 +43,21 @@ class ContextQueryEngine:
         # Match meaningful words from the task against repository symbols.
         task_terms = self._terms(request.task)
 
-        for symbol in self.intelligence.symbols.symbols:
-            score = self._symbol_score(symbol.name, task_terms)
+        # Performance optimization (Bolt ⚡): Skip symbol scoring when no task terms exist
+        if task_terms:
+            for symbol in self.intelligence.symbols.symbols:
+                score = self._symbol_score(symbol.name, task_terms)
 
-            if score > 0:
-                pack.add(
-                    ContextItem(
-                        path=symbol.file,
-                        kind="symbol",
-                        symbol=symbol.name,
-                        reason="task/symbol match",
-                        score=score,
+                if score > 0:
+                    pack.add(
+                        ContextItem(
+                            path=symbol.file,
+                            kind="symbol",
+                            symbol=symbol.name,
+                            reason="task/symbol match",
+                            score=score,
+                        )
                     )
-                )
 
         # Expand context around selected source files.
         initial_files = list(pack.files)
