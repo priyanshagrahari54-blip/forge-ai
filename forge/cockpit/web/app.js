@@ -44,6 +44,7 @@ const ROUTES = {
   voice: { render: renderVoice, title: "Voice" },
   memory: { render: renderMemory, title: "Memory" },
   orchestrations: { render: renderOrchestrations, title: "Orchestrations" },
+  executions: { render: renderExecutions, title: "Agent Activity" },
   vision: { render: renderVision, title: "Vision" },
   computer: { render: renderComputer, title: "Computer Use" },
   agents: { render: renderAgentsView, title: "Agents" },
@@ -2245,6 +2246,7 @@ const PALETTE_COMMANDS = [
   ["Go to Voice", "view", () => { window.location.hash = "#/voice"; }],
   ["Go to Memory", "view", () => { window.location.hash = "#/memory"; }],
   ["Go to Orchestrations", "view", () => { window.location.hash = "#/orchestrations"; }],
+  ["Go to Agent Activity", "view", () => { window.location.hash = "#/executions"; }],
   ["Go to Vision", "view", () => { window.location.hash = "#/vision"; }],
   ["Go to Computer Use", "view", () => { window.location.hash = "#/computer"; }],
   ["Go to Agents", "view", () => { window.location.hash = "#/agents"; }],
@@ -2664,6 +2666,176 @@ async function renderOrchestrationDetail(orchestrationId) {
   } catch (err) {
     errorState(box, "Unable to load orchestration", err,
       () => renderOrchestrationDetail(orchestrationId));
+  }
+}
+
+/* ---------- executions / agent activity (A81) ---------- */
+
+function standardExecutionGraph(requirement) {
+  return [
+    { id: "research", role: "researcher", description:
+      "Research the repository layout for: " + requirement },
+    { id: "plan", role: "planner", description:
+      "Plan the work for: " + requirement },
+    { id: "security", role: "security", description:
+      "Scan the repository for secrets and risky patterns" },
+    { id: "review", role: "reviewer", description:
+      "Review the current state of the code" },
+    { id: "performance", role: "performance", description:
+      "Measure module import performance" },
+    { id: "docs", role: "documentation",
+      description: "Document the project: " + requirement,
+      dependencies: ["research", "plan", "security", "review",
+                     "performance"] },
+  ];
+}
+
+function renderExecutions() {
+  document.getElementById("exec-refresh").addEventListener("click",
+    renderExecutions);
+  document.getElementById("exec-form").addEventListener("submit",
+    async (ev) => {
+      ev.preventDefault();
+      const requirement =
+        document.getElementById("exec-requirement").value.trim();
+      if (!requirement) return;
+      try {
+        await api("/api/v1/executions", {
+          method: "POST",
+          body: { requirement: requirement,
+                  tasks: standardExecutionGraph(requirement) },
+        });
+        document.getElementById("exec-requirement").value = "";
+        loadExecutions();
+      } catch (err) {
+        errorState(document.getElementById("exec-list"),
+          "Submit failed", err, renderExecutions);
+      }
+    });
+  loadExecutions();
+  const detail = document.getElementById("exec-detail");
+  detail.innerHTML = "";
+  detail.classList.add("hidden");
+}
+
+async function loadExecutions() {
+  const box = document.getElementById("exec-list");
+  try {
+    const payload = await api("/api/v1/executions");
+    const items = payload.executions || [];
+    box.innerHTML = "";
+    if (!items.length) {
+      const empty = el("p", "muted empty-state");
+      empty.textContent = "No parallel executions yet.";
+      box.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = el("div", "surface orch-step");
+      row.appendChild(el("h4", null,
+        (item.requirement || "").slice(0, 80)));
+      row.appendChild(el("p", "muted",
+        item.status + " · stage " + (item.stage || "") + " · " +
+        new Date((item.created_at || 0) * 1000).toLocaleString()));
+      if (item.error) row.appendChild(el("p", null, item.error));
+      row.addEventListener("click",
+        () => renderExecutionDetail(item.execution_id));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    errorState(box, "Unable to load executions", err,
+      renderExecutions);
+  }
+}
+
+function agentActivityGrid(box, activity) {
+  const agents = (activity || {}).agents || [];
+  if (!agents.length) {
+    box.appendChild(el("p", "muted",
+      "No agent activity recorded yet."));
+    return;
+  }
+  for (const agent of agents) {
+    const card = el("div", "surface orch-step");
+    card.appendChild(el("h4", null,
+      agent.role + " — " + agent.state +
+      (agent.attempts > 1 ? " (" + agent.attempts + " attempts)" : "")));
+    const meta = [];
+    if (agent.task_id) meta.push("task " + agent.task_id);
+    if (agent.held_locks && agent.held_locks.length)
+      meta.push("locks: " + agent.held_locks.join(", "));
+    if (agent.last_event) meta.push("last: " + agent.last_event);
+    if (meta.length) card.appendChild(el("p", "muted", meta.join(" · ")));
+    if (agent.blocked_reason)
+      card.appendChild(el("p", null, agent.blocked_reason));
+    if (agent.error) card.appendChild(el("p", null, agent.error));
+    box.appendChild(card);
+  }
+}
+
+async function renderExecutionDetail(executionId) {
+  const box = document.getElementById("exec-detail");
+  box.classList.remove("hidden");
+  try {
+    const record = await api("/api/v1/executions/" +
+      encodeURIComponent(executionId));
+    box.innerHTML = "";
+    const head = el("div", "section-header");
+    head.appendChild(el("h3", null,
+      "Execution " + record.execution_id.slice(0, 8)));
+    box.appendChild(head);
+    box.appendChild(el("p", "muted",
+      record.status + " · " + (record.error || "running or finished")));
+    const tasks = (record.report || {}).tasks || [];
+    for (const task of tasks) {
+      const card = el("div", "surface orch-step");
+      card.appendChild(el("h4", null,
+        task.id + " (" + task.role + ") — " + task.status +
+        (task.attempts > 1 ? " (" + task.attempts + " attempts)" : "")));
+      card.appendChild(el("p", "muted",
+        "kind " + task.kind + " · deps " +
+        (task.dependencies || []).join(", ")));
+      if (task.error) card.appendChild(el("p", null, task.error));
+      if (task.blocked_reason)
+        card.appendChild(el("p", "muted", task.blocked_reason));
+      box.appendChild(card);
+    }
+    box.appendChild(el("h4", null, "Agent activity"));
+    agentActivityGrid(box, record.activity);
+    const approvals = await api("/api/v1/executions/" +
+      encodeURIComponent(executionId) + "/approvals");
+    const pending = approvals.approvals || [];
+    if (pending.length) {
+      box.appendChild(el("p", null, "Pending approvals:"));
+      for (const approval of pending) {
+        const row = el("div", "surface orch-step");
+        row.appendChild(el("p", null,
+          approval.agent + " wants " + approval.operation + " on " +
+          (approval.files || approval.scopes || []).join(", ")));
+        row.appendChild(el("p", "muted",
+          approval.reason || approval.consequences || ""));
+        const approve = el("button", null, "Approve");
+        approve.addEventListener("click", async () => {
+          await api("/api/v1/executions/" + encodeURIComponent(executionId) +
+            "/approvals/" + encodeURIComponent(approval.id) +
+            "/decision?approved=true", { method: "POST", body: {} });
+          renderExecutionDetail(executionId);
+        });
+        const deny = el("button", "ghost", "Deny");
+        deny.addEventListener("click", async () => {
+          await api("/api/v1/executions/" + encodeURIComponent(executionId) +
+            "/approvals/" + encodeURIComponent(approval.id) +
+            "/decision?approved=false", { method: "POST", body: {} });
+          renderExecutionDetail(executionId);
+        });
+        row.appendChild(approve);
+        row.appendChild(deny);
+        box.appendChild(row);
+      }
+    }
+  } catch (err) {
+    errorState(box, "Unable to load execution", err,
+      () => renderExecutionDetail(executionId));
   }
 }
 

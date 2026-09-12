@@ -607,6 +607,100 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Parallel Orchestration (A81)
+
+A production-grade parallel task and multi-agent orchestration layer.
+Independent engineering tasks run concurrently where it is safe;
+conflicting work is serialized or kept exclusive. New package:
+`forge/orchestration/`.
+
+**Agent roles.** Ten fixed role specs
+(`planner, architect, coder, tester, debugger, reviewer, security,
+performance, researcher, documentation`), each declaring its
+capability, permission set, minimum model requirement, task scope
+(read/write), resource limits (max concurrent, wall-clock budget,
+max attempts, payload cap), and a result schema that is validated
+before a result is accepted (`AgentRoleSpec`, `validate_result`,
+`model_satisfies` in `forge/orchestration/roles.py`).
+
+**Dependency-aware task graph.** `TaskGraph` carries typed nodes
+(`TaskNode`: requirement, role, inputs, declared file outputs,
+dependencies, priority, retries, timeout) and is validated with a
+Kahn topological pass (cycles are rejected up front). File-write
+conflicts between tasks are detected statically; a task can also be
+marked `BLOCKED`/`UNBLOCKED` at run time (its transitive dependents
+stay blocked).
+
+**Resource locking.** `ResourceLockManager` provides shared and
+exclusive locks with writer priority, atomic multi-key acquisition
+(all-or-nothing), blocking acquisition with a wait timeout, and
+deadlock detection (a waiter whose target can reach back to it
+raises `DeadlockError`). Two tasks writing the same path can never
+hold it exclusively at the same time; read-only stages may share.
+
+**Structured communication.** Agents exchange typed `AgentMessage`s
+(`task_request`, `task_result`, `task_denied`, `task_failed`,
+`task_blocked`, `info`) over a `MessageBus`; no agent mutates
+another agent's state. `AgentActivityTracker` records a bounded
+activity stream (per-role state, attempts, held locks, last event,
+blocked reason, counts, recent messages) for visualization.
+
+**Scheduler.** `ParallelTaskScheduler` admits tasks only when every
+required resource can be acquired atomically, bounds concurrency and
+per-role concurrency, honors priorities, retries up to the per-role
+limit (backoff), enforces per-task timeouts, and isolates failures
+(downstream of a failed task is marked `BLOCKED` — a failure never
+cascades into unbounded work). Cancellation marks unstarted tasks
+`CANCELLED`, cancels in-flight work, and releases locks. The final
+status is `SUCCEEDED`, `FAILED` (any failure or denial), `PARTIAL`
+(blocked remainder), or `CANCELLED`.
+
+**Persistence.** `ExecutionStateStore` journals every state
+transition to a SQLite file (`state.sqlite` in the project root), so
+an execution survives a crash and resumes with completed work intact
+(verified: a resumed run does not re-run finished tasks).
+
+**Supervisor integration.** `Supervisor.execute_parallel(requirement,
+tasks, ...)` runs the graph with the same A33 security discipline as
+the single task pipeline: every dispatch passes the `AGENT/execute`
+gate and every file write the `FILESYSTEM` write gate (policy is
+evaluated, never bypassed — denied tasks end `DENIED`), and every
+attempts' declared writes are checkpointed by A32
+(`parallel-run-{run_id}`) and rolled back if the run is not
+accepted. Results are validated against each role's result schema;
+hand-offs between roles are journaled `task_request`/`task_result`
+messages.
+
+**Control plane and API.** `ControlPlane.submit_execution(...)`
+executes in a worker thread and stores the report in `ExecutionStore`.
+API: `POST /api/v1/executions` (validate requirement, tasks,
+roles, dependencies, file paths — cycles, duplicates, unknown
+roles, path escapes are rejected), `GET /api/v1/executions` (scoped
+to the authenticated session's project), `GET
+/api/v1/executions/{id}`, `POST /api/v1/executions/{id}/cancel`,
+`GET /api/v1/executions/{id}/approvals`, and `POST
+/api/v1/executions/{id}/approvals/{aid}/decision?approved=` for
+in-flight approval gates.
+
+**Visualization.** The Cockpit gained an `Executions` page
+(`#/executions`) showing the live run, per-role agent states with
+held locks and last events, the message stream, pending approvals
+(with approve/deny), and the final report. The desktop app gained an
+`Agent activity` tab fed by `DesktopBackend.poll_snapshot`
+(`agent_activity`; degrades gracefully when the plane is down).
+
+**Tests (97 new, `tests/test_a81_*.py`).** Race conditions
+(concurrent writers to one file never overlap; independent files run
+in parallel), dependency graphs (diamonds, chains, cycles rejected),
+cancellation (in-flight and queued), retries (backoff + exhaustion),
+deadlocks (detected, not hung), conflicting edits (exclusive
+dominates shared; writers never overlap), failure isolation, denial
+isolation, persistence/resume, the full supervisor
+`execute_parallel` (approval round-trip, rollback on non-accept,
+denial), the executions API (live end-to-end, validation, cancel
+with atomic rollback, per-session isolation), and the Cockpit and
+desktop visualizations.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

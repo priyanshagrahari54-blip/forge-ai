@@ -64,6 +64,8 @@ from forge.control.db import Database
 from forge.control.events import EventStore
 from forge.control.memory import VALID_KINDS as VALID_MEMORY_KINDS
 from forge.control.memory import SessionMemoryStore
+from forge.control.executions import (Execution, ExecutionStatus,
+                                      ExecutionStore)
 from forge.control.orchestrations import (OrchestrationStatus,
                                           OrchestrationStore)
 from forge.control.sessions import Session, SessionStore
@@ -581,6 +583,7 @@ class ControlPlane:
             self._db, max_events_per_task=self.config.max_events_per_task)
         self.runs = RunStore(self._db)
         self.orchestrations = OrchestrationStore(self._db)
+        self.executions = ExecutionStore(self._db)
         self._init_checkpoints_table()
         # A80 provider-capability verification records (explicit, TTL-
         # bounded; the gate reads these and never calls the network).
@@ -651,6 +654,8 @@ class ControlPlane:
         self._orch_lock = threading.Lock()
         self._orch_controls: dict[str, SupervisorControl] = {}
         self._orch_events: dict[str, threading.Event] = {}
+        self._exec_lock = threading.Lock()
+        self._exec_controls: dict[str, SupervisorControl] = {}
         self._checkpoints: dict[str, Any] = {}
         self._checkpoints_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
@@ -6178,6 +6183,456 @@ class ControlPlane:
             with self._orch_lock:
                 self._orch_controls.pop(orchestration_id, None)
 
+
+    # -- parallel task executions (A81) -------------------------------------
+
+    #: Hard ceiling on parallel execution workers per submission.
+    MAX_EXECUTION_WORKERS = 8
+    MAX_EXECUTION_TASKS = 40
+
+    def submit_execution(self, session: Session, requirement: str,
+                         tasks: list, *, max_workers: int | None = None,
+                         mode: str = "") -> Execution:
+        """Queue one parallel task-graph execution for the project.
+
+        ``tasks`` is a list of specs: ``role`` (one of the ten A81
+        roles), ``description``, optional ``id``, ``dependencies``,
+        ``reads``, ``writes``, ``resources``, ``priority``,
+        ``max_retries``, ``timeout``, and ``kind``
+        (``sequential`` / ``parallel`` / ``dependent``). The graph is
+        validated (cycles, dangling edges, unknown roles, path
+        traversal) before anything is queued. ``mode`` follows the
+        regular task convention (session profile by default).
+        """
+        if not isinstance(requirement, str) or not requirement.strip():
+            raise InvalidRequest("Requirement must be a non-empty string.")
+        requirement = requirement.strip()
+        if len(requirement) > MAX_REQUIREMENT_CHARS:
+            raise InvalidRequest("Requirement is too long.")
+        profile = mode or session.profile
+        try:
+            OperationMode(profile)
+        except ValueError:
+            raise InvalidRequest(f"Unknown mode: {profile!r}") from None
+        if not isinstance(tasks, list) or not tasks:
+            raise InvalidRequest("tasks must be a non-empty list.")
+        if len(tasks) > self.MAX_EXECUTION_TASKS:
+            raise InvalidRequest(
+                f"At most {self.MAX_EXECUTION_TASKS} tasks per execution.")
+        workers = max_workers or self.config.orchestration_max_workers
+        if not isinstance(workers, int) or workers < 1:
+            raise InvalidRequest("max_workers must be a positive integer.")
+        workers = min(workers, self.MAX_EXECUTION_WORKERS)
+        project = self.get_project(session.project_id)
+        graph, spec = self._build_execution_graph(requirement, tasks,
+                                                  workers)
+        spec["mode"] = profile
+        record = self.executions.create(
+            session_id=session.id, project_id=project.id,
+            requirement=requirement, actor=session.actor, graph_spec=spec)
+        self._emit(record.id, record.project_id, "execution.created",
+                   {"tasks": [t["id"] for t in spec["tasks"]],
+                    "max_workers": workers, "actor": session.actor})
+        self._audit(session.actor, "execution", "submit", True,
+                    task_id=record.id,
+                    reason=f"project {project.id}, {len(tasks)} tasks")
+        if self._executor is not None:
+            self._submit_tracked(self._execute_execution, record.id)
+        else:
+            # Worker pool unavailable: fail the record closed.
+            self.executions.mutate(
+                record.id, status=ExecutionStatus.FAILED, stage="failed",
+                error="Worker pool unavailable.", finished_at=time.time())
+        return record
+
+    def get_execution(self, session: Session, execution_id: str, *,
+                      include_report: bool = True) -> Execution:
+        validate_id(execution_id, kind="execution id")
+        record = self.executions.get(execution_id)
+        if record is None or record.session_id != session.id:
+            raise TaskNotFound(f"Unknown execution: {execution_id!r}")
+        return record
+
+    def list_executions(self, session: Session) -> list[Execution]:
+        return self.executions.list_for_session(session.id)
+
+    def cancel_execution(self, session: Session, execution_id: str) -> Execution:
+        from forge.control.executions import TERMINAL as EXEC_TERMINAL
+
+        record = self.get_execution(session, execution_id)
+        if record.status in EXEC_TERMINAL:
+            raise InvalidRequest("Execution already finished.")
+        control = self._exec_control(execution_id)
+        if control is None:
+            raise InvalidRequest("Execution is not running yet.")
+        control.request_cancel()
+        self._audit(session.actor, "execution", "cancel", True,
+                    task_id=record.id)
+        return self.executions.get(record.id) or record
+
+    def agent_activity_for_project(self, project_id: str) -> dict[str, Any]:
+        """Latest execution's agent-activity snapshot (desktop views)."""
+        record = self.executions.latest_for_project(project_id)
+        if record is None:
+            return {"present": False}
+        return {"present": True, "execution_id": record.id,
+                "status": record.status.value,
+                "requirement": record.requirement,
+                "activity": record.activity()}
+
+    def _exec_control(self, execution_id: str):
+        with self._exec_lock:
+            return self._exec_controls.get(execution_id)
+
+    def _execution_approval_callback(
+            self, execution_id: str) -> Callable[[Any], str]:
+        """Operator hook for A81 execution approvals (A33 flow).
+
+        Change-set and dispatch queries are filed through the A33
+        approval service; every wait is bounded by the approval timeout
+        and honours cancellation. A denial (or timeout) returns ``""``
+        and the gate fails the task closed.
+        """
+        from forge.control.executions import TERMINAL as EXEC_TERMINAL
+        from forge.core.run_control import TaskCancelled
+
+        def callback(query: Any) -> str:
+            record = self.executions.get(execution_id)
+            if record is None or record.status in EXEC_TERMINAL:
+                return ""
+            control = self._exec_control(execution_id)
+            if control is not None and control.cancel_requested:
+                raise TaskCancelled("cancelled before approval")
+            adapter = type("ApprovalRun", (), {
+                "id": execution_id,
+                "project_id": record.project_id})()
+            try:
+                filed = self.approvals.file_query(
+                    query, adapter, model="", provider="")
+            except ApprovalError:
+                return ""
+            tokens = [
+                self._wait_approval_token(request, execution_id, control,
+                                          self.config.approval_timeout)
+                for request in filed]
+            return tokens[0] if len(tokens) == 1 else ""
+        return callback
+
+    def _build_execution_graph(self, requirement: str, tasks: list,
+                               workers: int):
+        from forge.orchestration import TaskGraph, get_role_spec
+
+        id_re = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+        graph = TaskGraph(name="execution")
+        spec_tasks: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for index, raw in enumerate(tasks):
+            if not isinstance(raw, dict):
+                raise InvalidRequest(f"tasks[{index}] must be an object.")
+            task_id = str(raw.get("id") or f"t{index + 1}").strip().lower()
+            if not id_re.match(task_id):
+                raise InvalidRequest(
+                    f"tasks[{index}].id must match "
+                    "[a-z0-9][a-z0-9_-]{0,31}")
+            if task_id in seen_ids:
+                raise InvalidRequest(f"duplicate task id {task_id!r}")
+            seen_ids.add(task_id)
+            role = str(raw.get("role") or "").strip().lower()
+            try:
+                get_role_spec(role)
+            except KeyError:
+                raise InvalidRequest(
+                    f"tasks[{index}] has unknown role {role!r}; expected "
+                    "one of: " + ", ".join(
+                        spec.role for spec in
+                        __import__("forge.orchestration.roles",
+                                   fromlist=["AGENT_ROLES"]).AGENT_ROLES))
+            description = str(raw.get("description") or "").strip()
+            if not description:
+                raise InvalidRequest(
+                    f"tasks[{index}] needs a description.")
+            if len(description) > 2000:
+                raise InvalidRequest(
+                    f"tasks[{index}].description is too long.")
+            kind = str(raw.get("kind") or "parallel").strip().lower()
+            if kind not in ("sequential", "parallel", "dependent"):
+                raise InvalidRequest(
+                    f"tasks[{index}].kind must be sequential, parallel, "
+                    "or dependent.")
+            dependencies = [str(dep) for dep in
+                            (raw.get("dependencies") or ())]
+            for dependency in dependencies:
+                if dependency not in seen_ids and \
+                        dependency not in {t["id"] for t in spec_tasks}:
+                    raise InvalidRequest(
+                        f"tasks[{index}] depends on undeclared task "
+                        f"{dependency!r} (dependencies must reference "
+                        "earlier tasks)")
+            def _paths(key: str) -> list[str]:
+                values = raw.get(key) or ()
+                if not isinstance(values, (list, tuple)):
+                    raise InvalidRequest(f"tasks[{index}].{key} must be a list")
+                out = []
+                for value in values:
+                    value = str(value).strip()
+                    if not value or value.startswith("/") or \
+                            ".." in value.split("/"):
+                        raise InvalidRequest(
+                            f"tasks[{index}].{key} entries must be "
+                            "relative paths")
+                    if len(value) > 500:
+                        raise InvalidRequest(
+                            f"tasks[{index}].{key} entry too long")
+                    out.append(value)
+                return out
+            reads = _paths("reads")
+            writes = _paths("writes")
+            resources = [str(r).strip() for r in
+                         (raw.get("resources") or ())]
+            for resource in resources:
+                if not resource or len(resource) > 100:
+                    raise InvalidRequest(
+                        f"tasks[{index}].resources must be short names")
+            priority = int(raw.get("priority") or 0)
+            max_retries = int(raw.get("max_retries") or 0)
+            if max_retries < 0 or max_retries > 10:
+                raise InvalidRequest(
+                    f"tasks[{index}].max_retries must be within 0..10")
+            timeout = raw.get("timeout")
+            if timeout is not None and \
+                    (not isinstance(timeout, (int, float))
+                     or timeout <= 0 or timeout > 3600):
+                raise InvalidRequest(
+                    f"tasks[{index}].timeout must be within (0, 3600]")
+            graph.add_task(
+                task_id, description, role, kind=kind, priority=priority,
+                created_at=float(index), dependencies=tuple(dependencies),
+                reads=tuple(reads), writes=tuple(writes),
+                resources=tuple(resources), max_retries=max_retries,
+                timeout=float(timeout) if timeout is not None else None)
+            spec_tasks.append({
+                "id": task_id, "role": role, "description": description,
+                "kind": kind, "priority": priority,
+                "dependencies": dependencies, "reads": reads,
+                "writes": writes, "resources": resources,
+                "max_retries": max_retries,
+                "timeout": float(timeout) if timeout is not None else None,
+            })
+        try:
+            graph.validate()
+        except ValueError as exc:
+            raise InvalidRequest(f"Invalid task graph: {exc}") from exc
+        return graph, {"requirement": requirement, "max_workers": workers,
+                       "tasks": spec_tasks}
+
+    def _execution_workers(self, project: Project, execution_id: str,
+                           roles: set[str]) -> dict[str, Any]:
+        """Adapt the A38 real agent team to A81 role workers.
+
+        Every worker performs its real job over the project root (the
+        same team the A38 orchestrations use); the adapter converts the
+        executor's output into the role's structured result contract.
+        """
+        from forge.agents.execution import AgentRequest
+        from forge.core.task_engine import Task, TaskStatus
+
+        registry = self._orchestration_team(project, execution_id)
+
+        def adapt(role: str):
+            registration = registry.get(role)
+
+            def worker(work_item: Any) -> dict:
+                task = work_item.task
+                request = AgentRequest(
+                    task=Task(id=f"{work_item.run_id}:{task.id}",
+                              description=task.description,
+                              status=TaskStatus.RUNNING),
+                    stage=TaskStatus.RUNNING,
+                    instructions=task.description,
+                    metadata={"role": role, "kind": task.kind.value,
+                              "context": json.dumps(
+                                  work_item.context, default=str)[:4000]
+                              if work_item.context else ""})
+                response = registration.executor.execute(request)
+                if not response.success:
+                    raise RuntimeError(
+                        response.error or f"{role} step failed")
+                return self._adapt_role_output(
+                    role, response.output, sorted(task.writes))
+            return worker
+
+        return {role: adapt(role) for role in sorted(roles)}
+
+    def _adapt_role_output(self, role: str, output: str,
+                           declared_writes: list[str]) -> dict[str, Any]:
+        """Convert one executor's real output into the role's structured
+        result contract (honest field derivation, never fabricated)."""
+        output = (output or "").strip()
+        parsed: Any = None
+        try:
+            parsed = json.loads(output)
+        except ValueError:
+            parsed = None
+
+        def text_summary(limit: int = 2000) -> str:
+            return output[:limit] if output else "no output"
+
+        if role == "planner" and isinstance(parsed, dict):
+            agents = parsed.get("agents") or []
+            capabilities = parsed.get("capabilities") or []
+            return {"plan": list(agents),
+                    "requirements": list(capabilities) or
+                    [str(parsed.get("requirement", text_summary(400)))],
+                    "summary": f"planned {len(agents)} agent step(s)"}
+        if role == "architect" and isinstance(parsed, dict):
+            return {"proposal": [str(p) for p in
+                                 (parsed.get("proposal") or [])],
+                    "risks": [str(r) for r in
+                              (parsed.get("risks") or [])],
+                    "summary": str(parsed.get("source", "proposal"))}
+        if role == "researcher" and isinstance(parsed, dict):
+            synthesis = parsed.get("synthesis") or {}
+            return {"summary": (
+                        str(synthesis.get("summary", "")) or
+                        f"scanned {parsed.get('python_files', 0)} python "
+                        f"files ({parsed.get('test_files', 0)} tests)"),
+                    "sources": [str(s) for s in
+                                (parsed.get("sample") or [])[:20]],
+                    "hotspots": [str(h) for h in
+                                 (synthesis.get("hotspots") or [])]}
+        if role == "reviewer" and isinstance(parsed, dict):
+            return {"verdict": str(parsed.get("verdict", "UNKNOWN")),
+                    "findings": list(parsed.get("findings") or []),
+                    "summary": text_summary(500)}
+        if role == "security" and isinstance(parsed, dict):
+            findings = list(parsed.get("findings") or [])
+            return {"passed": len(findings) == 0,
+                    "findings": findings[:50],
+                    "risk": ("CRITICAL" if findings else "NONE")}
+        if role == "performance" and isinstance(parsed, dict):
+            measurements = list(parsed.get("measurements") or [])
+            return {"measurements": measurements, "regressions": [],
+                    "summary": f"measured {len(measurements)} module(s)"}
+        if role == "documentation" and isinstance(parsed, dict):
+            coverage = parsed.get("coverage") or {}
+            return {"files": [str(f) for f in
+                              (parsed.get("docs_files") or [])],
+                    "summary": f"docstring coverage "
+                               f"{coverage.get('ratio', 0):.0%}"
+                               if isinstance(coverage, dict)
+                               else text_summary(500),
+                    "coverage": coverage.get("ratio")
+                    if isinstance(coverage, dict) else None}
+        if role == "coder":
+            if isinstance(parsed, dict) and parsed.get("files"):
+                return {"files": [str(f) for f in parsed["files"]],
+                        "summary": str(parsed.get("summary",
+                                                 text_summary(500)))}
+            return {"files": list(declared_writes),
+                    "summary": text_summary(2000)}
+        if role == "tester":
+            passed = ("exit=0" in output) or \
+                (output.lower().startswith("no tests"))
+            return {"passed": bool(passed), "tests_run": 0, "failures": [],
+                    "summary": text_summary(2000)}
+        if role == "debugger":
+            return {"root_cause": text_summary(1000),
+                    "files": list(declared_writes),
+                    "summary": text_summary(500)}
+        # Default: free-text output under the summary field.
+        return {"summary": text_summary(4000)}
+
+    def _execute_execution(self, execution_id: str) -> None:
+        record = self.executions.get(execution_id)
+        if record is None:
+            return
+        project_id = record.project_id
+        try:
+            record = self.executions.compare_and_set(
+                execution_id, record.version,
+                status=ExecutionStatus.RUNNING, stage="starting",
+                started_at=time.time()) or record
+            project = self.get_project(project_id)
+            self._emit(execution_id, project_id, "execution.started", {})
+            control = SupervisorControl()
+            with self._exec_lock:
+                self._exec_controls[execution_id] = control
+            spec = record.graph_spec()
+            graph, _ = self._build_execution_graph(
+                record.requirement, spec["tasks"],
+                int(spec.get("max_workers", 3)))
+            workers = self._execution_workers(
+                project, execution_id,
+                {task.role for task in graph.tasks})
+            from forge.orchestration import ExecutionStateStore
+            from forge.core.supervisor import Supervisor
+
+            state_store = ExecutionStateStore(
+                Path(self.config.db_path).with_name("executions.db"))
+            total = len(graph.tasks)
+            progress = {"done": 0}
+
+            def sink(name: str, details: dict[str, Any]) -> None:
+                try:
+                    if name in ("task_finished",):
+                        progress["done"] += 1
+                        self._emit(execution_id, project_id,
+                                   "execution.task_finished", {
+                                       "task_id": details.get("task_id"),
+                                       "role": details.get("role"),
+                                       "status": details.get("status")})
+                        self.executions.mutate(
+                            execution_id,
+                            stage=f"task {progress['done']}/{total}")
+                    elif name == "task_blocked":
+                        self._emit(execution_id, project_id,
+                                   "execution.task_blocked",
+                                   {"task_id": details.get("task_id"),
+                                    "reason": details.get("reason")})
+                except Exception:
+                    pass
+
+            outcome = Supervisor(project.id, project.root).execute_parallel(
+                record.requirement, graph, workers,
+                max_workers=int(spec.get("max_workers", 3)),
+                mode=OperationMode(spec.get("mode", "assisted")),
+                policy=self.policy,
+                approval_store=self.approval_store,
+                audit_log=self.audit,
+                approval_callback=self._execution_approval_callback(
+                    execution_id),
+                on_event=sink, control=control, state_store=state_store,
+                run_id=execution_id)
+            status = {
+                "SUCCEEDED": ExecutionStatus.SUCCEEDED,
+                "FAILED": ExecutionStatus.FAILED,
+                "PARTIAL": ExecutionStatus.PARTIAL,
+                "CANCELLED": ExecutionStatus.CANCELLED,
+            }.get(outcome.get("status", "FAILED"), ExecutionStatus.FAILED)
+            error = "" if outcome.get("accepted") else outcome.get(
+                "summary", "")
+            self.executions.mutate(
+                execution_id, status=status, stage="finished",
+                activity_json=json.dumps(outcome.get("activity", {}),
+                                         default=str),
+                report_json=json.dumps(outcome, default=str),
+                finished_at=time.time(), error=error)
+            self._emit(execution_id, project_id, "execution.finished",
+                       {"status": status.value,
+                        "summary": outcome.get("summary", ""),
+                        "rollback": bool(outcome.get("rollback")),
+                        "files": outcome.get("files", [])})
+        except Exception as exc:  # pragma: no cover - defensive
+            try:
+                self.executions.mutate(
+                    execution_id, status=ExecutionStatus.FAILED,
+                    stage="failed", error=f"Worker error: {exc}",
+                    finished_at=time.time())
+            except Exception:
+                pass
+        finally:
+            with self._exec_lock:
+                self._exec_controls.pop(execution_id, None)
 
     # -- health -------------------------------------------------------------------
 

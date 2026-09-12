@@ -22,6 +22,7 @@ from forge.api import (
     routes_views,
     stream,
     routes_orchestrations,
+    routes_executions,
     routes_vision,
     routes_computer,
     routes_agents,
@@ -164,6 +165,7 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_commands.router, prefix="/api/v1")
     app.include_router(routes_memory.router, prefix="/api/v1")
     app.include_router(routes_orchestrations.router, prefix="/api/v1")
+    app.include_router(routes_executions.router, prefix="/api/v1")
     app.include_router(routes_vision.router, prefix="/api/v1")
     app.include_router(routes_computer.router, prefix="/api/v1")
     app.include_router(routes_agents.router, prefix="/api/v1")
