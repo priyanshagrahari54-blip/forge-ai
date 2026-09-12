@@ -123,6 +123,51 @@ def _annotation_uses_new_syntax(node) -> bool:
     return False
 
 
+def _annotation_roots(tree) -> list:
+    roots = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = list(node.args.posonlyargs) + list(node.args.args) \
+                + list(node.args.kwonlyargs)
+            for arg in args:
+                if arg.annotation is not None:
+                    roots.append(arg.annotation)
+            if node.args.vararg and node.args.vararg.annotation is not None:
+                roots.append(node.args.vararg.annotation)
+            if node.args.kwarg and node.args.kwarg.annotation is not None:
+                roots.append(node.args.kwarg.annotation)
+            if node.returns is not None:
+                roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+    return roots
+
+
+def _value_position_new_syntax(tree) -> list:
+    """PEP 585 builtin generics evaluated at *runtime* (not annotations).
+
+    ``from __future__ import annotations`` only defers annotation
+    evaluation; a type alias or expression such as
+    ``Worker = Callable[[Work], dict[str, Any]]`` is evaluated at import
+    time and raises ``TypeError: 'type' object is not subscriptable`` on
+    3.8. Set unions (``a | b``) are deliberately not flagged here because
+    ``set | set`` is valid 3.8 — annotation unions are covered separately.
+    """
+    annotation_subscripts = set()
+    for root in _annotation_roots(tree):
+        for child in ast.walk(root):
+            if isinstance(child, ast.Subscript):
+                annotation_subscripts.add(id(child))
+    offenders = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in BUILTIN_GENERICS
+                and id(node) not in annotation_subscripts):
+            offenders.append(node)
+    return offenders
+
+
 def _check_file(path: Path) -> list[str]:
     if path.resolve() == SELF:
         return []  # this guard names the banned APIs by necessity
@@ -188,6 +233,11 @@ def _check_file(path: Path) -> list[str]:
                     problems.append(
                         f"{path}:{node.lineno}: "
                         f"{callee}({keyword.arg}=) needs {since}+")
+    for node in _value_position_new_syntax(tree):
+        problems.append(
+            f"{path}:{node.lineno}: {node.value.id}[...] is evaluated at "
+            "runtime (3.9+); use typing.List/Dict/... or keep it in an "
+            "annotation")
         if not future:
             anns: list[ast.AST] = []
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

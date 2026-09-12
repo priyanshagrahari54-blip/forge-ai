@@ -25,3 +25,7 @@ dist/
 .forge/*.db-journal
 .forge/audit.jsonl
 .forge/self/history/
+
+# Local scratch/aux envs
+.venv38/
+scratch/

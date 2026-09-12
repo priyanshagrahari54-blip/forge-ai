@@ -48,7 +48,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, \
     wait
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Dict, Mapping
 
 from forge.core.run_control import SupervisorControl, TaskCancelled
 from forge.orchestration.activity import AgentActivityTracker
@@ -99,7 +99,10 @@ class TaskWorkItem:
         }
 
 
-Worker = Callable[[TaskWorkItem], dict[str, Any]]
+# Runtime type alias (not an annotation), so it must use typing.Dict:
+# ``dict[str, Any]`` is evaluated at import and is not subscriptable on
+# Python 3.8.
+Worker = Callable[[TaskWorkItem], Dict[str, Any]]
 
 
 @dataclass
@@ -291,6 +294,12 @@ class ParallelTaskScheduler:
                             continue
                         futures.pop(step_id)
                         self._finish_task(step_id, future)
+                    # Isolate failures *now*: when several tasks finish in
+                    # the same batch, a failure's dependents must be marked
+                    # BLOCKED before the exit checks below run — otherwise
+                    # the run ends and the final sweep cancels dependents
+                    # that failure isolation should have blocked.
+                    self._propagate_failures()
                 else:
                     self._wake.wait(timeout=0.02)
                     self._wake.clear()
