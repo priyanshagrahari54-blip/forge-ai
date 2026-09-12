@@ -104,6 +104,9 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_doctor_async)
         models_menu.add_command(label="Models & providers",
                                 command=self._show_models_async)
+        models_menu.add_separator()
+        models_menu.add_command(label="Native model runtime...",
+                                command=self._show_runtime_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
         help_menu = tk.Menu(menubar, tearoff=False)
@@ -128,7 +131,11 @@ class ForgeDesktopApp(tk.Tk):
 
         self._ready_pill = tk.Label(bar, text=" starting... ",
                                     bg="#6e7781", fg="white", padx=8, pady=2)
-        self._ready_pill.pack(side=tk.LEFT, padx=(0, 12))
+        self._ready_pill.pack(side=tk.LEFT, padx=(0, 6))
+
+        self._runtime_pill = tk.Label(bar, text=" runtime: - ",
+                                      bg="#24466e", fg="white", padx=8, pady=2)
+        self._runtime_pill.pack(side=tk.LEFT, padx=(0, 12))
 
         ttk.Button(bar, text="Doctor", command=self._show_doctor_async).pack(side=tk.LEFT)
         ttk.Button(bar, text="Open folder", command=self._open_folder).pack(side=tk.LEFT, padx=(6, 0))
@@ -261,6 +268,8 @@ class ForgeDesktopApp(tk.Tk):
                     self._show_doctor_window(payload)
                 elif kind == "models":
                     self._show_models_window(payload)
+                elif kind == "runtime":
+                    self._show_runtime_window(payload)
                 elif kind == "notice":
                     self._set_status(str(payload))
                 elif kind == "error":
@@ -295,6 +304,9 @@ class ForgeDesktopApp(tk.Tk):
         for event in snapshot.get("events", []):
             self._append_event(event)
         self._event_cursor = snapshot.get("event_cursor", self._event_cursor)
+        runtime = snapshot.get("runtime")
+        if isinstance(runtime, dict):
+            self._render_runtime_pill(runtime)
 
     def _render_tasks(self, tasks: list[dict[str, Any]]) -> None:
         ids = [t["id"] for t in tasks]
@@ -637,6 +649,101 @@ class ForgeDesktopApp(tk.Tk):
         lines.append("HEALTH")
         for name, info in state.get("health", {}).items():
             lines.append(f"  {name}: {info}")
+        text.insert(tk.END, "\n".join(lines))
+        text.configure(state=tk.DISABLED)
+
+    # -- native model runtime ---------------------------------------------------
+
+    def _render_runtime_pill(self, runtime: dict[str, Any]) -> None:
+        """One-line runtime state: which backends are up, how many models."""
+        available = ", ".join(runtime.get("available_backends", [])) or "none"
+        default = runtime.get("default_backend") or "-"
+        network = "net" if runtime.get("allow_network") else "offline"
+        self._runtime_pill.configure(
+            text=(f" runtime: {default} ({network}) "
+                  f"| {runtime.get('models_known', 0)} model(s) "
+                  f"| up: {available} "))
+
+    def _show_runtime_async(self) -> None:
+        def work() -> None:
+            try:
+                status = self.backend.runtime_status(probe=True)
+                health = self.backend.runtime_health(probe=True)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("runtime", {"status": status, "health": health}))
+
+        threading.Thread(target=work, daemon=True,
+                         name="forge-desktop-runtime").start()
+
+    def _show_runtime_window(self, payload: dict[str, Any]) -> None:
+        """Runtime = model execution infrastructure, shown honestly.
+
+        This window never claims a model answered anything: it reports which
+        execution backends exist, what they can do right now, and what the
+        host has available.
+        """
+        status = payload.get("status", {})
+        health = payload.get("health", {})
+        window = tk.Toplevel(self)
+        window.title("Forge Native Model Runtime")
+        window.geometry("700x520")
+        text = tk.Text(window, wrap=tk.WORD, padx=8, pady=8)
+        text.pack(fill=tk.BOTH, expand=True)
+
+        lines: list[str] = []
+        meta = status.get("runtime", {})
+        config = meta.get("config", {})
+        lines.append("RUNTIME  (model execution infrastructure - not a model,")
+        lines.append("          not the AI Engine; it never fabricates output)")
+        lines.append(f"  version: {meta.get('version', '')}")
+        lines.append(f"  default backend: {config.get('default_backend', '-')}")
+        lines.append("  network access: "
+                     + ("enabled" if config.get("allow_network") else "disabled"))
+        lines.append(f"  timeout bound: {config.get('timeout_seconds', 0)}s")
+        dirs = config.get("model_dirs") or []
+        lines.append(f"  model dirs: {', '.join(dirs) if dirs else '(none)'}")
+        lines.append("")
+        lines.append("BACKENDS")
+        for info in status.get("backends", []):
+            lines.append(f"  {info.get('name')}: kind={info.get('kind')} "
+                         f"available={info.get('available')} "
+                         f"network={info.get('requires_network')}")
+            if info.get("detail"):
+                lines.append(f"    {info['detail']}")
+        lines.append("")
+        lines.append("HEALTH")
+        if health.get("ready"):
+            lines.append("  READY - can run inference: "
+                         + ", ".join(health.get("ready_backends", [])))
+        else:
+            lines.append("  NOT READY - no backend can run inference yet.")
+        for item in health.get("health", []):
+            lines.append(f"  {item.get('backend')}: {item.get('status')} "
+                         f"models={item.get('models_available', 0)} "
+                         f"loaded={item.get('models_loaded', 0)} "
+                         f"gen={item.get('generations', 0)} "
+                         f"failures={item.get('failures', 0)}")
+            if item.get("detail"):
+                lines.append(f"    {item['detail']}")
+            if item.get("error"):
+                lines.append(f"    error: {item['error']}")
+        lines.append("")
+        lines.append("MODELS")
+        models = status.get("models", {})
+        lines.append(f"  known: {models.get('total', 0)}  "
+                     f"loaded: {models.get('loaded', 0)}")
+        lines.append("")
+        lines.append("RESOURCES")
+        resources = status.get("resources", {})
+        lines.append(f"  cpu: {resources.get('cpu_count', 0)}  "
+                     f"memory: {resources.get('memory_total_mb', 0)}MB "
+                     f"(available {resources.get('memory_available_mb', 0)}MB)")
+        lines.append(f"  python: {resources.get('python_version', '')}")
+        lines.append(f"  platform: {resources.get('platform', '')}")
+        lines.append(f"  in-flight requests: {resources.get('in_flight', 0)}")
+
         text.insert(tk.END, "\n".join(lines))
         text.configure(state=tk.DISABLED)
 

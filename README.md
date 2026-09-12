@@ -6,7 +6,7 @@ Forge is a repository-scoped software-engineering runtime. It combines repositor
 
 1. `RepositoryIntelligence` indexes symbols, dependencies, architecture, runtime commands, and test mappings.
 2. `AgentContextBuilder` selects relevant source, dependency, and test context under a token budget.
-3. The centralized `ModelFabric` routes through a capability/context/complexity-aware `FabricRouter` over the model and provider registries, scoring reliability, latency, cost, free/local status, health, and availability, with a deterministic fallback ladder. Local/Ollama providers are first-class; paid APIs are optional.
+3. The centralized `ModelFabric` routes through a capability/context/complexity-aware `FabricRouter` over the model and provider registries, scoring reliability, latency, cost, free/local status, health, and availability, with a deterministic fallback ladder. Local/Ollama providers are first-class; paid APIs are optional. Model *execution* itself is delegated to the Native Model Runtime (`forge.runtime.model_runtime`, A81) — a separate, stdlib-only layer that owns discovery, loading, generation, streaming, health, cancellation, and resource reporting.
 4. `CoderAgent` asks the selected provider for a structured change (`changes: {path: content}`), validates it, and writes only through the permissioned runtime. A caller does not need to supply changes.
 5. `TestDebugLoop` runs the repository test command, gives captured stdout/stderr and context to a model, applies its bounded repair proposals through `ToolRuntime`, records telemetry, and reruns tests.
 6. `VerificationPipeline` runs tests, compilation/build, configured Ruff/mypy checks when declared, secret/dangerous-operation scanning, and an independent changed-file review. A failed gate prevents acceptance.
@@ -666,6 +666,76 @@ policy:
   allow_paid: true
 ```
 
+## Native Model Runtime (A81)
+
+The Native Model Runtime (`forge/runtime/model_runtime.py`) is Forge's first-party
+**model execution layer** — the component that can eventually replace Ollama as the
+thing that actually runs models. It is stdlib-only and imports nothing from
+`forge.core`, `forge.agents`, `forge.control`, or `forge.models`, so it can be
+embedded and shipped on its own.
+
+Three concepts are deliberately kept apart:
+
+- **Runtime** = model *execution infrastructure*: discovery, metadata, load/unload,
+  generation, streaming, health, bounded timeouts, cancellation, resource reporting.
+- **Model** = the neural model (weights on disk, or served by an engine). The runtime
+  is *not* a model and never fabricates output: when no backend can run inference it
+  returns a failure.
+- **AI Engine** = engineering orchestration (`forge.core`, `forge.agents`), which
+  *requests* inference through the runtime interface.
+
+```
+AI Engine -> Model Fabric (routing/policy) -> ModelRuntime -> ModelBackend -> model
+```
+
+- **Pluggable backends, explicitly selected**: `native` (first-party: artifact
+  discovery and real header metadata — GGUF magic/version/tensor counts, safetensors
+  JSON header — with inference delegated to an explicitly provided
+  `InferenceAdapter`), `ollama` (local server over stdlib `urllib`: `/api/tags`,
+  `/api/generate`, streaming NDJSON), `llama_cpp` and `forge` (future backends, inert
+  until a client is explicitly provided; the optional bindings are never imported),
+  and any custom `ModelBackend` registered in code. There is no import-by-name path
+  and no implicit failover between backends.
+- **Bounded, cancellable inference**: every request has a clamped wall-clock bound;
+  streaming additionally bounds the gap between chunks. `cancel(request_id)`,
+  `cancel_all()`, and `close()` are first-class outcomes — a cancelled request reports
+  `error_kind="cancelled"` (never a timeout in disguise) and preserves partial text
+  flagged as such. `generate()` returns failures as values; `RuntimeStream` raises
+  loudly mid-stream and still populates a final `RuntimeResponse`.
+- **Honest health and resources**: `ready` / `degraded` / `unavailable` / `unknown` per
+  backend, with observed counters (generations, failures, timeouts, cancellations). A
+  discovery-only backend is *degraded, never ready*. Resources are measured (CPU,
+  memory, platform, occupancy) and unmeasurable values stay zero — accelerators are
+  never invented.
+- **Security**: no secrets in logs (sizes and ids only; every outgoing string,
+  including backend exception messages, is redacted), no arbitrary executable loading
+  (backend allowlist; pickle checkpoints like `.bin`/`.pt` refused because unpickling
+  executes code), no unrestricted filesystem access (explicit model directories,
+  bounded depth, no symlink following, `..` rejected), no silent network access
+  (`allow_network` defaults to off), and explicit backend selection per request.
+- **Model Fabric bridge, opt-in** (`forge.models.runtime_bridge`): `attach_runtime()`
+  registers a `RuntimeProvider` so the existing fabric routes through the runtime
+  without any change to its routing, policy, telemetry, or failover. Nothing is wired
+  up by default.
+- **Python 3.8 / Windows 7**: standard library only, no new mandatory dependency.
+
+```bash
+forge runtime                          # status summary
+forge runtime status [--probe] [--json]
+forge runtime models [--model-dir DIR] [--json]
+forge runtime health [--offline] [--json]
+forge runtime backends [--backend native|ollama|llama_cpp|forge]
+forge runtime load MODEL / unload MODEL
+```
+
+Configuration lives in `.forge/runtime.yaml` / `.forge/runtime.json` plus
+`FORGE_RUNTIME_*` environment variables (`FORGE_RUNTIME_BACKEND`,
+`FORGE_RUNTIME_BACKENDS`, `FORGE_RUNTIME_ALLOW_NETWORK`, `FORGE_RUNTIME_MODEL_DIRS`,
+`FORGE_RUNTIME_OLLAMA_URL`, `FORGE_RUNTIME_TIMEOUT`, …) and contains no secrets.
+
+See `docs/A81-NATIVE-MODEL-RUNTIME.md` for the interface reference, backend
+extension guide, security model, and the Runtime / Model / AI Engine separation.
+
 ## Providers
 
 - `LocalModelProvider`: offline fallback with conservative no-op output when no local synthesis engine is configured.
@@ -692,6 +762,10 @@ forge models capabilities      # capability vocabulary
 forge models test              # bounded local self-check
 forge models --capability vision
 forge models --json
+forge runtime                  # native model runtime status
+forge runtime models           # models the runtime discovered
+forge runtime health           # backend health (exit 0 only if it can infer)
+forge runtime backends --json
 forge self-analyze
 forge self-improve --iterations 1
 ```
@@ -700,7 +774,7 @@ Writes, command execution, commits, pushes, repository deletion, and secret expo
 
 ## Testing
 
-The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, an isolated autonomous CSV-export E2E test, and a Model Fabric suite (capability vocabulary, registries, routing, fallback, health, telemetry, credentials, CLI, and agent/supervisor integration). Run:
+The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, an isolated autonomous CSV-export E2E test, a Model Fabric suite (capability vocabulary, registries, routing, fallback, health, telemetry, credentials, CLI, and agent/supervisor integration), and a Native Model Runtime suite (registration, routing, backend isolation, streaming, bounded timeouts, cancellation, health, resources, the five security invariants, the CLI, the desktop integration, and the fabric bridge). Run:
 
 ```bash
 python -m pytest -q

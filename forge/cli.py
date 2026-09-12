@@ -233,6 +233,201 @@ def _run_models(args) -> None:
         )
 
 
+def _build_runtime(args):
+    """Build the Native Model Runtime from config file / env / CLI overrides.
+
+    The runtime is model *execution infrastructure*: it is separate from the
+    Model Fabric (routing) and from the AI Engine (orchestration). Network
+    access stays off unless explicitly requested, so these commands are safe
+    to run anywhere.
+    """
+    from forge.runtime.model_runtime import (BUILTIN_BACKENDS, ModelRuntime,
+                                             RuntimeConfig)
+
+    config = RuntimeConfig.load(getattr(args, "config", "") or None)
+    if getattr(args, "allow_network", False):
+        config.allow_network = True
+    extra_dirs = list(getattr(args, "model_dir", []) or [])
+    if extra_dirs:
+        config.model_dirs = tuple(list(config.model_dirs) + extra_dirs)
+    backend = getattr(args, "backend", "") or ""
+    if backend:
+        if backend not in BUILTIN_BACKENDS:
+            print(f"Unknown backend {backend!r}; built-in backends: "
+                  f"{', '.join(BUILTIN_BACKENDS)}", file=sys.stderr)
+            raise SystemExit(2)
+        if backend not in config.backends:
+            config.backends = tuple(list(config.backends) + [backend])
+        config.default_backend = backend
+    config.validate()
+    return ModelRuntime.from_defaults(config)
+
+
+def _runtime_status_text(status) -> str:
+    """Render a runtime status snapshot (never any prompt/response content)."""
+    runtime = status["runtime"]
+    config = runtime["config"]
+    lines = ["Forge Native Model Runtime"]
+    lines.append(f"  version: {runtime['version']} "
+                 f"({'closed' if runtime['closed'] else 'running'})")
+    lines.append(f"  default backend: {config['default_backend']}")
+    lines.append(f"  network access: "
+                 f"{'enabled' if config['allow_network'] else 'disabled'}")
+    lines.append(f"  timeout bound: {config['timeout_seconds']:.1f}s "
+                 f"(max {config['max_timeout_seconds']:.1f}s)")
+    dirs = ", ".join(config["model_dirs"]) or "(none)"
+    lines.append(f"  model dirs: {dirs}")
+    lines.append("  backends:")
+    for info in status["backends"]:
+        lines.append(f"    {info['name']}: kind={info['kind']} "
+                     f"available={info['available']} "
+                     f"network={info['requires_network']}")
+        if info["detail"]:
+            lines.append(f"      {info['detail']}")
+    lines.append("  health:")
+    for item in status["health"]:
+        lines.append(f"    {item['backend']}: {item['status']} "
+                     f"models={item['models_available']} "
+                     f"loaded={item['models_loaded']} "
+                     f"gen={item['generations']} fail={item['failures']} "
+                     f"timeouts={item['timeouts']}")
+        if item["error"]:
+            lines.append(f"      error: {item['error']}")
+    resources = status["resources"]
+    lines.append("  resources:")
+    lines.append(f"    cpu={resources['cpu_count']} "
+                 f"memory={resources['memory_total_mb']}MB "
+                 f"available={resources['memory_available_mb']}MB")
+    lines.append(f"    python={resources['python_version']} "
+                 f"platform={resources['platform']}")
+    lines.append(f"    models known={resources['models_known']} "
+                 f"loaded={resources['models_loaded']} "
+                 f"in-flight={resources['in_flight']}")
+    lines.append(f"  models: {status['models']['total']} known, "
+                 f"{status['models']['loaded']} loaded")
+    return "\n".join(lines)
+
+
+def _run_runtime(args) -> int:
+    """``forge runtime`` — model execution infrastructure inspection."""
+    from forge.runtime.model_runtime import ModelRuntimeError
+
+    subcommand = getattr(args, "runtime_subcommand", "status") or "status"
+    as_json = bool(getattr(args, "json", False))
+    try:
+        runtime = _build_runtime(args)
+    except ValueError as exc:
+        print(f"Runtime configuration error: {exc}", file=sys.stderr)
+        return 2
+    backend = getattr(args, "backend", "") or ""
+
+    if subcommand == "models":
+        if getattr(args, "discover", True):
+            try:
+                runtime.discover(backend)
+            except ModelRuntimeError as exc:
+                print(f"Discovery failed: {exc}", file=sys.stderr)
+        models = runtime.models(backend)
+        if as_json:
+            _emit_json({"models": [model.to_dict() for model in models],
+                        "discovery": runtime.discover(backend, refresh=False)})
+            return 0
+        print("Runtime models")
+        if not models:
+            print("  (none discovered - configure runtime.model_dirs or "
+                  "enable a serving backend)")
+        for model in models:
+            print(f"  {model.model_id}")
+            print(f"    backend={model.backend} format={model.format} "
+                  f"size={model.size_bytes} loaded={model.loaded}")
+            metadata = {key: value for key, value in model.metadata.items()
+                        if key not in ("source",)}
+            if metadata:
+                print(f"    metadata={metadata}")
+        return 0
+
+    if subcommand == "health":
+        probe = not getattr(args, "offline", False)
+        items = [item.to_dict() for item in runtime.health(backend,
+                                                           probe=probe)]
+        if as_json:
+            _emit_json({"health": items})
+            return 0 if any(item["status"] == "ready" for item in items) else 1
+        print("Runtime health")
+        for item in items:
+            print(f"  {item['backend']}: {item['status']} "
+                  f"(probed={item['probed']} "
+                  f"latency={item['latency_ms']:.1f}ms)")
+            if item["detail"]:
+                print(f"    {item['detail']}")
+            if item["error"]:
+                print(f"    error: {item['error']}")
+        ready = [item["backend"] for item in items
+                 if item["status"] == "ready"]
+        if ready:
+            print(f"READY - backends that can run inference: "
+                  f"{', '.join(ready)}")
+        else:
+            print("NOT READY - no registered backend can run inference "
+                  "right now. The runtime reports this instead of "
+                  "fabricating output; enable a backend that can serve a "
+                  "model (see `forge runtime backends`).")
+        return 0 if ready else 1
+
+    if subcommand == "backends":
+        infos = [info.to_dict() for info in runtime.backends()]
+        if as_json:
+            _emit_json({"backends": infos})
+            return 0
+        print("Runtime backends")
+        for info in infos:
+            print(f"  {info['name']}: kind={info['kind']} local={info['local']} "
+                  f"network={info['requires_network']} "
+                  f"available={info['available']}")
+            if info["description"]:
+                print(f"    {info['description']}")
+        return 0
+
+    if subcommand in ("load", "unload"):
+        target = getattr(args, "model", "")
+        try:
+            try:
+                runtime.resolve_model(target, backend)
+            except ModelRuntimeError:
+                # A fresh CLI process has an empty model registry, so run
+                # discovery first instead of failing on an unknown name.
+                runtime.discover(backend)
+            if subcommand == "load":
+                model = runtime.load(target, backend)
+                payload = {"loaded": True, "model": model.to_dict()}
+            else:
+                released = runtime.unload(target, backend)
+                payload = {"loaded": False, "released": bool(released),
+                           "model_id": target}
+        except ModelRuntimeError as exc:
+            if as_json:
+                _emit_json({"loaded": False, "error": str(exc)})
+            else:
+                print(f"{subcommand.title()} failed: {exc}", file=sys.stderr)
+            return 1
+        if as_json:
+            _emit_json(payload)
+        else:
+            if subcommand == "load":
+                print(f"Loaded {payload['model']['model_id']}")
+            else:
+                print(f"Unloaded {target} "
+                      f"(released={payload['released']})")
+        return 0
+
+    status = runtime.status(probe=bool(getattr(args, "probe", False)))
+    if as_json:
+        _emit_json(status)
+        return 0
+    print(_runtime_status_text(status))
+    return 0
+
+
 def _build_fabric(args) -> "object":
     """Build the Model Fabric from config file / env / CLI overrides."""
     from forge.models import FabricConfig, ModelFabric
@@ -483,6 +678,68 @@ def main() -> None:
         help="Emit machine-readable JSON",
     )
 
+    # Native Model Runtime commands (model execution infrastructure)
+    runtime_parser = subparsers.add_parser(
+        "runtime",
+        help="Inspect the Forge Native Model Runtime",
+        description="Model execution infrastructure: discovery, metadata, "
+        "load/unload, health, and resource reporting over explicitly "
+        "selected backends. The runtime is not a model and not the AI "
+        "Engine; it never fabricates output. Network access stays disabled "
+        "unless --allow-network is passed.",
+    )
+
+    def _runtime_common(target):
+        """Shared runtime flags, accepted before *and* after a subcommand.
+
+        ``argparse.SUPPRESS`` keeps the parent-level value intact when the
+        flag is absent from the subcommand, exactly like ``--json`` above.
+        """
+        target.add_argument(
+            "--backend", default=argparse.SUPPRESS,
+            help="Select one backend explicitly "
+            "(native|ollama|llama_cpp|forge)")
+        target.add_argument(
+            "--config", default=argparse.SUPPRESS,
+            help="Runtime config file (.forge/runtime.yaml|.json)")
+        target.add_argument(
+            "--model-dir", action="append", default=argparse.SUPPRESS,
+            metavar="DIR",
+            help="Add an explicit model directory for native discovery "
+            "(repeatable)")
+        target.add_argument(
+            "--allow-network", action="store_true",
+            default=argparse.SUPPRESS,
+            help="Explicitly permit the runtime to contact a configured "
+            "endpoint")
+        target.add_argument(
+            "--json", action="store_true", default=argparse.SUPPRESS,
+            help="Emit machine-readable JSON")
+
+    _runtime_common(runtime_parser)
+    runtime_subs = runtime_parser.add_subparsers(dest="runtime_subcommand")
+    for _rt_name, _rt_help in (("status", "Runtime status summary (default)"),
+                               ("models", "List models the runtime knows"),
+                               ("health", "Backend health checks"),
+                               ("backends", "Registered execution backends"),
+                               ("load", "Load a model"),
+                               ("unload", "Unload a model")):
+        _rt_sub = runtime_subs.add_parser(_rt_name, help=_rt_help)
+        _runtime_common(_rt_sub)
+        if _rt_name in ("load", "unload"):
+            _rt_sub.add_argument(
+                "model",
+                help="Model id ('<backend>:<name>') or a bare model name")
+    runtime_subs.choices["models"].add_argument(
+        "--no-discover", dest="discover", action="store_false", default=True,
+        help="List only what is already known (no backend query)")
+    runtime_subs.choices["health"].add_argument(
+        "--offline", action="store_true",
+        help="Report last known state without probing backends")
+    runtime_subs.choices["status"].add_argument(
+        "--probe", action="store_true",
+        help="Probe backends while building the status snapshot")
+
     # Blender: procedural 3D scenes rendered headlessly
     blender_parser = subparsers.add_parser(
         "blender",
@@ -645,6 +902,9 @@ def main() -> None:
 
     elif args.command == "models":
         _run_models(args)
+
+    elif args.command == "runtime":
+        raise SystemExit(_run_runtime(args))
 
     elif args.command == "blender":
         raise SystemExit(_run_blender(args))

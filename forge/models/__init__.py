@@ -3,6 +3,10 @@
 Public API surface for capability-aware routing, provider/model registries,
 structured requests/responses, telemetry, router feedback, credential handling,
 and configuration.
+
+:mod:`forge.models.runtime_bridge` is the opt-in adapter that lets the fabric
+request inference through the Forge Native Model Runtime
+(:mod:`forge.runtime.model_runtime`).  Nothing is wired up by default.
 """
 from forge.models.capabilities import (
     AGENTIC_CAPABILITIES,
@@ -49,6 +53,9 @@ from forge.models.provider import (
 )
 from forge.models.registry import Model, ModelRegistry
 from forge.models.request import ModelRequest, ModelResponse
+# Imported last: the bridge depends on forge.runtime.model_runtime, which is
+# deliberately independent of this package (the dependency is one-way).
+from forge.models.runtime_bridge import RuntimeProvider, attach_runtime
 from forge.models.router import (
     FabricRouter,
     ModelInfo,
@@ -110,4 +117,6 @@ __all__ = [
     "ConsensusStrategy",
     "ConsensusResult",
     "consensus",
+    "RuntimeProvider",
+    "attach_runtime",
 ]
