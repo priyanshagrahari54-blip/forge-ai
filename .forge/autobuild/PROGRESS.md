@@ -1043,3 +1043,15 @@ framing controls by default (add at the edge for production).
   multi-agent -> tools -> controlled action -> testing ->
   debugging -> review -> security -> benchmark -> acceptance ->
   commit -> memory -> self-evaluation -> go/no-go: COMPLETE.
+
+- A81 Forge Native AI Engine (`forge/native/`): first-party engine for the
+  G560-class Windows 7 / py3.8 / 2 GB client — deterministic planner over the
+  seven canonical steps, repository-grounded budgeted context, vendor-neutral
+  reasoning interface (native deterministic + local/remote neural over the
+  Model Fabric), coding/verification/debug loops composed of the A32/A33
+  layers, five-category credential-guarded memory, atomic state snapshots,
+  desktop Native AI panel, `forge native-ai` CLI + `forge run --native`,
+  honest training interfaces (no trainer ships). Free-first: generative
+  steps report NEURAL_REQUIRED/NEEDS_MODEL instead of fabricated output.
+  Docs: `docs/A81-NATIVE-AI-ENGINE.md`. Suite: 168 native tests; full suite
+  1991 passed, 3 skipped.
