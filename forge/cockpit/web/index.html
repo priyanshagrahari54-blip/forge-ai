@@ -87,6 +87,9 @@
         <a href="#/agentbuilder" data-route="agentbuilder">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v2M8 12v2M2 8h2M12 8h2" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="8" r="4" fill="none" stroke="currentColor"/></svg>
           <span>Agent Builder</span></a>
+        <a href="#/selfimprove" data-route="selfimprove">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 0 5.5 5.5" fill="none" stroke="currentColor" stroke-linecap="round"/><path d="M11 2.5h2.5V5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.5 2.5 9.5 6.5" fill="none" stroke="currentColor" stroke-linecap="round"/><path d="M5.8 8.2 7.3 9.7l3-3.2" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Self-Improvement</span></a>
         <a href="#/settings" data-route="settings">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Settings</span></a>
@@ -340,6 +343,64 @@
   <section class="surface">
     <div class="section-header"><h3>Hard invariants</h3></div>
     <div id="security-invariants"></div>
+  </section>
+</template>
+
+<template id="tpl-selfimprove">
+  <div class="view-head">
+    <h2>Self-Improvement</h2>
+    <p class="muted">Forge analyzes its own failures, latency, routing and
+    resources, proposes evidence-backed improvements, and tests each
+    candidate in an isolated copy. Nothing reaches the working tree without
+    your explicit approval, and nothing is ever committed automatically.</p>
+  </div>
+  <div id="si-stats" class="stat-grid"></div>
+  <section class="surface">
+    <div class="section-header"><h3>Actions</h3>
+      <span class="muted">bounded · isolated · approval-gated</span></div>
+    <div class="button-row">
+      <button id="si-analyze" class="btn">Analyze</button>
+      <button id="si-run" class="btn primary">Evaluate one candidate</button>
+      <span id="si-action-note" class="muted"></span>
+    </div>
+    <div id="si-action-result"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Awaiting your approval</h3></div>
+    <div id="si-pending"></div>
+  </section>
+  <div class="grid-2col">
+    <section class="surface">
+      <div class="section-header"><h3>Proposals</h3></div>
+      <div id="si-proposals"></div>
+    </section>
+    <section class="surface">
+      <div class="section-header"><h3>Candidates</h3></div>
+      <div id="si-candidates"></div>
+    </section>
+  </div>
+  <div class="grid-2col">
+    <section class="surface">
+      <div class="section-header"><h3>Accepted improvements</h3></div>
+      <div id="si-accepted"></div>
+    </section>
+    <section class="surface">
+      <div class="section-header"><h3>Rejected improvements</h3></div>
+      <div id="si-rejected"></div>
+    </section>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Weaknesses</h3></div>
+    <div id="si-weaknesses"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Evidence</h3></div>
+    <div id="si-evidence"></div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Guardrails</h3>
+      <span class="muted">cannot be loosened from here</span></div>
+    <div id="si-guardrails"></div>
   </section>
 </template>
 

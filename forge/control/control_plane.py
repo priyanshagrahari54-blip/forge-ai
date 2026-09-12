@@ -4420,6 +4420,181 @@ class ControlPlane:
                 "entries": self._selfdev_ledger(session).entries(name)}
 
 
+    # -- controlled self-improvement (A81) ---------------------------------------------------------
+
+    def _self_improvement_engine(self, session: Session):
+        """One engine per project; mode follows the session profile.
+
+        The producer asks the plane's fabric for changes inside the isolated
+        candidate copy. Engines never write to the live checkout on their
+        own; ``self_improvement_apply`` is the only path and it needs a
+        human approval.
+        """
+        from forge.security.permissions import OperationMode
+        from forge.self_improvement import SelfImprovementEngine
+
+        project = self.get_project(session.project_id)
+        if not hasattr(self, "_self_improvement_engines"):
+            self._self_improvement_engines: dict[str, Any] = {}
+        engine = self._self_improvement_engines.get(project.id)
+        if engine is None:
+            engine = SelfImprovementEngine(project.root, fabric=self.fabric,
+                                           mode=OperationMode(session.profile))
+            self._self_improvement_engines[project.id] = engine
+        else:
+            engine.mode = OperationMode(session.profile)
+            engine.acceptance.mode = engine.mode
+        return engine
+
+    def _self_improvement_evidence_kwargs(self, session: Session) -> dict[str, Any]:
+        """Live evidence sources the plane already maintains."""
+        kwargs: dict[str, Any] = {"measure_host": True, "run_tests": False}
+        try:
+            kwargs["failure_ledger"] = self._failure_ledger()
+        except Exception:
+            pass
+        try:
+            rows, _total = self.runs.list_for_project(session.project_id, limit=200)
+            kwargs["runs"] = rows
+        except Exception:
+            pass
+        try:
+            kwargs["router_history"] = list(self.fabric.router.history[-200:])
+        except Exception:
+            pass
+        try:
+            kwargs["agent_runs"] = list(
+                getattr(self, "_agent_run_logs", {}).get(session.id, []))
+        except Exception:
+            pass
+        try:
+            snapshot = self._metrics().snapshot()
+            snapshot.setdefault("gauges", {})["max_workers"] = self.config.max_workers
+            kwargs["metrics_snapshot"] = snapshot
+        except Exception:
+            pass
+        return kwargs
+
+    def self_improvement_analyze(self, session: Session, *,
+                                 run_tests: bool = False) -> dict[str, Any]:
+        engine = self._self_improvement_engine(session)
+        kwargs = self._self_improvement_evidence_kwargs(session)
+        kwargs["run_tests"] = bool(run_tests)
+        report = engine.analyze(**kwargs)
+        self._audit(session.actor, "self_improvement", "analyze", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"evidence={len(report.evidence)} "
+                           f"weaknesses={len(report.weaknesses)}")
+        return redact(report.to_dict())
+
+    def self_improvement_run(self, session: Session, *, iterations: int = 1,
+                             run_tests: bool = False,
+                             targets: list[str] | None = None) -> dict[str, Any]:
+        from forge.self_improvement import HARD_MAX_ITERATIONS
+
+        if session.profile in ("safe", "locked"):
+            raise PolicyDenied(
+                f"profile {session.profile!r} is read-only; self-improvement "
+                "candidates are not built in this mode")
+        if iterations < 1 or iterations > HARD_MAX_ITERATIONS:
+            raise InvalidRequest(f"iterations must be 1-{HARD_MAX_ITERATIONS}")
+        engine = self._self_improvement_engine(session)
+        kwargs = self._self_improvement_evidence_kwargs(session)
+        kwargs["run_tests"] = bool(run_tests)
+        results = engine.run(max_iterations=iterations, targets=targets,
+                             collect_kwargs=kwargs)
+        self._audit(session.actor, "self_improvement", "run", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"iterations={len(results)} "
+                           f"accepted={sum(1 for r in results if r.accepted)}")
+        return redact({"results": [r.to_dict() for r in results],
+                       "status": engine.status().to_dict()})
+
+    def self_improvement_dashboard(self, session: Session) -> dict[str, Any]:
+        engine = self._self_improvement_engine(session)
+        return redact(engine.dashboard())
+
+    def self_improvement_approve(self, session: Session, candidate_id: str,
+                                 *, reason: str = "",
+                                 change_fingerprint: str = "") -> dict[str, Any]:
+        if session.profile in ("safe", "locked"):
+            raise PolicyDenied(f"profile {session.profile!r} cannot approve changes")
+        engine = self._self_improvement_engine(session)
+        try:
+            approval, decision = engine.approve(
+                candidate_id, approved_by=session.actor, reason=reason,
+                change_fingerprint=change_fingerprint)
+        except LookupError as exc:
+            raise NotFound(str(exc)) from exc
+        except PermissionError as exc:
+            raise PolicyDenied(str(exc)) from exc
+        if not hasattr(self, "_self_improvement_approvals"):
+            self._self_improvement_approvals: dict[tuple[str, str], Any] = {}
+        # Approvals are session-bound and single-use (consumed by apply).
+        self._self_improvement_approvals[(session.id, candidate_id)] = approval
+        self._audit(session.actor, "self_improvement", "approve",
+                    decision.accepted, task_id=session.active_task or session.id,
+                    reason=f"{candidate_id} accepted={decision.accepted}")
+        return redact({"approval": approval.to_dict(),
+                       "decision": decision.to_dict()})
+
+    def self_improvement_apply(self, session: Session, candidate_id: str
+                               ) -> dict[str, Any]:
+        from forge.self_improvement import GuardrailViolation
+
+        if session.profile in ("safe", "locked"):
+            raise PolicyDenied(f"profile {session.profile!r} cannot apply changes")
+        approvals = getattr(self, "_self_improvement_approvals", {})
+        approval = approvals.get((session.id, candidate_id))
+        if approval is None:
+            raise ApprovalRequired(
+                "approve this candidate in this session before applying it")
+        engine = self._self_improvement_engine(session)
+        try:
+            result = engine.apply_accepted(candidate_id, approval)
+        except LookupError as exc:
+            raise NotFound(str(exc)) from exc
+        except (PermissionError, GuardrailViolation, FileExistsError) as exc:
+            self._audit(session.actor, "self_improvement", "apply", False,
+                        task_id=session.active_task or session.id,
+                        reason=str(exc)[:200])
+            raise PolicyDenied(str(exc)) from exc
+        approvals.pop((session.id, candidate_id), None)
+        self._audit(session.actor, "self_improvement", "apply", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{candidate_id} files={len(result['files'])}")
+        return redact(result)
+
+    def self_improvement_rollback(self, session: Session, candidate_id: str
+                                  ) -> dict[str, Any]:
+        if session.profile == "locked":
+            raise PolicyDenied("profile 'locked' cannot modify files")
+        engine = self._self_improvement_engine(session)
+        try:
+            result = engine.rollback(candidate_id, actor=session.actor)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise RollbackFailed(str(exc)) from exc
+        self._audit(session.actor, "self_improvement", "rollback", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"{candidate_id} restored={len(result['restored'])}")
+        return redact(result)
+
+    def self_improvement_discard(self, session: Session, candidate_id: str
+                                 ) -> dict[str, Any]:
+        engine = self._self_improvement_engine(session)
+        ok = engine.discard_pending(candidate_id, actor=session.actor)
+        if not ok:
+            raise NotFound(f"no pending candidate {candidate_id!r}")
+        getattr(self, "_self_improvement_approvals", {}).pop(
+            (session.id, candidate_id), None)
+        self._audit(session.actor, "self_improvement", "discard", True,
+                    task_id=session.active_task or session.id,
+                    reason=candidate_id)
+        return {"candidate_id": candidate_id, "discarded": True}
+
+
     # -- agent lifecycle (A55) ----------------------------------------------------------------------
 
     def agent_set_status(self, session: Session, name: str,

@@ -49,6 +49,8 @@ const ROUTES = {
   agents: { render: renderAgentsView, title: "Agents" },
   security: { render: renderSecurityView, title: "Security" },
   settings: { render: renderSettingsView, title: "Settings" },
+  selfimprove: { render: renderSelfImprovementView,
+                 title: "Self-Improvement" },
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
   compute: { render: renderComputeView, title: "Compute" },
@@ -3267,5 +3269,334 @@ function renderAgentBuilderView() {
           renderAgentBuilderView);
       }
     });
+  load();
+}
+
+
+/* ---------- controlled self-improvement (A81) ---------- */
+
+function siStat(label, value, sub) {
+  const box = el("div", "stat");
+  box.appendChild(el("div", "stat-label", label));
+  box.appendChild(el("div", "stat-value", String(value)));
+  if (sub) box.appendChild(el("div", "stat-sub", sub));
+  return box;
+}
+
+function siGateBadges(gates) {
+  const row = el("div", "badge-row");
+  for (const [name, ok] of Object.entries(gates || {})) {
+    row.appendChild(el("span", "badge " + (ok ? "ok" : "bad"),
+      name + (ok ? " ✓" : " ✗")));
+  }
+  return row;
+}
+
+function siWhen(ts) {
+  if (!ts) return "";
+  try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return ""; }
+}
+
+function renderSelfImprovementView() {
+  const statsBox = document.getElementById("si-stats");
+  const pendingBox = document.getElementById("si-pending");
+  const proposalsBox = document.getElementById("si-proposals");
+  const candidatesBox = document.getElementById("si-candidates");
+  const acceptedBox = document.getElementById("si-accepted");
+  const rejectedBox = document.getElementById("si-rejected");
+  const weakBox = document.getElementById("si-weaknesses");
+  const evidenceBox = document.getElementById("si-evidence");
+  const railsBox = document.getElementById("si-guardrails");
+  const resultBox = document.getElementById("si-action-result");
+  const note = document.getElementById("si-action-note");
+
+  const renderStats = (st) => {
+    statsBox.innerHTML = "";
+    statsBox.appendChild(siStat("Proposals", st.proposals));
+    statsBox.appendChild(siStat("Candidates", st.candidates));
+    statsBox.appendChild(siStat("Accepted", st.accepted));
+    statsBox.appendChild(siStat("Rejected", st.rejected));
+    statsBox.appendChild(siStat("Applied", st.applied, "never auto-committed"));
+    statsBox.appendChild(siStat("Rollbacks", st.rollbacks));
+    statsBox.appendChild(siStat("Iteration bound",
+      st.max_iterations + " / " + st.hard_max_iterations,
+      "per run / hard cap"));
+    statsBox.appendChild(siStat("Ledger",
+      (st.ledger && st.ledger.entries) || 0,
+      st.ledger && st.ledger.chain_ok ? "hash chain OK" : "chain BROKEN"));
+  };
+
+  const renderPending = (items) => {
+    pendingBox.innerHTML = "";
+    if (!items.length) {
+      emptyState(pendingBox, "Nothing awaiting approval",
+        "Candidates that pass tests, security, architecture and regression " +
+        "gates are parked here for a human decision.");
+      return;
+    }
+    for (const item of items) {
+      const row = el("div", "surface memory-entry");
+      row.appendChild(el("p", null, item.title || item.proposal_id));
+      row.appendChild(el("p", "muted mono",
+        item.candidate_id + " · fingerprint " + item.change_fingerprint +
+        " · files: " + (item.changed_files || []).join(", ")));
+      row.appendChild(siGateBadges(item.gates));
+      if (item.metrics) {
+        row.appendChild(el("p", "muted",
+          "metric " + (item.metrics.metric || "tests") + " improvement " +
+          item.metrics.improvement +
+          (item.metrics.improvement_pct != null
+            ? " (" + item.metrics.improvement_pct + "%)" : "")));
+      }
+      const actions = el("div", "button-row");
+      const approve = el("button", "btn small primary",
+        item.accepted ? "Approved — apply to working tree"
+                      : "Approve (policy gate)");
+      approve.addEventListener("click", async () => {
+        approve.disabled = true;
+        try {
+          if (!item.accepted) {
+            const reason = window.prompt(
+              "Reason for approving " + item.candidate_id + "?", "") || "";
+            await api("/api/v1/self-improvement/candidates/" +
+              encodeURIComponent(item.candidate_id) + "/approve",
+              { method: "POST",
+                body: { reason: reason,
+                        change_fingerprint: item.change_fingerprint } });
+          } else {
+            const payload = await api("/api/v1/self-improvement/candidates/" +
+              encodeURIComponent(item.candidate_id) + "/apply",
+              { method: "POST" });
+            resultBox.innerHTML = "";
+            resultBox.appendChild(el("p", null,
+              "Applied " + payload.candidate_id + " to the working tree: " +
+              (payload.files || []).join(", ") + ". " + (payload.note || "")));
+          }
+          load();
+        } catch (err) {
+          errorState(resultBox, "Action refused", err, null);
+          approve.disabled = false;
+        }
+      });
+      actions.appendChild(approve);
+      const discard = el("button", "btn small danger", "Discard");
+      discard.addEventListener("click", async () => {
+        discard.disabled = true;
+        try {
+          await api("/api/v1/self-improvement/candidates/" +
+            encodeURIComponent(item.candidate_id), { method: "DELETE" });
+          load();
+        } catch (err) {
+          errorState(resultBox, "Discard failed", err, null);
+          discard.disabled = false;
+        }
+      });
+      actions.appendChild(discard);
+      row.appendChild(actions);
+      pendingBox.appendChild(row);
+    }
+  };
+
+  const renderProposals = (items) => {
+    proposalsBox.innerHTML = "";
+    if (!items.length) {
+      emptyState(proposalsBox, "No proposals yet",
+        "Run an analysis, then evaluate a candidate.");
+      return;
+    }
+    for (const p of items.slice().reverse()) {
+      const row = el("details", "surface memory-entry");
+      const head = el("summary", null,
+        "[" + (p.risk || "?").toUpperCase() + " risk] " + p.title);
+      row.appendChild(head);
+      row.appendChild(el("p", null, "Hypothesis: " + p.hypothesis));
+      row.appendChild(el("p", "muted",
+        "Evidence: " + (p.evidence_ids || []).join(", ")));
+      row.appendChild(el("p", "muted",
+        "Expected benefit: " + p.expected_benefit));
+      row.appendChild(el("p", "muted", "Risk notes: " + (p.risk_notes || "")));
+      row.appendChild(el("p", "muted mono",
+        "Files: " + (p.affected_files || []).join(", ")));
+      const plan = el("ul");
+      for (const step of p.test_plan || []) plan.appendChild(el("li", null, step));
+      row.appendChild(el("p", "muted", "Test plan:"));
+      row.appendChild(plan);
+      proposalsBox.appendChild(row);
+    }
+  };
+
+  const renderCandidates = (items, box, emptyTitle) => {
+    box.innerHTML = "";
+    if (!items.length) {
+      emptyState(box, emptyTitle, "");
+      return;
+    }
+    for (const c of items.slice().reverse()) {
+      const row = el("div", "surface memory-entry");
+      const head = el("p", null);
+      head.appendChild(statusBadge(c.accepted ? "SUCCEEDED"
+        : (c.awaiting_approval ? "WAITING_APPROVAL" : "FAILED")));
+      head.appendChild(el("span", "mono",
+        " " + (c.candidate_id || "") + " ← " + (c.proposal_id || "")));
+      row.appendChild(head);
+      row.appendChild(el("p", "muted", siWhen(c.at) + " · status " +
+        (c.status || "") + " · files: " + (c.changed_files || []).join(", ")));
+      if (c.gates) row.appendChild(siGateBadges(c.gates));
+      if (c.failed_gates && c.failed_gates.length) {
+        const reasons = c.reasons || {};
+        for (const g of c.failed_gates) {
+          row.appendChild(el("p", "muted", g + ": " + (reasons[g] || "")));
+        }
+      }
+      if (c.comparison) {
+        row.appendChild(el("p", "muted",
+          "baseline " + c.comparison.baseline_passed + " passed / " +
+          c.comparison.baseline_failed + " failed → candidate " +
+          c.comparison.candidate_passed + " passed / " +
+          c.comparison.candidate_failed + " failed; improvement " +
+          c.comparison.improvement));
+      }
+      box.appendChild(row);
+    }
+  };
+
+  const renderApplied = (applied, rollbacks) => {
+    acceptedBox.innerHTML = "";
+    if (!applied.length) {
+      emptyState(acceptedBox, "No accepted improvements applied",
+        "Approved candidates you apply appear here with a rollback.");
+      return;
+    }
+    const rolled = new Set(rollbacks.map((r) => r.candidate_id));
+    for (const a of applied.slice().reverse()) {
+      const row = el("div", "surface memory-entry");
+      const head = el("p", null);
+      head.appendChild(statusBadge(rolled.has(a.candidate_id)
+        ? "ROLLED_BACK" : "SUCCEEDED"));
+      head.appendChild(el("span", "mono", " " + a.candidate_id));
+      row.appendChild(head);
+      row.appendChild(el("p", "muted", siWhen(a.at) + " · approved by " +
+        (a.approved_by || "?") + " · files: " + (a.files || []).join(", ") +
+        " · committed: no"));
+      if (!rolled.has(a.candidate_id)) {
+        const btn = el("button", "btn small danger", "Roll back");
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await api("/api/v1/self-improvement/candidates/" +
+              encodeURIComponent(a.candidate_id) + "/rollback",
+              { method: "POST" });
+            load();
+          } catch (err) {
+            errorState(resultBox, "Rollback failed", err, null);
+            btn.disabled = false;
+          }
+        });
+        row.appendChild(btn);
+      }
+      acceptedBox.appendChild(row);
+    }
+  };
+
+  const renderWeaknesses = (items) => {
+    weakBox.innerHTML = "";
+    if (!items.length) {
+      emptyState(weakBox, "No weaknesses identified",
+        "No failures, regressions, slow paths or bottlenecks in the evidence.");
+      return;
+    }
+    const table = el("table", "data-table");
+    for (const w of items) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, w.id));
+      tr.appendChild(el("td", null, (w.severity || "").toUpperCase()));
+      tr.appendChild(el("td", null, w.title));
+      tr.appendChild(el("td", "mono", w.metric + "=" + w.value + " → " + w.target));
+      tr.appendChild(el("td", "mono", (w.affected_files || []).join(", ")));
+      table.appendChild(tr);
+    }
+    weakBox.appendChild(table);
+  };
+
+  const renderEvidence = (items) => {
+    evidenceBox.innerHTML = "";
+    if (!items.length) {
+      emptyState(evidenceBox, "No evidence collected yet",
+        "Click Analyze to gather evidence from the failure ledger, runs, " +
+        "model routing, agent runs, metrics and host resources.");
+      return;
+    }
+    const table = el("table", "data-table");
+    for (const e of items.slice().reverse()) {
+      const tr = el("tr");
+      tr.appendChild(el("td", "mono", e.id));
+      tr.appendChild(el("td", null, e.kind));
+      tr.appendChild(el("td", "muted", e.source));
+      tr.appendChild(el("td", null, e.summary));
+      table.appendChild(tr);
+    }
+    evidenceBox.appendChild(table);
+  };
+
+  const renderGuardrails = (g) => {
+    railsBox.innerHTML = "";
+    if (!g) return;
+    for (const inv of g.invariants || []) {
+      railsBox.appendChild(el("p", null, "• Forge must " + inv));
+    }
+    railsBox.appendChild(el("p", "muted mono",
+      "protected: " + (g.protected_paths || []).join(" ")));
+  };
+
+  const render = (payload) => {
+    renderStats(payload.status || {});
+    renderPending(payload.pending_approval || []);
+    renderProposals(payload.proposals || []);
+    renderCandidates(payload.candidates || [], candidatesBox,
+      "No candidates evaluated yet");
+    renderCandidates((payload.rejected || []).map((r) => Object.assign({}, r, {
+      accepted: false, status: "rejected" })), rejectedBox,
+      "No rejected improvements");
+    renderApplied(payload.applied || [], payload.rollbacks || []);
+    renderWeaknesses(payload.weaknesses || []);
+    renderEvidence(payload.evidence || []);
+    renderGuardrails(payload.guardrails);
+  };
+
+  const load = () => api("/api/v1/self-improvement").then(render).catch(
+    (err) => errorState(statsBox, "Unable to load self-improvement state",
+      err, renderSelfImprovementView));
+
+  document.getElementById("si-analyze").addEventListener("click", async () => {
+    note.textContent = "analyzing…";
+    try {
+      const report = await api("/api/v1/self-improvement/analyze",
+        { method: "POST", body: { run_tests: false } });
+      note.textContent = report.summary.evidence_total + " evidence items, " +
+        report.summary.weaknesses_total + " weaknesses";
+      load();
+    } catch (err) {
+      note.textContent = "";
+      errorState(resultBox, "Analysis failed", err, null);
+    }
+  });
+  document.getElementById("si-run").addEventListener("click", async () => {
+    note.textContent = "building and testing an isolated candidate…";
+    try {
+      const payload = await api("/api/v1/self-improvement/run",
+        { method: "POST", body: { iterations: 1, run_tests: false } });
+      const first = (payload.results || [])[0];
+      note.textContent = first
+        ? (first.accepted ? "accepted" :
+           (first.decision && first.decision.awaiting_approval
+             ? "passed technical gates — awaiting your approval"
+             : (first.stopped_reason || "rejected")))
+        : "no candidates";
+      load();
+    } catch (err) {
+      note.textContent = "";
+      errorState(resultBox, "Candidate evaluation failed", err, null);
+    }
+  });
   load();
 }

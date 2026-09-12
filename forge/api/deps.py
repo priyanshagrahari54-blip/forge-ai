@@ -113,6 +113,7 @@ class RateLimiter:
         "stream": (10.0, 10.0 / 60.0),
         "voice": (30.0, 30.0 / 60.0),
         "memory": (60.0, 60.0 / 60.0),
+        "self_improvement": (6.0, 6.0 / 60.0),
     }
     MAX_KEYS = 10000
 
