@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import sys
+from pathlib import Path
 
 from forge.core.portability import MINIMUM_PYTHON, MINIMUM_PYTHON_STRING
 from forge.core.supervisor import Supervisor
@@ -625,6 +626,225 @@ def _run_task(args) -> int:
     return 0 if result.get("accepted") else 1
 
 
+# -- Forge Server (A81) CLI -------------------------------------------------
+
+SERVER_DEFAULT_HOST = "127.0.0.1"
+SERVER_DEFAULT_PORT = 8300
+SERVER_DEFAULT_DB = ".forge/server/server.db"
+
+
+def _server_parse_projects(specs, parser) -> dict:
+    projects: dict = {}
+    for spec in specs or []:
+        name, _, root = spec.partition("=")
+        if not name or not root:
+            parser.error("--project must look like ID=ROOT")
+        projects[name] = root
+    return projects
+
+
+def _server_db_path(args) -> str:
+    return getattr(args, "db", "") or SERVER_DEFAULT_DB
+
+
+def _server_base_url(args) -> str:
+    url = getattr(args, "url", "") or ""
+    if url:
+        return url.rstrip("/")
+    host = getattr(args, "host", "") or SERVER_DEFAULT_HOST
+    port = int(getattr(args, "port", 0) or SERVER_DEFAULT_PORT)
+    return f"http://{host}:{port}/api/v1"
+
+
+def _server_token_file(args) -> str:
+    db = Path(_server_db_path(args))
+    return str(db.parent / "token")
+
+
+def _server_resolve_token(args) -> str:
+    token = getattr(args, "token", "") or ""
+    if token:
+        return token
+    token = os.environ.get("FORGE_SERVER_TOKEN", "")
+    if token:
+        return token
+    path = Path(_server_token_file(args))
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _server_http_get(url: str, token: str, timeout: float = 5.0):
+    """GET a Forge Server endpoint; returns (status_code, payload)."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, method="GET")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+            try:
+                return int(response.status), json.loads(body)
+            except ValueError:
+                return int(response.status), {"raw": body}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            return int(exc.code), json.loads(body)
+        except ValueError:
+            return int(exc.code), {"raw": body}
+    except Exception as exc:  # URLError, timeout, connection refused
+        return 0, {"error": str(exc)}
+
+
+def _run_server_start(args, parser) -> int:
+    import secrets as _secrets
+
+    from forge.server import ForgeServer, ServerConfig
+
+    projects = _server_parse_projects(
+        getattr(args, "projects", []), parser)
+    if not projects:
+        root = Path.cwd()
+        projects = {root.name or "forge": str(root)}
+    token = getattr(args, "token", "") or ""
+    generated = False
+    if not token:
+        token = _secrets.token_urlsafe(32)
+        generated = True
+    db_path = _server_db_path(args)
+    if generated:
+        # Persist the bootstrap token next to the database so
+        # `forge server status`/`health` can find it. Best effort:
+        # POSIX permissions are tightened where supported (not Windows).
+        token_path = Path(_server_token_file(args))
+        try:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(token, encoding="utf-8")
+            try:
+                os.chmod(str(token_path), 0o600)
+            except (OSError, AttributeError):
+                pass
+        except OSError as exc:
+            print(f"warning: could not write token file: {exc}",
+                  file=sys.stderr)
+    profile = getattr(args, "profile", "") or "assisted"
+    if profile not in ("safe", "assisted", "autonomous", "locked"):
+        parser.error("--profile must be safe|assisted|autonomous|locked")
+    config = ServerConfig(
+        db_path=db_path,
+        host=getattr(args, "host", "") or SERVER_DEFAULT_HOST,
+        port=int(getattr(args, "port", 0) or SERVER_DEFAULT_PORT),
+        projects=projects,
+        bootstrap_token=token,
+        profile=profile,
+        max_workers=max(1, int(getattr(args, "workers", 0) or 4)),
+    )
+    server = ForgeServer(config)
+    print("Forge Server bootstrap token (admin):")
+    print(f"  {token}")
+    print(f"Token file: {_server_token_file(args)}")
+    print("Keep it private; FORGE_SERVER_TOKEN overrides it for clients.")
+    server.run_uvicorn()
+    return 0
+
+
+def _run_server_status(args) -> int:
+    base = _server_base_url(args)
+    token = _server_resolve_token(args)
+    status_code, payload = _server_http_get(f"{base}/status", token)
+    if getattr(args, "json", False):
+        _emit_json({"reachable": status_code != 0,
+                    "http_status": status_code, "payload": payload})
+        return 0 if status_code == 200 else 1
+    if status_code == 0:
+        print(f"Forge Server is not running at {base}")
+        print(f"  ({payload.get('error', 'unreachable')})")
+        return 1
+    if status_code == 401:
+        print(f"Forge Server at {base} refused the credentials.")
+        print("Pass --token, set FORGE_SERVER_TOKEN, or run from the "
+              "same directory as the server's --db (token file).")
+        return 1
+    if status_code != 200:
+        print(f"Forge Server at {base} returned HTTP {status_code}.")
+        return 1
+    workers = payload.get("workers", {})
+    queue = payload.get("queue", {})
+    tasks = payload.get("tasks", {})
+    print("Forge Server: running")
+    print(f"  endpoint:  {base.rsplit('/api', 1)[0]}")
+    print(f"  version:   {payload.get('version', '?')} "
+          f"(boot {payload.get('boot_id', '?')})")
+    print(f"  uptime:    {float(payload.get('uptime_seconds', 0)):.1f}s  "
+          f"profile: {payload.get('profile', '?')}")
+    print(f"  workers:   {workers.get('busy', 0)}/{workers.get('max', 0)} "
+          f"busy (alive={workers.get('alive', False)})")
+    print(f"  queue:     {queue.get('depth', 0)} queued, "
+          f"{queue.get('leased', 0)} leased")
+    nonzero = {key: value for key, value in tasks.items() if value}
+    print(f"  tasks:     {nonzero or 'none'}")
+    print(f"  projects:  {payload.get('projects', 0)} registered, "
+          f"{payload.get('active_sessions', 0)} active session(s), "
+          f"{payload.get('pending_approvals', 0)} pending approval(s)")
+    return 0
+
+
+def _run_server_health(args) -> int:
+    base = _server_base_url(args)
+    token = _server_resolve_token(args)
+    status_code, payload = _server_http_get(f"{base}/health", token)
+    if getattr(args, "json", False):
+        _emit_json({"reachable": status_code != 0,
+                    "http_status": status_code, "payload": payload})
+        return 0 if status_code == 200 else 1
+    if status_code == 0:
+        print(f"Forge Server is not running at {base}")
+        print(f"  ({payload.get('error', 'unreachable')})")
+        return 1
+    if status_code != 200:
+        print(f"Forge Server at {base} returned HTTP {status_code}.")
+        if status_code == 401:
+            print("Pass --token or set FORGE_SERVER_TOKEN.")
+        return 1
+    overall = payload.get("status", "unknown")
+    print(f"Forge Server health: {overall.upper()}")
+    server_info = payload.get("server", {})
+    print(f"  version:   {server_info.get('version', '?')} "
+          f"(boot {server_info.get('boot_id', '?')})")
+    print(f"  uptime:    {float(server_info.get('uptime_seconds', 0)):.1f}s")
+    print(f"  auth mode: {payload.get('auth_mode', '?')}  "
+          f"profile: {payload.get('profile', '?')}")
+    for name, component in sorted(
+            (payload.get("components") or {}).items()):
+        state = component if isinstance(component, dict) else {}
+        mark = "ok" if state.get("ok", True) else "FAIL"
+        details = ", ".join(
+            f"{key}={value}" for key, value in sorted(state.items())
+            if key != "ok" and value is not None)
+        print(f"  {name:<10} {mark}{('  ' + details) if details else ''}")
+    for warning in payload.get("warnings", []):
+        print(f"  warning: {warning}")
+    return 0 if overall in ("ok", "degraded") else 1
+
+
+def _run_server(args, parser) -> int:
+    subcommand = getattr(args, "server_subcommand", "") or "start"
+    if subcommand == "start":
+        return _run_server_start(args, parser)
+    if subcommand == "status":
+        return _run_server_status(args)
+    if subcommand == "health":
+        return _run_server_health(args)
+    parser.error(f"Unknown server subcommand: {subcommand!r}")
+    return 2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -961,6 +1181,68 @@ def main() -> None:
     serve_parser.add_argument("--db", default="",
                              help="Control-plane database path.")
 
+    # Forge Server (A81): standalone task backend
+    server_parser = subparsers.add_parser(
+        "server",
+        help="Run and manage the standalone Forge Server",
+        description="Start the Forge Server backend (task queue, "
+        "background workers, persistent events, reconnect recovery), or "
+        "query a running one with the status/health subcommands. "
+        "Local-dev auth only; do not expose to untrusted networks.",
+    )
+    server_parser.add_argument(
+        "--host", default="",
+        help=f"Bind address (default: {SERVER_DEFAULT_HOST}).")
+    server_parser.add_argument(
+        "--port", type=int, default=0,
+        help=f"Bind port (default: {SERVER_DEFAULT_PORT}).")
+    server_parser.add_argument(
+        "--db", default="",
+        help=f"Server database path (default: {SERVER_DEFAULT_DB}).")
+    server_parser.add_argument(
+        "--project", dest="projects", action="append", default=[],
+        metavar="ID=ROOT",
+        help="Register a project (repeatable). Defaults to the "
+        "current directory.")
+    server_parser.add_argument(
+        "--workers", type=int, default=0,
+        help="Background worker threads (default: 4).")
+    server_parser.add_argument(
+        "--profile", default="",
+        help="A33 permission profile: safe|assisted|autonomous|locked "
+        "(default: assisted).")
+    server_parser.add_argument(
+        "--token", default="",
+        help="Bootstrap admin token (generated and stored next to the "
+        "database when omitted).")
+    server_subs = server_parser.add_subparsers(dest="server_subcommand")
+    for _name, _help in (
+            ("start", "Run the server (default when no subcommand)"),
+            ("status", "Show live status of a running server"),
+            ("health", "Show the health report of a running server")):
+        _sub = server_subs.add_parser(_name, help=_help)
+        # SUPPRESS keeps parent-level values intact when the flag is
+        # given before the subcommand (`forge server --port X status`).
+        _sub.add_argument("--host", default=argparse.SUPPRESS)
+        _sub.add_argument("--port", type=int, default=argparse.SUPPRESS)
+        _sub.add_argument("--db", default=argparse.SUPPRESS,
+                          help="Server database path (locates the "
+                          "token file).")
+        _sub.add_argument("--token", default=argparse.SUPPRESS,
+                          help="Bearer token (or set FORGE_SERVER_TOKEN).")
+        if _name == "start":
+            _sub.add_argument("--project", dest="projects", action="append",
+                              default=argparse.SUPPRESS, metavar="ID=ROOT")
+            _sub.add_argument("--workers", type=int,
+                              default=argparse.SUPPRESS)
+            _sub.add_argument("--profile", default=argparse.SUPPRESS)
+        else:
+            _sub.add_argument("--url", default="",
+                              help="Full API base URL "
+                              "(default: built from --host/--port).")
+            _sub.add_argument("--json", action="store_true",
+                              help="Emit machine-readable JSON")
+
     args = parser.parse_args()
 
     if args.command == "status":
@@ -1072,6 +1354,9 @@ def main() -> None:
             projects[name] = root
         serve(host=args.host, port=args.port,
               projects=projects or None, db_path=args.db)
+
+    elif args.command == "server":
+        raise SystemExit(_run_server(args, parser))
 
     else:
         parser.print_help()
