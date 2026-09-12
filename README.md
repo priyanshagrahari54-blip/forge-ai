@@ -55,6 +55,10 @@ A33 generalizes A32's policy core into a fine-grained platform controlling files
 
 See `docs/A33-PERMISSION-PLATFORM.md` for the architecture, precedence algorithm, scope syntax, approval model, configuration format, threat model, and the ten tested security invariants.
 
+## Secure Research Engine (A81)
+
+`forge research query "..."` researches technical topics, APIs, docs, libraries, errors and project questions across project files, local documentation, repository metadata, user-provided notes, official documentation and operator-configured web sources. Every result carries explicit provenance — `LOCAL_SOURCE`, `REAL_WEB_RESULT`, `USER_PROVIDED` or `MODEL_KNOWLEDGE` — with citations (`path:line` or URL + retrieval time). Query planning, source ranking, deduplication, extractive cited summaries and a TTL-bounded cache are built in. Web access is HTTPS-only, host-allowlisted and SSRF-guarded (loopback/private/link-local/metadata blocked, redirects re-validated, timeouts and size caps). **Failed web research is reported as failed and never silently replaced by model knowledge**; model knowledge is opt-in and always labeled. See `docs/A81-SECURE-RESEARCH-ENGINE.md`.
+
 ## Browser Cockpit + Secure Control Plane (A34)
 
 A34 operates Forge from the browser without trusting the browser. The
