@@ -180,6 +180,16 @@ class ResearchQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class ResearchQueryRequest(BaseModel):
+    """Secure multi-source research query (provenance-tracked)."""
+
+    question: str = Field(min_length=1, max_length=2000)
+    allow_web: bool = True
+    sources: List[str] = Field(default_factory=list, max_length=8)
+    user_notes: List[str] = Field(default_factory=list, max_length=10)
+    allow_model_knowledge: bool = False
+
+
 # -- A48 compute -------------------------------------------------------------------------
 
 class ComputeExecuteRequest(BaseModel):

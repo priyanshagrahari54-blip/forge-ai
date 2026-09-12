@@ -201,6 +201,33 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+
+        memory_tab = ttk.Frame(self._notebook, padding=4)
+        memory_controls = ttk.Frame(memory_tab)
+        memory_controls.pack(fill=tk.X)
+        self._memory_search_var = tk.StringVar()
+        self._memory_search = ttk.Entry(memory_controls,
+                                        textvariable=self._memory_search_var)
+        self._memory_search.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(memory_controls, text="Search",
+                   command=self._search_memory).pack(side=tk.LEFT, padx=2)
+        ttk.Button(memory_controls, text="Refresh",
+                   command=self._refresh_memory).pack(side=tk.LEFT, padx=2)
+        ttk.Button(memory_controls, text="Delete",
+                   command=self._delete_selected_memory).pack(side=tk.LEFT,
+                                                             padx=2)
+        self._memory_list = tk.Listbox(memory_tab, activestyle="dotbox",
+                                       height=14)
+        self._memory_list.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._memory_list.bind("<<ListboxSelect>>",
+                               self._on_memory_selected)
+        self._memory_detail = tk.Text(memory_tab, wrap=tk.WORD,
+                                      state=tk.DISABLED, height=12,
+                                      bg="#0d1117", fg="#e6edf3",
+                                      insertbackground="#e6edf3")
+        self._memory_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._memory_ids: list[str] = []
+        self._notebook.add(memory_tab, text="Memory")
         paned.add(right, weight=3)
 
     def _build_statusbar(self) -> None:
@@ -540,6 +567,113 @@ class ForgeDesktopApp(tk.Tk):
         body = data["content"] + ("\n\n[... truncated ...]" if data["truncated"] else "")
         text.insert(tk.END, body)
         text.configure(state=tk.DISABLED)
+
+    # -- memory viewer ---------------------------------------------------------
+
+    def _memory_ready(self) -> bool:
+        return bool(self.backend.running and self._current_project_id())
+
+    def _refresh_memory(self) -> None:
+        self._memory_ids = []
+        self._memory_list.delete(0, tk.END)
+        if not self._memory_ready():
+            self._memory_list.insert(tk.END, "(start a project to view memory)")
+            return
+        project = self._current_project_id()
+        try:
+            records = self.backend.list_memory(project, limit=200)
+        except BackendError as exc:
+            self._memory_list.insert(tk.END, f"error: {exc}")
+            self._set_status(f"Memory: {exc}")
+            return
+        for record in records:
+            label = (f"[{record['type']}] {record['summary'][:80] or record['content'][:80]} "
+                     f"conf={record['confidence']:.2f} imp={record['importance']:.2f}")
+            self._memory_list.insert(tk.END, label)
+            self._memory_ids.append(record["id"])
+        self._set_status(f"Memory: {len(records)} item(s)")
+
+    def _search_memory(self) -> None:
+        query = self._memory_search_var.get().strip()
+        if not self._memory_ready():
+            self._refresh_memory()
+            return
+        if not query:
+            self._refresh_memory()
+            return
+        project = self._current_project_id()
+        self._memory_ids = []
+        self._memory_list.delete(0, tk.END)
+        try:
+            results = self.backend.search_memory(project, query, limit=50)
+        except BackendError as exc:
+            self._memory_list.insert(tk.END, f"error: {exc}")
+            self._set_status(f"Memory search: {exc}")
+            return
+        for result in results:
+            record = result["record"]
+            label = (f"[{record['type']}] score={result['score']:.3f} "
+                     f"{record['summary'][:80] or record['content'][:80]}")
+            self._memory_list.insert(tk.END, label)
+            self._memory_ids.append(record["id"])
+        self._set_status(f"Memory search: {len(results)} match(es)")
+
+    def _on_memory_selected(self, _event=None) -> None:
+        selection = self._memory_list.curselection()
+        if not selection or not self._memory_ready():
+            return
+        index = selection[0]
+        if index >= len(self._memory_ids):
+            return
+        memory_id = self._memory_ids[index]
+        try:
+            records = self.backend.list_memory(self._current_project_id(),
+                                               limit=200)
+        except BackendError:
+            return
+        record = next((item for item in records if item["id"] == memory_id),
+                      None)
+        if record is None:
+            return
+        lines = [
+            f"type: {record['type']}    project: {record['project']}",
+            f"source: {record['source']}    via: {record['via']}",
+            f"confidence: {record['confidence']:.2f}    "
+            f"importance: {record['importance']:.2f}",
+            f"retention: {record['retention']}    "
+            f"status: {record['status']}    version: {record['version']}",
+            f"created: {record['created_at']}    "
+            f"redactions: {record['redaction_count']}",
+            "",
+            record["content"],
+        ]
+        if record["summary"]:
+            lines += ["", f"summary: {record['summary']}"]
+        self._memory_detail.configure(state=tk.NORMAL)
+        self._memory_detail.delete("1.0", tk.END)
+        self._memory_detail.insert(tk.END, "\n".join(lines))
+        self._memory_detail.configure(state=tk.DISABLED)
+
+    def _delete_selected_memory(self) -> None:
+        selection = self._memory_list.curselection()
+        if not selection or not self._memory_ready():
+            return
+        index = selection[0]
+        if index >= len(self._memory_ids):
+            return
+        memory_id = self._memory_ids[index]
+        if not messagebox.askyesno(
+                APP_TITLE, f"Delete memory item {memory_id[:8]}...?"):
+            return
+        try:
+            result = self.backend.delete_memory(
+                self._current_project_id(), memory_id)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._set_status(f"Memory delete: {result['id'][:8]}... "
+                         f"{'deleted' if result['deleted'] else 'not found'}")
+        self._refresh_memory()
 
     # -- readiness / models ---------------------------------------------------------
 

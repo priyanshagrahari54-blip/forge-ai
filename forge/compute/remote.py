@@ -48,7 +48,6 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-import signal
 import socket
 import subprocess
 import threading
@@ -56,6 +55,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from forge.core.portability import terminate_process_group
 from forge.security.ssrf import ip_class
 
 MAX_CODE = 6000
@@ -524,15 +524,9 @@ def _execute_ssh_secure(code: str, config: SSHConfig,
     except subprocess.TimeoutExpired:
         timed_out = True
         # Cancel the entire remote process group, not just the client.
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-            proc.wait(timeout=2.0)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=2.0)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+        # On Windows there is neither os.killpg nor signal.SIGKILL, so this
+        # goes through the portable helper instead of raising AttributeError.
+        terminate_process_group(proc)
 
     out_reader.done.wait(timeout=1.0)
     err_reader.done.wait(timeout=1.0)

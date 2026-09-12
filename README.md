@@ -55,6 +55,10 @@ A33 generalizes A32's policy core into a fine-grained platform controlling files
 
 See `docs/A33-PERMISSION-PLATFORM.md` for the architecture, precedence algorithm, scope syntax, approval model, configuration format, threat model, and the ten tested security invariants.
 
+## Secure Research Engine (A81)
+
+`forge research query "..."` researches technical topics, APIs, docs, libraries, errors and project questions across project files, local documentation, repository metadata, user-provided notes, official documentation and operator-configured web sources. Every result carries explicit provenance — `LOCAL_SOURCE`, `REAL_WEB_RESULT`, `USER_PROVIDED` or `MODEL_KNOWLEDGE` — with citations (`path:line` or URL + retrieval time). Query planning, source ranking, deduplication, extractive cited summaries and a TTL-bounded cache are built in. Web access is HTTPS-only, host-allowlisted and SSRF-guarded (loopback/private/link-local/metadata blocked, redirects re-validated, timeouts and size caps). **Failed web research is reported as failed and never silently replaced by model knowledge**; model knowledge is opt-in and always labeled. See `docs/A81-SECURE-RESEARCH-ENGINE.md`.
+
 ## Browser Cockpit + Secure Control Plane (A34)
 
 A34 operates Forge from the browser without trusting the browser. The
@@ -607,6 +611,51 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Forge Server (A81)
+
+A standalone task backend (`forge/server/`) that receives Forge tasks over
+an authenticated HTTP API, queues them, executes them in background
+workers, and stores every state transition durably in SQLite — so Forge
+Desktop can disconnect and reconnect later without losing anything:
+
+```text
+Client → Authentication → API Gateway → Task Queue → Supervisor
+       → Agents → Model Fabric → Verification → Result Store
+```
+
+- **Durable task lifecycle**: `created → queued → started → running →
+  completed/failed/cancelled/rolled_back` with `paused` and
+  `waiting_for_approval` between; every task carries id, project, status,
+  stage, progress, checkpoint, retry count, result, error, and timestamps,
+  guarded by a closed transition table and compare-and-swap versioning.
+- **Workers keep working while clients are gone**; restart recovery
+  re-queues interrupted tasks within a bounded retry budget, fences
+  zombie workers by lease ownership, and expires pending approvals at the
+  boot boundary (fail closed).
+- **Reconnection**: one `GET /api/v1/recovery` call restores active
+  tasks, progress, event replay from the client's exact cursor, log
+  tails, results, pending approvals, and notifications.
+- **Persistent events + long-poll updates** (`?after=<seq>&wait=<s>`),
+  durable logs, and a per-project notification inbox — no websocket
+  stack required (Python 3.8 / Windows safe).
+- **A33 remains the authority**: profile-based task admission (audited),
+  mode clamping, change-set and commit approvals minting real A33 tokens,
+  self-approval bans, and denial-fails-closed semantics.
+- **Never a remote shell**: a closed operation/scope table, schemas that
+  forbid unknown and execution-shaped fields, rate limits, structured
+  errors, disabled docs/openapi — requirements are data for the
+  Supervisor pipeline, and every disk effect flows through the
+  policy-gated transaction.
+
+```bash
+forge server --project demo=/path/to/repo   # start on 127.0.0.1:8300
+forge server status                         # live status of a running server
+forge server health                         # component health report
+```
+
+See `docs/A81-FORGE-SERVER.md` for the architecture, lifecycle table,
+API reference, recovery protocol, configuration, and security model.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -683,6 +732,9 @@ forge run "add CSV export"     # run one autonomous task end to end
 forge run "fix login bug" --mode autonomous --approve --root /path/to/repo
 forge desktop                  # native desktop app (Tkinter, no server needed)
 forge serve --project demo=/path/to/repo   # browser cockpit on 127.0.0.1:8000
+forge server --project demo=/path/to/repo  # standalone task backend on 127.0.0.1:8300
+forge server status            # live status of a running Forge Server
+forge server health            # Forge Server component health
 forge plan "add CSV export"
 forge analyze
 forge models                   # list models (same as: forge models list)
@@ -700,7 +752,7 @@ Writes, command execution, commits, pushes, repository deletion, and secret expo
 
 ## Testing
 
-The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, an isolated autonomous CSV-export E2E test, and a Model Fabric suite (capability vocabulary, registries, routing, fallback, health, telemetry, credentials, CLI, and agent/supervisor integration). Run:
+The suite includes repository intelligence and task lifecycle tests, checkpoint and permission coverage, model contract tests, verification gates, an isolated autonomous CSV-export E2E test, a Model Fabric suite (capability vocabulary, registries, routing, fallback, health, telemetry, credentials, CLI, and agent/supervisor integration), and the Forge Server (A81) suites (task persistence, queue recovery, worker failure, cancellation, events, API auth/scopes, policy enforcement, reconnection, restart recovery, HTTP E2E with the real Supervisor, and CLI). Run:
 
 ```bash
 python -m pytest -q
@@ -708,7 +760,7 @@ python -m pytest -q
 
 ## Continuous integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request across Python 3.8 and 3.11: it checks out the repository, installs the project with test dependencies (`pip install -e ".[dev]"`), runs `python -m pytest -q`, compiles the package (`python -m compileall forge`), and checks the diff (`git diff --check`). The job fails if any step fails; it never depends on a local Ollama server, so it is fully deterministic and offline. The opt-in live-model tests are skipped by default (see below).
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request across Python 3.8 and 3.11. The 3.8 leg is pinned to `ubuntu-22.04` because `actions/setup-python` cannot provide 3.8 on the Ubuntu 24.04 image that `ubuntu-latest` points at; it installs the frozen floor from `requirements/py38-dev.txt` rather than resolving open-endedly, since every dependency has by now shipped a release that dropped 3.8. The 3.11 leg installs the uncapped modern set with `pip install -e ".[dev]"`. Each leg runs `python -m pytest -q`, compiles the package (`python -m compileall forge`), runs a static minimum-version gate (`vermin -t=3.8-`), and checks the diff (`git diff --check`). Two further jobs cover the Windows 7 32-bit target: one proves the pinned set resolves for cp38/win32 (binary wheels included), the other is a real Windows runner smoke gate. The jobs fail if any step fails; they never depend on a local Ollama server, so the suite is fully deterministic and offline. The opt-in live-model tests are skipped by default (see below).
 
 Live Ollama integration tests are opt-in and auto-skip when no Ollama endpoint is reachable, so normal CI never fails merely because Ollama is not installed:
 

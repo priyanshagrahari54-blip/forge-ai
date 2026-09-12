@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,8 +49,7 @@ class TestMapper:
     def build(self) -> TestMapping:
         mapping = TestMapping()
 
-        source_files = self._source_files()
-        test_files = self._test_files()
+        source_files, test_files = self._discover_files()
 
         # Performance optimization (Bolt ⚡): Pre-index source files by stem
         # to convert O(N*M) stem matching loops into O(1) dictionary lookups.
@@ -72,8 +72,10 @@ class TestMapper:
 
         return mapping
 
-    def _source_files(self) -> list[str]:
-        files: list[str] = []
+    # Performance optimization (Bolt ⚡): Single-pass directory discovery avoids duplicate rglob calls
+    def _discover_files(self) -> tuple[list[str], list[str]]:
+        source_files: list[str] = []
+        test_files: list[str] = []
 
         for path in self.root.rglob("*.py"):
             if not path.is_file():
@@ -85,28 +87,19 @@ class TestMapper:
                 continue
 
             if self._is_test_file(path):
-                continue
+                test_files.append(relative)
+            else:
+                source_files.append(relative)
 
-            files.append(relative)
+        return sorted(source_files), sorted(test_files)
 
-        return sorted(files)
+    def _source_files(self) -> list[str]:
+        source_files, _ = self._discover_files()
+        return source_files
 
     def _test_files(self) -> list[str]:
-        files: list[str] = []
-
-        for path in self.root.rglob("*.py"):
-            if not path.is_file():
-                continue
-
-            relative = self._relative(path)
-
-            if relative is None or self.gitignore.is_ignored(relative):
-                continue
-
-            if self._is_test_file(path):
-                files.append(relative)
-
-        return sorted(files)
+        _, test_files = self._discover_files()
+        return test_files
 
     def _match_test_to_sources(
         self,
@@ -150,11 +143,11 @@ class TestMapper:
         source_set = set(source_files)
 
         for test in test_files:
-            queue = [test]
+            queue = deque([test])
             visited: set[str] = set()
 
             while queue:
-                current = queue.pop(0)
+                current = queue.popleft()
 
                 if current in visited:
                     continue

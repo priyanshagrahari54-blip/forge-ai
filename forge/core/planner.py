@@ -35,11 +35,37 @@ _PLAN_TEMPLATE: tuple[tuple[str, str], ...] = (
 
 
 class Planner:
-    def create_plan(self, request: str) -> list[PlanStep]:
+    def create_plan(self, request: str, *, memory=None,
+                    project: str | None = None) -> list[PlanStep]:
+        """Build the canonical plan, optionally enriched with memory recall.
+
+        ``memory``/``project`` are optional long-term-memory integration
+        points: when supplied, relevant remembered knowledge is recalled and
+        surfaced as the first step of the plan so the executor begins from
+        what Forge already knows. With ``memory`` omitted the plan is
+        byte-identical to the pre-memory behavior.
+        """
         if not request or not request.strip():
             raise ValueError("Cannot plan an empty requirement")
         steps: list[PlanStep] = []
         previous_id: str | None = None
+
+        if memory is not None:
+            from forge.memory.integrations import (
+                memory_context_text,
+                recall_for_planning,
+            )
+
+            recalled = recall_for_planning(
+                memory, project or "default", request)
+            context = memory_context_text(recalled)
+            if context:
+                steps.append(PlanStep(
+                    id="0",
+                    description="Recall relevant project memory: " + context,
+                ))
+                previous_id = "0"
+
         for step_id, description in _PLAN_TEMPLATE:
             steps.append(PlanStep(
                 id=step_id,

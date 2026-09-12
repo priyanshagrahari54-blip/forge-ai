@@ -473,6 +473,73 @@ class DesktopBackend:
         except ValueError as exc:
             raise BackendError(str(exc)) from exc
         return {"agent": name, "release": record}
+    # -- long-term memory ------------------------------------------------------
+
+    def _long_term_memory(self):
+        """Lazily open the long-term memory store over the plane database."""
+        from forge.memory import LongTermMemory
+
+        plane = self._require_plane()
+        if getattr(self, "_ltm", None) is None:
+            self._ltm = LongTermMemory(plane._db)
+        return self._ltm
+
+    def list_memory(self, project_id: str, memory_type: str = "",
+                    limit: int = 100) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            records = memory.list(project=project_id,
+                                  memory_type=memory_type or None,
+                                  limit=limit)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [record.to_dict() for record in records]
+
+    def search_memory(self, project_id: str, query: str,
+                      limit: int = 20) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            results = memory.search(query, project=project_id, k=limit)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [result.to_dict() for result in results]
+
+    def memory_stats(self, project_id: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            return dict(memory.stats(project=project_id))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def delete_memory(self, project_id: str,
+                      memory_id: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            deleted = memory.delete(memory_id, project=project_id,
+                                    source=self.actor,
+                                    reason="deleted from desktop")
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return {"deleted": deleted, "id": memory_id}
+
+    def correct_memory(self, project_id: str, memory_id: str,
+                       new_content: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            record = memory.correct(memory_id, new_content,
+                                    project=project_id, source=self.actor,
+                                    reason="corrected from desktop")
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return record.to_dict()
+
+    def memory_provenance(self, project_id: str,
+                          memory_id: str) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            return [dict(item) for item in memory.provenance(memory_id)]
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
 
     # -- polling snapshot ----------------------------------------------------
 

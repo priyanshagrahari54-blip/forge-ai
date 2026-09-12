@@ -5152,6 +5152,56 @@ class ControlPlane:
         return result
 
 
+    # -- secure research engine (multi-source, provenance-tracked) ----------------------
+
+    def _secure_research_engine(self, session: Session):
+        from forge.research.secure_engine import SecureResearchEngine
+
+        if not hasattr(self, "_secure_research_engines"):
+            self._secure_research_engines: dict[str, Any] = {}
+        project = self.get_project(session.project_id)
+        engine = self._secure_research_engines.get(project.id)
+        if engine is None:
+            engine = SecureResearchEngine(project.root, audit=self.audit)
+            self._secure_research_engines[project.id] = engine
+        return engine
+
+    def research_query(self, session: Session, question: str, *,
+                       allow_web: bool = True,
+                       sources: tuple[str, ...] = (),
+                       user_notes: tuple[str, ...] = (),
+                       allow_model_knowledge: bool = False) -> dict[str, Any]:
+        """Multi-source research with explicit provenance on every result.
+
+        Web sources go through the SSRF-safe chain; a failed web lookup
+        is reported as failed and never backfilled with model knowledge.
+        """
+        if not isinstance(question, str) or not question.strip() \
+                or len(question) > 2000:
+            raise InvalidRequest("Question must be 1-2000 characters.")
+        engine = self._secure_research_engine(session)
+        result = engine.research(
+            question, allow_web=allow_web, sources=sources,
+            user_notes=user_notes,
+            allow_model_knowledge=allow_model_knowledge or None)
+        counts = result.get("provenance_counts", {})
+        self._audit(session.actor, "research", "query", True,
+                    task_id=session.active_task or session.id,
+                    reason=(f"intent={result['plan']['intent']} "
+                            f"results={len(result['results'])} "
+                            f"web_failed={result['web_failed']} "
+                            f"provenance={counts}")[:400])
+        return result
+
+    def research_status(self, session: Session) -> dict[str, Any]:
+        engine = self._secure_research_engine(session)
+        status = engine.status()
+        self._audit(session.actor, "research", "status", True,
+                    task_id=session.active_task or session.id,
+                    reason="secure research status")
+        return status
+
+
     # -- AI council (A45) ---------------------------------------------------------------
 
     def _council_engine(self, session: Session):

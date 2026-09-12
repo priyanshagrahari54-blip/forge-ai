@@ -1,0 +1,20 @@
+# Frozen test dependencies for Python 3.8 (the `dev` extra), frozen for the
+# same reason as py38.txt: pytest 8.4 and later require Python 3.9+.
+#
+# Install with:
+#
+#   python -m pip install -r requirements/py38.txt -r requirements/py38-dev.txt
+#   python -m pip install -e . --no-deps
+#
+# Python 3.9+ does not use this file; `pip install -e ".[dev]"` is enough there.
+
+-r py38.txt
+
+certifi==2026.7.22
+httpcore==1.0.9
+httpx==0.28.1
+iniconfig==2.1.0
+packaging==26.2
+pluggy==1.5.0
+pytest==8.3.5
+vermin==1.8.0
