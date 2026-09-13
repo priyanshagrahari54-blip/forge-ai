@@ -1,4 +1,4 @@
-"""Agent benchmark testing (A81): code-judged checks, honest reporting.
+"""Agent benchmark testing (A82): code-judged checks, honest reporting.
 
 The benchmark answers one question with evidence: *does this agent
 package actually respect the boundaries its specification declares?*

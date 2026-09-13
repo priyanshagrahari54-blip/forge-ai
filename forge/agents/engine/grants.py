@@ -1,4 +1,4 @@
-"""Permission grants (A81): the operator ledger, and the no-self-grant rule.
+"""Permission grants (A82): the operator ledger, and the no-self-grant rule.
 
 A specification declares a *ceiling*. Power is only live once an operator
 records a grant for a specific operation, and the ledger enforces:

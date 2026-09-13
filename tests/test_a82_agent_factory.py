@@ -1,4 +1,4 @@
-"""A81 — agent factory, structured packages, lifecycle, and versioning.
+"""A82 — agent factory, structured packages, lifecycle, and versioning.
 
 These tests pin the promotion rules (nothing is enabled on a claim), the
 on-disk package layout, and the versioning behaviour that discards
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a81 import make_engine, make_project  # noqa: E402
+from helpers_a82 import make_engine, make_project  # noqa: E402
 
 from forge.agents.engine import (  # noqa: E402
     AgentExistsError,

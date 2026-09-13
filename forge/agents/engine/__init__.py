@@ -1,4 +1,4 @@
-"""Forge Agent Creation Engine (A81).
+"""Forge Agent Creation Engine (A82).
 
 First-party engine for creating specialized software agents from
 structured specifications. An agent is a validated specification, a

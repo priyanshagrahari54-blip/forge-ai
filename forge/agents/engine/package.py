@@ -1,4 +1,4 @@
-"""The structured agent package (A81).
+"""The structured agent package (A82).
 
 An agent is not a row in a table and not a Python object in memory: it is
 a directory of plain JSON under ``<project>/.forge/agents/<name>/`` that

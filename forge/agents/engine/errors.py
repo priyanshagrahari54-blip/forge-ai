@@ -1,4 +1,4 @@
-"""Typed failures for the Agent Creation Engine (A81).
+"""Typed failures for the Agent Creation Engine (A82).
 
 Every refusal in the engine raises one of these so callers (CLI,
 desktop, control plane, tests) can branch on the cause instead of

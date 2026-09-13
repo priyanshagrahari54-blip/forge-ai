@@ -1,4 +1,4 @@
-"""Agent templates (A81): six first-party starting specifications.
+"""Agent templates (A82): six first-party starting specifications.
 
 A template is a *specification*, not a shortcut around validation: it
 produces an :class:`~forge.agents.engine.spec.AgentSpec` that goes through

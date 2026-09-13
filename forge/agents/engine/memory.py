@@ -1,4 +1,4 @@
-"""Agent memory (A81): policy-bounded and namespace-isolated.
+"""Agent memory (A82): policy-bounded and namespace-isolated.
 
 Each agent gets a private namespace inside the project
 :class:`~forge.memory.store.MemoryStore`. The policy in the spec decides
