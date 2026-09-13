@@ -277,8 +277,7 @@ class ChangeApplier:
             self._validate_content(change.path, change.content)
         self._validate_old_state(change)
 
-    @staticmethod
-    def _validate_path(path: str) -> None:
+    def _validate_path(self, path: str) -> None:
         candidate = PurePosixPath(path)
         if not path or candidate.is_absolute() or re.match(r"^[A-Za-z]:[\\/]", path):
             raise _ValidationError(
@@ -291,6 +290,23 @@ class ChangeApplier:
             raise _ValidationError(
                 "UNSAFE_PATH", path,
                 f"Change path must use repository-relative POSIX separators: {path!r}")
+        self._assert_inside_root(path)
+
+    def _assert_inside_root(self, path: str) -> None:
+        """Refuse a path that resolves outside the repository root.
+
+        The lexical checks above cannot see symlinks: a directory inside
+        the project may point anywhere, so ``src/x.py`` can resolve to
+        ``/etc/x.py`` while looking perfectly project-relative.
+        Resolving and comparing is the only check that holds.
+        """
+        if self.root is None:
+            return
+        resolved = (self.root / path).resolve()
+        if resolved != self.root and self.root not in resolved.parents:
+            raise _ValidationError(
+                "SYMLINK_ESCAPE", path,
+                f"Change path resolves outside the repository root: {path!r}")
 
     @classmethod
     def _validate_content(cls, path: str, content: str) -> None:

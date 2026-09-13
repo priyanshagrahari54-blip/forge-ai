@@ -213,6 +213,11 @@ class ModelRequirements:
     prefer_free: bool = False
     max_cost_per_token: float | None = None
     max_latency_ms: float | None = None
+    #: The deterministic offline placeholder is NOT a model. Specs default
+    #: to refusing it (fail closed): a run whose fabric can only produce
+    #: placeholder text fails with MODEL_IDENTITY instead of reporting
+    #: success. Set true explicitly for offline/CI dry runs.
+    allow_fallback: bool = False
 
     def validate(self) -> list[str]:
         issues: list[str] = []
@@ -236,6 +241,9 @@ class ModelRequirements:
                     or not (value >= 0)):
                 issues.append("model_requirements.%s must be a "
                               "non-negative number or null" % label)
+        if not isinstance(self.allow_fallback, bool):
+            issues.append("model_requirements.allow_fallback must be a "
+                          "boolean")
         return issues
 
     def to_dict(self) -> dict[str, Any]:
@@ -244,7 +252,8 @@ class ModelRequirements:
                 "prefer_local": self.prefer_local,
                 "prefer_free": self.prefer_free,
                 "max_cost_per_token": self.max_cost_per_token,
-                "max_latency_ms": self.max_latency_ms}
+                "max_latency_ms": self.max_latency_ms,
+                "allow_fallback": self.allow_fallback}
 
     @classmethod
     def from_dict(cls, payload: Any) -> "ModelRequirements":
@@ -267,7 +276,8 @@ class ModelRequirements:
                     raw_cost, "model_requirements.max_cost_per_token")),
             max_latency_ms=(
                 None if raw_latency is None else _strict_float(
-                    raw_latency, "model_requirements.max_latency_ms")))
+                    raw_latency, "model_requirements.max_latency_ms")),
+            allow_fallback=bool(payload.get("allow_fallback", False)))
 
 
 @dataclass(frozen=True)
