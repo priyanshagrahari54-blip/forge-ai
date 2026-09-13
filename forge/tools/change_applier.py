@@ -277,8 +277,7 @@ class ChangeApplier:
             self._validate_content(change.path, change.content)
         self._validate_old_state(change)
 
-    @staticmethod
-    def _validate_path(path: str) -> None:
+    def _validate_path(self, path: str) -> None:
         candidate = PurePosixPath(path)
         if not path or candidate.is_absolute() or re.match(r"^[A-Za-z]:[\\/]", path):
             raise _ValidationError(
@@ -291,6 +290,23 @@ class ChangeApplier:
             raise _ValidationError(
                 "UNSAFE_PATH", path,
                 f"Change path must use repository-relative POSIX separators: {path!r}")
+        self._assert_inside_root(path)
+
+    def _assert_inside_root(self, path: str) -> None:
+        """Refuse a path that resolves outside the repository root.
+
+        The lexical checks above cannot see symlinks: a directory inside
+        the project may point anywhere, so ``src/x.py`` can resolve to
+        ``/etc/x.py`` while looking perfectly project-relative.
+        Resolving and comparing is the only check that holds.
+        """
+        if self.root is None:
+            return
+        resolved = (self.root / path).resolve()
+        if resolved != self.root and self.root not in resolved.parents:
+            raise _ValidationError(
+                "SYMLINK_ESCAPE", path,
+                f"Change path resolves outside the repository root: {path!r}")
 
     @classmethod
     def _validate_content(cls, path: str, content: str) -> None:
@@ -494,7 +510,8 @@ class ChangeApplier:
     def apply(self, changes: Iterable[CodeChange | dict[str, Any]], approved: bool,
               label: str = "change", *, allow_delete: bool = False,
               capability: str = "", actor: str = "", task_id: str = "",
-              approval_token_id: str = "") -> ApplyResult:
+              approval_token_id: str = "",
+              commit_guard: Callable[[], str] | None = None) -> ApplyResult:
         """Validate, authorize, checkpoint, and apply a change set atomically.
 
         The transaction boundary is strict: the ENTIRE change set is
@@ -603,6 +620,24 @@ class ChangeApplier:
             result.duration_ms = (time.perf_counter() - started) * 1000
             return result
 
+        # Phase 2c — execution fence (Session 10): if the attempt that
+        # owns this change set has been fenced (timed out, cancelled,
+        # superseded by a retry, lost across a restart), refuse before
+        # any checkpoint or write exists. The transaction reports the
+        # fence instead of succeeding.
+        if commit_guard is not None:
+            try:
+                fenced_reason = commit_guard()
+            except Exception as exc:
+                fenced_reason = f"commit guard errored: {exc}"
+            if fenced_reason:
+                message = f"Change set fenced by execution attempt: {fenced_reason}"
+                result.errors.append(message)
+                result.error_details.append(
+                    ChangeError("FENCED_ATTEMPT", "", message))
+                result.duration_ms = (time.perf_counter() - started) * 1000
+                return result
+
         # Phase 3 — checkpoint the fully validated + authorized plan.
         if self.checkpoint_manager is not None:
             checkpoint = self.checkpoint_manager.create(label)
@@ -649,6 +684,24 @@ class ChangeApplier:
                 result.error_details.append(
                     ChangeError(code, change.path, message))
                 break
+            if commit_guard is not None:
+                # Re-check the fence before every write: an attempt can be
+                # fenced mid-apply (timeout/cancel landed between writes).
+                # The failure path below rolls back exactly what was
+                # already written.
+                try:
+                    fenced_reason = commit_guard()
+                except Exception as exc:
+                    fenced_reason = f"commit guard errored: {exc}"
+                if fenced_reason:
+                    message = (f"Change to {change.path} refused: "
+                               f"fenced by execution attempt: "
+                               f"{fenced_reason}")
+                    result.errors.append(message)
+                    result.error_details.append(
+                        ChangeError("FENCED_ATTEMPT", change.path,
+                                    message))
+                    break
             try:
                 if change.action == "delete":
                     write = self.runtime.execute(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from forge.models.fabric import ModelFabric
@@ -78,7 +78,12 @@ class DebuggerAgent(AgentExecutor):
     def __init__(self, root: str = ".", runtime: ToolRuntime | None = None, router: ModelRouter | None = None,
                  fabric: "ModelFabric | None" = None, approval_store=None,
                  model_policy=None,
-                 approval_callback: ApprovalCallback | None = None):
+                 approval_callback: ApprovalCallback | None = None,
+                 commit_guard: Callable[[], str] | None = None):
+        #: Execution-fence guard for repair writes (Session 10): a
+        #: fenced attempt's repair changes are refused before they
+        #: touch the filesystem. ``None`` keeps unfenced behavior.
+        self.commit_guard = commit_guard
         self.root = str(Path(root).resolve())
         self.runtime = runtime or create_default_runtime(PermissionManager(), self.root)
         if fabric is not None:
@@ -137,6 +142,7 @@ class DebuggerAgent(AgentExecutor):
             actor=self.name,
             task_id=task_id,
             approval_token_id=approval_token_id,
+            commit_guard=self.commit_guard,
         )
         self.repair_decisions.extend(result.decisions)
         if not result.success:

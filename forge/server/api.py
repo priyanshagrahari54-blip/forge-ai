@@ -88,6 +88,16 @@ class ApprovalDecideRequest(_Strict):
     approved: bool
 
 
+class SessionCreateRequest(_Strict):
+    """Optional challenge binding for a session exchange.
+
+    A thin client (G560) always sends a fresh challenge nonce so the
+    exchange is replay-resistant: a captured ``POST /auth/sessions``
+    cannot be re-presented because its nonce was consumed (or expired).
+    """
+    challenge_nonce: Optional[str] = Field(default=None, max_length=128)
+
+
 class KeyCreateRequest(_Strict):
     name: str = Field(min_length=1, max_length=64)
     role: str = Field(default="operator", max_length=32)
@@ -202,7 +212,13 @@ class _AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path == API_PREFIX + "/ping" or not path.startswith(API_PREFIX):
+        if (path == API_PREFIX + "/ping"
+                or path == API_PREFIX + "/auth/challenge"
+                or not path.startswith(API_PREFIX)):
+            # /auth/challenge is anonymous on purpose: it issues a
+            # single-use, time-bounded nonce that reveals nothing and
+            # is useless without the credential presented on the
+            # (authenticated) session exchange that follows it.
             return await call_next(request)
         request.state.request_id = (
             request.headers.get("x-request-id") or uuid4().hex)[:64]
@@ -395,16 +411,43 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - flat route table
         principal = _principal(request)
         return {"principal": principal.to_dict()}
 
+    @app.get(prefix + "/auth/challenge")
+    def auth_challenge(request: Request) -> Dict[str, Any]:
+        # Anonymous by design: the challenge is a single-use nonce that
+        # binds a subsequent session exchange; it reveals nothing and
+        # cannot be used without the credential that follows it.
+        # Rate-limited by client address (no principal yet).
+        client_host = (request.client.host if request.client else "?")
+        if not request.app.state.limiter.allow(
+                "challenges:%s" % client_host):
+            raise RateLimited("Rate limit exceeded; retry shortly.")
+        backend = _server(request)
+        return backend.auth.new_challenge()
+
     @app.post(prefix + "/auth/sessions")
-    def create_session(request: Request) -> Dict[str, Any]:
+    def create_session(request: Request,
+                       payload: Optional[SessionCreateRequest] = None
+                       ) -> Dict[str, Any]:
         # Any authenticated principal may open a session for *itself*;
         # the session inherits role and scopes, so it can never escalate.
         principal = _principal(request)
         _limit(request, principal, "sessions")
         backend = _server(request)
+        nonce = (payload.challenge_nonce if payload is not None else None)
+        if nonce is not None:
+            # A supplied challenge must be fresh and unused; consume it.
+            if not backend.auth.consume_challenge(nonce):
+                raise InvalidRequest(
+                    "Challenge is unknown, expired, or already used; "
+                    "request a fresh one from /auth/challenge.")
+        elif backend.config.require_challenge:
+            raise InvalidRequest(
+                "This server requires a challenge nonce for session "
+                "creation (POST /auth/challenge first).")
         session, token = backend.sessions.create(
             principal.name, principal.role, sorted(principal.scopes),
-            metadata={"via": principal.via})
+            metadata={"via": principal.via,
+                      "challenge": bool(nonce)})
         return {"session": session.to_dict(), "token": token}
 
     @app.get(prefix + "/auth/sessions")

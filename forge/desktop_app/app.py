@@ -876,6 +876,13 @@ class ForgeDesktopApp(tk.Tk):
         lines.append("")
         lines.append("RESOURCES")
         resources = status.get("resources", {})
+        governor = status.get("governor") or {}
+        gprofile = (governor or {}).get("profile") or {}
+        if gprofile:
+            lines.append(f"  governor: {gprofile.get('name', '?')}  "
+                         f"model_loading={'allowed' if gprofile.get('model_loading_allowed') else 'DENIED'}  "
+                         f"workers={gprofile.get('max_workers', '?')}  "
+                         f"network={gprofile.get('network_policy', '?')}")
         lines.append(f"  cpu: {resources.get('cpu_count', 0)}  "
                      f"memory: {resources.get('memory_total_mb', 0)}MB "
                      f"(available {resources.get('memory_available_mb', 0)}MB)")

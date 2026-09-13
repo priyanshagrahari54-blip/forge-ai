@@ -75,3 +75,47 @@ class CheckpointManager:
         self.cleanup(checkpoint)
     def cleanup(self, checkpoint: Checkpoint) -> None:
         shutil.rmtree(checkpoint.snapshot, ignore_errors=True)
+
+
+def observed_changes(checkpoint: Checkpoint) -> list[str]:
+    """Every non-excluded path that differs from the snapshot.
+
+    The snapshot recorded a hash for every file in the worktree before the
+    first write, so anything added, modified, or deleted since is
+    discoverable regardless of which tool did it. A ``terminal`` call
+    writes wherever its command says — trusting only the paths a tool
+    happened to declare would let such a write slip past verification and
+    rollback. Unreadable files that were present before count as changed.
+    """
+    root = checkpoint.root
+    recorded = dict(getattr(checkpoint, "files", {}) or {})
+    seen: set[str] = set()
+    observed: list[str] = []
+    current: dict[str, Path] = {}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            relative = path.relative_to(root)
+        except ValueError:  # pragma: no cover - rglob stays under root
+            continue
+        if is_excluded(relative.parts):
+            continue
+        rel = relative.as_posix()
+        current[rel] = path
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            # Unreadable now but present before: that is a change.
+            if rel in recorded:
+                seen.add(rel)
+                observed.append(rel)
+            continue
+        if recorded.get(rel) != digest:
+            seen.add(rel)
+            observed.append(rel)
+    for rel in recorded:
+        if rel not in seen and rel not in current:
+            seen.add(rel)
+            observed.append(rel)
+    return observed

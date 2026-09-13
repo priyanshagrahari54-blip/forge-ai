@@ -6537,7 +6537,15 @@ class ControlPlane:
                     record.id),
                 on_event=self._orchestration_sink(record.id),
                 control=control,
-                task_id=record.id)
+                task_id=record.id,
+                # Durable fenced-scheduler ledger for this project.
+                # One store per orchestration: terminal states and the
+                # event log survive restarts (inspectable via
+                # `forge tasks`), and deterministic step ids from two
+                # runs of the same requirement can never collide.
+                store_path=str(
+                    Path(project.root) / ".forge" / "tasks" /
+                    (record.id + ".db")))
             plan = orchestrator.build_plan(record.requirement, chain=chain)
             self.orchestrations.mutate(
                 record.id, stage="running",

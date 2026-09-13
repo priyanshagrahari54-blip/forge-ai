@@ -76,6 +76,12 @@ class ToolRuntime:
     #: denials use different reasons and stay absolute.
     APPROVAL_DENIAL = "Approval required before executing this operation."
 
+    #: Tool permission classes whose execution mutates state. These are
+    #: the ones an execution fence must stop; read-only tools keep
+    #: working for a fenced attempt's graceful shutdown.
+    MUTATING_PERMISSIONS = frozenset({"write_file", "delete_file",
+                                      "run_command"})
+
     def execute(
         self,
         tool_name: str,
@@ -87,6 +93,7 @@ class ToolRuntime:
         risk: str = "NONE",
         fingerprint: str = "",
         request_id: str = "",
+        commit_guard: Any = None,
         **kwargs: Any,
     ) -> ToolResult:
 
@@ -97,6 +104,25 @@ class ToolRuntime:
             )
 
         tool = self.tools[tool_name]
+
+        # Execution fence (Session 10): a mutating call from an attempt
+        # that has been fenced (timeout, cancel, superseded retry,
+        # restart) is refused before the handler runs. Read-only tools
+        # are exempt so a fenced attempt can still observe state while
+        # it winds down.
+        if commit_guard is not None \
+                and tool.permission in self.MUTATING_PERMISSIONS:
+            try:
+                fenced_reason = commit_guard()
+            except Exception as exc:
+                fenced_reason = f"commit guard errored: {exc}"
+            if fenced_reason:
+                return ToolResult.fail(
+                    tool_name,
+                    f"Fenced by execution attempt: {fenced_reason}",
+                    metadata={"fenced": True,
+                              "reason": fenced_reason[:500]},
+                )
 
         # Prefer the mode-aware policy when available (PermissionManager with
         # OperationMode); fall back to the original level check for custom

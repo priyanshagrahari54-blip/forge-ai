@@ -47,7 +47,7 @@ from typing import Any
 from uuid import uuid4
 
 from forge.agents.creation import (_is_self_admin, agent_identity,
-                                   spec_fingerprint)
+                                   package_integrity_error, spec_fingerprint)
 from forge.agents.specs import MEDIATED_TOOLS
 # _match_fs_pattern is private to the policy module; the engine
 # imports it deliberately so grant scopes match with byte-identical
@@ -245,6 +245,15 @@ class GatedAgentRuntime:
 
     def _require_enabled(self, package: Any) -> str:
         name = _name_of(package)
+        integrity = package_integrity_error(package)
+        if integrity:
+            # The spec is what the operator approved and the grants were
+            # bounded by. A package whose spec no longer matches its
+            # recorded fingerprint was edited outside the factory and
+            # must not run as "approved" — the creation engine resets it
+            # to created; refuse here too (covers raw-dict callers that
+            # bypass the engine's load path).
+            raise MediationError("INTEGRITY", integrity)
         state = _state_of(package)
         if state != "enabled":
             raise MediationError(
@@ -337,6 +346,7 @@ class GatedAgentRuntime:
     def execute_tool(self, package: Any, tool: str, run_id: str = "",
                      *, approver: str = "", approved: bool = False,
                      approval_token_id: str = "",
+                     commit_guard: Any = None,
                      **kwargs: Any) -> dict[str, Any]:
         """Run one tool call through allowlist, grants, gate, runtime.
 
@@ -431,7 +441,8 @@ class GatedAgentRuntime:
             result = self.tool_runtime.execute(
                 tool, approved=approved, actor=agent_identity(name),
                 task_id=run_id, approval_token_id=approval_token_id,
-                risk=risk, request_id=chain_id, **kwargs)
+                risk=risk, request_id=chain_id,
+                commit_guard=commit_guard, **kwargs)
         except Exception as exc:
             raise MediationError("TOOL_FAILED",
                                  "tool %r crashed: %s" % (tool, exc)
@@ -595,7 +606,8 @@ class GatedAgentRuntime:
             actor: str = "", approver: str = "",
             tool_calls: list[dict[str, Any]] | None = None,
             approved: bool = False,
-            approval_token_id: str = "") -> dict[str, Any]:
+            approval_token_id: str = "",
+            guard: Any = None) -> dict[str, Any]:
         """Run an enabled agent: fabric → tools → verification → memory.
 
         ``tool_calls`` (``{"tool": ..., "args": {...}}``) execute through
@@ -635,12 +647,15 @@ class GatedAgentRuntime:
         checkpoint_id = ""
         changed: list[str] = []
         tool_results: list[dict[str, Any]] = []
+        rolled_back = False
 
         def _fail_rollback() -> None:
-            # Restore tracked paths; with no declared paths (e.g. a bare
-            # terminal call), restore every modified pre-existing file —
-            # rollback never deletes unknown untracked files.
-            self.rollback(checkpoint, changed or None)
+            # Roll back what ACTUALLY changed, not just the paths a tool
+            # happened to declare: a terminal call writes wherever its
+            # command says, and a declared-paths-only rollback would let
+            # those writes survive a failed run.
+            nonlocal rolled_back
+            rolled_back = self._rollback_observed(checkpoint, changed)
 
         try:
             model_req = spec.get("model_requirements", {})
@@ -671,7 +686,8 @@ class GatedAgentRuntime:
                     result = self.execute_tool(
                         package, tool, run_id, approver=approver,
                         approved=approved,
-                        approval_token_id=approval_token_id, **args)
+                        approval_token_id=approval_token_id,
+                        commit_guard=guard, **args)
                 except MediationError:
                     _fail_rollback()
                     raise
@@ -688,6 +704,7 @@ class GatedAgentRuntime:
                 raise MediationError("VERIFICATION_FAILED",
                                      verification["reason"])
             memory_key = ""
+            memory_error = ""
             policy = spec.get("memory_policy", {})
             if isinstance(policy, dict) \
                     and policy.get("retention", "session") != "none":
@@ -696,8 +713,12 @@ class GatedAgentRuntime:
                     self.write_memory(package, memory_key,
                                       "requirement: %s\noutput: %s"
                                       % (requirement[:500], output[:1500]))
-                except MediationError:
+                except MediationError as exc:
+                    # A bookkeeping failure must not mask the run outcome —
+                    # but it must not be invisible either: the report says
+                    # the memory write did not land and why.
                     memory_key = ""
+                    memory_error = exc.code
             elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
             max_wall = _spec_float(limits, "max_wall_seconds", 600.0)
             if elapsed_ms / 1000.0 > max_wall:
@@ -724,7 +745,12 @@ class GatedAgentRuntime:
                                                 if capabilities
                                                 else "coding"),
                                   "model": response.get("model", ""),
-                                  "provider": response.get("provider", "")},
+                                  "provider": response.get("provider", ""),
+                                  "fallback": response.get(
+                                      "fallback", False),
+                                  "allow_fallback": bool(
+                                      model_req.get("allow_fallback",
+                                                    False))},
                         "tools": {"allowlist": list(
                             spec.get("tools", [])),
                             "calls": len(tool_results)},
@@ -733,9 +759,12 @@ class GatedAgentRuntime:
                                                     "not-required")}
                                   for entry in tool_results],
                         "checkpoint": {"id": checkpoint_id,
-                                       "rolled_back": False},
+                                       "rolled_back": rolled_back,
+                                       "changed": self._observed_list(
+                                           checkpoint, changed)},
                         "memory": {"namespace": "agent-%s" % name,
-                                   "key": memory_key},
+                                   "key": memory_key,
+                                   "error": memory_error},
                     },
                     "elapsed_ms": elapsed_ms, "at": time.time()}
         finally:
@@ -765,6 +794,34 @@ class GatedAgentRuntime:
         except Exception:
             return False
         return True
+
+    def _observed_list(self, checkpoint: Any,
+                       declared: list[str]) -> list[str]:
+        """Paths that actually differ from the pre-write snapshot, falling
+        back to the declared paths when the snapshot cannot be read."""
+        observed = self._observed_changes(checkpoint)
+        if observed is None:
+            return list(declared)
+        return observed
+
+    def _rollback_observed(self, checkpoint: Any,
+                           declared: list[str]) -> bool:
+        """Roll back what actually changed (snapshot diff), falling back to
+        the declared paths when the snapshot cannot be read."""
+        observed = self._observed_changes(checkpoint)
+        target = observed if observed is not None else (declared or None)
+        return self.rollback(checkpoint, target)
+
+    @staticmethod
+    def _observed_changes(checkpoint: Any) -> list[str] | None:
+        if checkpoint is None:
+            return None
+        try:
+            from forge.tools.checkpoint import observed_changes
+
+            return observed_changes(checkpoint)
+        except Exception:
+            return None
 
     # -- internals ---------------------------------------------------------
 
@@ -814,10 +871,46 @@ class GatedAgentRuntime:
             raise MediationError("MODEL_FAILED",
                                  getattr(response, "error", "")
                                  or "model fabric failed the request")
+        model = getattr(response, "model", "") or ""
+        provider = getattr(response, "provider", "") or ""
+        fallback, probe_error = self._probe_fallback(model, provider)
+        if fallback and not bool(model_req.get("allow_fallback", False)):
+            raise MediationError(
+                "MODEL_IDENTITY",
+                "the deterministic offline placeholder answered, but this "
+                "spec requires a real model (model_requirements."
+                "allow_fallback=false)"
+                + (": model identity could not be confirmed — %s"
+                   % probe_error if probe_error else ""))
         return {"text": getattr(response, "text", "")
                 or getattr(response, "output", ""),
-                "model": getattr(response, "model", "") or "",
-                "provider": getattr(response, "provider", "") or ""}
+                "model": model,
+                "provider": provider,
+                "fallback": fallback,
+                "probe_error": probe_error}
+
+    def _probe_fallback(self, model: str, provider: str) -> tuple[bool, str]:
+        """Decide whether a response came from the offline placeholder.
+
+        Fail closed: a provider named ``local`` is the placeholder by
+        construction; a fabric that has a model registry but cannot
+        account for the model that answered is impersonation (or an
+        unverifiable probe) and is treated as fallback. A fabric with no
+        registry at all is an opaque external fabric — there is nothing
+        to probe, so the response is judged on the provider name alone.
+        """
+        if (provider or "").strip().lower() == "local":
+            return True, ""
+        registry = getattr(self.fabric, "registry", None)
+        if registry is None:
+            return False, ""
+        try:
+            entry = registry.get(model)
+        except Exception as exc:
+            return True, ("model %r could not be confirmed in the fabric "
+                          "registry: %s: %s"
+                          % (model, type(exc).__name__, exc))
+        return bool(getattr(entry, "fallback", False)), ""
 
     def _verify_output(self, package: Any, output: str) -> dict[str, Any]:
         spec = _spec_of(package)
