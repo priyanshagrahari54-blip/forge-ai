@@ -547,6 +547,7 @@ function statCard(label, value, sub) {
 }
 
 async function renderDashboard() {
+  renderNetworkCatalog();
   const actor = state.session ? state.session.actor : "there";
   document.getElementById("d-greet").textContent = `${greet()}, ${actor}`;
   const load = async () => {
@@ -556,10 +557,14 @@ async function renderDashboard() {
       data = await api("/api/v1/dashboard");
     } catch (err) {
       if (stale(snap)) return;
+      document.getElementById("network-status").textContent = "Runtime unavailable";
+      document.getElementById("network-status").classList.remove("is-live");
+      document.getElementById("network-connections").textContent = "Connection health unavailable. Retrying automatically.";
       errorState(document.getElementById("d-stats"), "Unable to load status", err, load);
       return;
     }
     if (stale(snap)) return;
+    renderNetworkHealth(data);
     setApprBadge(data.approvals_waiting || 0);
     const stats = document.getElementById("d-stats");
     stats.innerHTML = "";
@@ -3968,4 +3973,49 @@ function renderAgentBuilderView() {
       }
     });
   load();
+}
+
+/* Architecture links are illustrative; runtime numbers come only from the API. */
+function renderNetworkHealth(data) {
+  const workers = data.workers || {};
+  const models = data.models || {};
+  const label = document.getElementById("network-status");
+  const box = document.getElementById("network-connections");
+  if (!label || !box) return;
+  label.textContent = workers.running === true ? "● Dispatcher live" : workers.running === false ? "○ Dispatcher stopped" : "Dispatcher unknown";
+  label.classList.toggle("is-live", workers.running === true);
+  box.replaceChildren();
+  const rows = [
+    ["01", "Project", state.session ? state.session.project_id : "No session", "#/projects"],
+    ["02", "Model Fabric", `${models.healthy ?? "—"} healthy · ${models.unavailable ?? "—"} unavailable`, "#/models"],
+    ["03", "Agent workers", `${workers.busy ?? "—"} busy / ${workers.max_per_project ?? "—"} capacity`, "#/agents"],
+    ["04", "Approval queue", `${data.approvals_waiting ?? "—"} waiting for review`, "#/approvals"],
+  ];
+  for (const [number, title, detail, href] of rows) {
+    const row = el("a", "connection-row"); row.href = href;
+    row.appendChild(el("span", "connection-number", number));
+    const text = el("div"); text.append(el("strong", null, title), el("small", null, detail));
+    row.append(text, el("span", "connection-arrow", "↗")); box.appendChild(row);
+  }
+}
+async function renderNetworkCatalog() {
+  const snap = snapEpoch();
+  const box = document.getElementById("network-agents");
+  if (!box) return;
+  try {
+    const payload = await api("/api/v1/agents");
+    if (stale(snap)) return;
+    box.replaceChildren();
+    const agents = payload.agents || [];
+    if (!agents.length) box.appendChild(el("span", "muted", "No agents registered."));
+    for (const agent of agents.slice(0, 6)) {
+      const card = el("a", "roster-agent"); card.href = "#/agents";
+      card.append(el("span", "roster-avatar", String(agent.name || "A").slice(0, 1).toUpperCase()),
+        el("strong", null, agent.name || agent.role || "Agent"),
+        el("small", null, agent.simulated ? "Simulated" : "Registered"));
+      card.title = (agent.capabilities || []).join(", "); box.appendChild(card);
+    }
+  } catch (_) {
+    if (!stale(snap)) box.textContent = "Agent catalog unavailable. Open Agents to retry.";
+  }
 }

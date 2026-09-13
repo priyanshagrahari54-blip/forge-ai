@@ -19,7 +19,7 @@
       </svg>
       <div class="brand-text">
         <span class="brand-name">FORGE</span>
-        <span class="brand-sub">Autonomous Engineering</span>
+        <span class="brand-sub">MULTI-AGENT WORKSPACE</span>
       </div>
     </div>
     <nav id="nav" aria-label="Primary">
@@ -129,6 +129,28 @@
         <button id="logout" class="btn small hidden">Sign out</button>
       </div>
     </header>
+    <section class="voice-hub" aria-label="Hands-free command center">
+      <div class="voice-heading"><span class="voice-eyebrow">FORGE / AMBIENT WORKSPACE</span><a href="#/voice">Voice permissions ↗</a></div>
+      <div class="voice-grid">
+        <div class="voice-presence">
+          <div id="hf-orb" class="voice-orb" aria-hidden="true"><span>F</span></div>
+          <span class="voice-eyebrow">YOUR VOICE. YOUR WORKSPACE.</span>
+          <h2>Speak it. Forge it.</h2>
+          <p id="hf-status" role="status">Microphone off · You're in control</p>
+          <div class="voice-controls"><button id="hf-toggle" class="btn primary" aria-pressed="false">Enable hands-free</button><label><input id="hf-sound" type="checkbox" checked> Spoken replies</label></div>
+          <p class="voice-note">Listens while this page is open. Pauses to speak and process commands. Say “stop listening” to turn off. Your browser may send audio to its speech service. Tasks still require confirmation and policy approval.</p>
+        </div>
+        <div class="voice-workspace">
+          <div class="voice-heading"><h3>Conversation</h3><span class="voice-eyebrow">LIVE TRANSCRIPT</span></div>
+          <div id="hf-log" class="voice-log" role="log" aria-live="polite"><p class="muted">Try “summarize this project” or “review the code”. Forge will ask before creating a task.</p></div>
+          <p id="hf-interim" class="muted"></p>
+          <form id="hf-form" class="voice-input"><input id="hf-text" aria-label="Command" maxlength="2000" placeholder="Or type a command…" required><button class="btn" type="submit">Send ↗</button></form>
+          <div class="voice-links"><span id="hf-browser">Browser speech · checking</span><span id="hf-api">Control plane · not checked</span><span id="hf-project">Project · no session</span></div>
+          <div class="voice-heading"><h3>Agent activity</h3><a href="#/models">Model connections ↗</a></div>
+          <div id="hf-activity" class="voice-activity">No voice task yet. Agent stages and execution details appear here.</div>
+        </div>
+      </div>
+    </section>
     <main id="view" tabindex="-1"></main>
   </div>
 </div>
@@ -144,7 +166,7 @@
         </svg>
         <div class="brand-text">
           <span class="brand-name">FORGE</span>
-          <span class="brand-sub">Autonomous Engineering</span>
+          <span class="brand-sub">MULTI-AGENT WORKSPACE</span>
         </div>
       </div>
       <h1>Autonomous engineering,<br>under your control.</h1>
@@ -207,10 +229,27 @@
   <div class="page-head hero">
     <div>
       <div id="d-greet" class="hero-greet">Forge</div>
-      <h2 class="hero-title">Forge is ready to build.</h2>
+      <h2 class="hero-title">One workspace. An entire AI team.</h2>
     </div>
     <a class="btn primary" href="#/tasks" data-action="new-task">New task →</a>
   </div>
+  <section class="network-panel" aria-labelledby="network-title">
+    <div class="network-header"><div><span class="voice-eyebrow">ORCHESTRATION / 01</span><h3 id="network-title">Connected intelligence</h3></div><span id="network-status" class="network-pill">Checking runtime…</span></div>
+    <div class="network-layout">
+      <div class="network-canvas">
+        <div class="network-caption">WORKFLOW MAP <span>Connections show architecture, not live traffic</span></div>
+        <svg class="network-wires" viewBox="0 0 800 400" preserveAspectRatio="none" aria-hidden="true"><path d="M160 90 C300 90 240 200 400 200 M640 90 C500 90 560 200 400 200 M160 310 C300 310 240 200 400 200 M640 310 C500 310 560 200 400 200"/><circle cx="400" cy="200" r="86"/><circle cx="400" cy="200" r="112"/></svg>
+        <a class="agent-node node-planner" href="#/agents"><span class="agent-glyph">⌘</span><div><strong>Planner</strong><small>Understand &amp; decompose</small></div><span class="node-tag">01</span></a>
+        <a class="agent-node node-coder" href="#/agents"><span class="agent-glyph">&lt;/&gt;</span><div><strong>Coder</strong><small>Implement &amp; refine</small></div><span class="node-tag">02</span></a>
+        <a class="network-core" href="#/orchestrations"><span class="core-icon">✦</span><strong>FORGE</strong><small>Supervisor</small></a>
+        <a class="agent-node node-tester" href="#/agents"><span class="agent-glyph">✓</span><div><strong>Tester</strong><small>Execute &amp; verify</small></div><span class="node-tag">03</span></a>
+        <a class="agent-node node-reviewer" href="#/agents"><span class="agent-glyph">◇</span><div><strong>Reviewer</strong><small>Review &amp; secure</small></div><span class="node-tag">04</span></a>
+        <div class="network-footer"><span>◇ Policy-gated execution</span><a href="#/approvals">Review approvals ↗</a></div>
+      </div>
+      <aside class="network-inspector" aria-label="Runtime connections"><span class="voice-eyebrow">RUNTIME CONNECTIONS</span><h4>Inside your workspace</h4><div id="network-connections" aria-live="polite">Loading connection health…</div><a class="network-explore" href="#/models">Explore Model Fabric <span>↗</span></a></aside>
+    </div>
+    <div class="network-roster"><div><span class="voice-eyebrow">AGENT CATALOG</span><p>Available specialists</p></div><div id="network-agents">Loading catalog…</div></div>
+  </section>
   <div id="d-autonomy" class="chip-row" aria-label="Autonomy and counters"></div>
   <div id="d-active"></div>
   <div class="section-header"><h3>System health</h3></div>
@@ -850,5 +889,6 @@
 </template>
 
 <script src="/app.js"></script>
+<script src="/handsfree.js"></script>
 </body>
 </html>
