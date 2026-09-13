@@ -22,8 +22,8 @@ from helpers_a81 import (  # noqa: E402
 
 from forge.runtime.model_runtime import (  # noqa: E402
     CancelReason, CancellationToken, ModelRuntimeError, RuntimeCancelledError,
-    RuntimeChunk, RuntimeRequest, RuntimeResponse, RuntimeStream,
-    RuntimeTimeoutError,
+    RuntimeChunk, RuntimeConfig, RuntimeRequest, RuntimeResponse,
+    RuntimeStream, RuntimeTimeoutError,
 )
 
 
@@ -79,8 +79,29 @@ def test_request_timeout_is_clamped_to_the_configured_bound():
                            max_timeout_seconds=3.0)
     assert runtime.config.clamp_timeout(None) == 1.0
     assert runtime.config.clamp_timeout(999.0) == 3.0
-    assert runtime.config.clamp_timeout(-5.0) == 1.0
     assert runtime.config.clamp_timeout(0.5) == 0.5
+    assert runtime.config.clamp_timeout(3.0) == 3.0
+
+
+def test_non_finite_and_non_positive_timeouts_are_rejected_not_reinterpreted():
+    """A nonsense timeout must fail loudly, not be silently swapped out.
+
+    ``nan`` used to clamp to 1ms, making every request time out instantly
+    with no explanation, and ``-5``/``0`` used to be replaced by the
+    configured default so the caller's mistake disappeared. Both are now
+    refused with a message that names the offending value.
+    """
+    config = RuntimeConfig(timeout_seconds=1.0, max_timeout_seconds=3.0)
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError) as excinfo:
+            config.clamp_timeout(bad)
+        assert "finite" in str(excinfo.value)
+    for bad in (0.0, -5.0, -0.001):
+        with pytest.raises(ValueError) as excinfo:
+            config.clamp_timeout(bad)
+        assert "positive" in str(excinfo.value)
+    # The configured default is still the only implicit value allowed.
+    assert config.clamp_timeout(None) == 1.0
 
 
 # -- bounded timeouts --------------------------------------------------------

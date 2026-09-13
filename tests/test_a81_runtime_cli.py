@@ -271,3 +271,119 @@ def test_runtime_config_error_exits_two(tmp_path, capsys):
     }), encoding="utf-8")
     assert run_cli(["forge", "runtime", "status"]) == 2
     assert "Runtime configuration error" in capsys.readouterr().err
+
+
+# -- forge runtime metrics ---------------------------------------------------
+
+
+def test_runtime_metrics_reports_an_empty_window_honestly(capsys):
+    assert run_cli(["forge", "runtime", "metrics", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["requests"] == 0
+    # An empty window reports None, not a fabricated 0.0 that reads "instant".
+    assert payload["success_rate"] is None
+    assert payload["latency_ms"]["p50"] is None
+    assert payload["error_kinds"] == {}
+
+
+def test_runtime_metrics_text_output(capsys):
+    assert run_cli(["forge", "runtime", "metrics"]) == 0
+    out = capsys.readouterr().out
+    assert "Runtime metrics" in out
+    assert "success rate: n/a" in out
+    assert "p50=None" in out
+
+
+def test_runtime_metrics_can_be_scoped_to_a_backend(capsys):
+    assert run_cli(["forge", "runtime", "metrics", "--backend", "native",
+                    "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["backend"] == "native"
+    assert payload["requests"] == 0
+
+
+def test_runtime_metrics_never_contains_prompt_text(capsys):
+    run_cli(["forge", "runtime", "metrics", "--json"])
+    assert "prompt" not in capsys.readouterr().out
+
+
+# -- forge runtime test ------------------------------------------------------
+
+
+def test_runtime_self_test_passes_every_contract_check(capsys):
+    """The self-check runs real runtime code paths and must pass them all."""
+    assert run_cli(["forge", "runtime", "test"]) == 0
+    out = capsys.readouterr().out
+
+    assert "Runtime self-check" in out
+    assert "FAIL" not in out
+    # The summary must agree with the individual results, not overstate them.
+    summary = next(line for line in out.splitlines()
+                   if "contract checks passed" in line)
+    passed, total = summary.strip().split()[0].split("/")
+    assert passed == total
+    assert int(total) >= 10
+
+
+def test_runtime_self_test_is_honest_about_real_inference(capsys):
+    """Passing contract checks must not be presented as working inference."""
+    assert run_cli(["forge", "runtime", "test"]) == 0
+    out = capsys.readouterr().out
+
+    assert "Real inference backends" in out
+    # On a default install no backend can serve a real model, and the command
+    # says so instead of implying the loopback checks proved otherwise.
+    assert "No backend can serve a real model right now" in out
+    assert "loopback" in out
+
+
+def test_runtime_self_test_json(capsys):
+    assert run_cli(["forge", "runtime", "test", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["passed"] == payload["total"]
+    assert payload["total"] >= 10
+    assert all(check["ok"] for check in payload["checks"])
+    # Every check names what it observed, so a failure is diagnosable.
+    for check in payload["checks"]:
+        assert check["name"]
+        assert "detail" in check
+    assert payload["ready_backends"] == []
+
+
+def test_runtime_self_test_covers_the_core_guarantees(capsys):
+    run_cli(["forge", "runtime", "test", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    names = " | ".join(check["name"] for check in payload["checks"])
+
+    for expected in ("timeout", "cancel", "protocol", "redact", "stream",
+                     "duplicate", "metrics", "in-flight"):
+        assert expected in names, expected
+
+
+def test_runtime_self_test_never_leaks_the_secret_it_plants(capsys):
+    """The check plants a key-shaped string and must show it redacted."""
+    run_cli(["forge", "runtime", "test"])
+    out = capsys.readouterr().out
+    assert "sk-abcdefgh1234567890" not in out
+
+
+def test_runtime_self_test_does_not_touch_the_network(capsys):
+    """Default config disables network; the self-check must not need it."""
+    run_cli(["forge", "runtime", "backends", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert all(info["available"] is False for info in payload["backends"]
+               if info["requires_network"])
+
+    assert run_cli(["forge", "runtime", "test", "--json"]) == 0
+    json.loads(capsys.readouterr().out)
+
+
+def test_runtime_subcommands_are_all_listed(capsys):
+    # ``run_cli`` swallows SystemExit, so assert on the rendered help.
+    run_cli(["forge", "runtime", "--help"])
+    out = capsys.readouterr().out
+    for name in ("status", "models", "health", "backends", "metrics", "test",
+                 "load", "unload"):
+        assert name in out, name

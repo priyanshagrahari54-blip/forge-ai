@@ -107,12 +107,16 @@ class RuntimeProvider:
         request = self._request(
             prompt, context=context, task=task, instructions=instructions,
             max_output_tokens=max_output_tokens, temperature=temperature)
-        stream = self.runtime.stream(request)
         try:
+            stream = self.runtime.stream(request)
             for chunk in stream:
                 if chunk.text:
                     yield chunk.text
         except ModelRuntimeError as exc:
+            # Acquiring the stream can fail too (closed runtime, unknown
+            # backend, unknown model). Wrapping only the iteration would let
+            # a ModelRuntimeError escape a provider whose contract is to
+            # raise RuntimeError, which the fabric's failover understands.
             raise RuntimeError(
                 f"Runtime streaming failed: {exc}") from exc
 
