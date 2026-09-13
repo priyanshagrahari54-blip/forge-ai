@@ -60,12 +60,17 @@ SCOPES: FrozenSet[str] = frozenset({
     "health:read", "status:read",
     "notifications:read", "notifications:write",
     "sessions:write", "keys:write", "recovery:read",
+    # Session 11 -- model fabric and inference. Reading the model registry
+    # is separate from controlling residency, which is separate from
+    # spending compute on a generation. A viewer gets read-only; only an
+    # operator/admin may verify, load, unload, or run a generation.
+    "models:read", "models:control", "inference:run", "inference:control",
 })
 
 _READ_SCOPES: FrozenSet[str] = frozenset({
     "tasks:read", "approvals:read", "projects:read", "events:read",
     "logs:read", "results:read", "health:read", "status:read",
-    "notifications:read", "recovery:read"})
+    "notifications:read", "recovery:read", "models:read"})
 
 #: Role → scopes. Roles are closed; unknown roles fail at key creation.
 ROLE_SCOPES: Dict[str, FrozenSet[str]] = {
@@ -102,6 +107,19 @@ API_OPERATIONS: Dict[str, str] = {
     "key.create": "keys:write",
     "key.revoke": "keys:write",
     "recovery.read": "recovery:read",
+    # Session 11 -- typed model/inference operations. This is a closed
+    # set: no operation here (or anywhere else in the table) accepts a
+    # command, script, argv, or code payload.
+    "models.list": "models:read",
+    "models.status": "models:read",
+    "models.verify": "models:control",
+    "models.load": "models:control",
+    "models.unload": "models:control",
+    "inference.generate": "inference:run",
+    "inference.stream": "inference:run",
+    "inference.stream_events": "inference:run",
+    "inference.cancel": "inference:control",
+    "inference.status": "status:read",
 }
 
 #: Request fields that would turn the API into an execution surface.

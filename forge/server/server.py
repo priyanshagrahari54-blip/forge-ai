@@ -49,6 +49,10 @@ from forge.server.errors import (
 )
 from forge.server.events import EventStore
 from forge.server.health import HealthMonitor
+from forge.server.inference import (
+    InferenceServiceConfig,
+    ServerInferenceService,
+)
 from forge.server.logs import LogStore
 from forge.server.models import (
     MAX_REQUIREMENT_CHARS,
@@ -92,6 +96,11 @@ class ServerConfig:
     fabric: Any = None
     #: Task executor; None uses the real SupervisorExecutor.
     executor: Any = None
+    #: Server inference service configuration (Session 11). ``None`` builds
+    #: one from ``FORGE_SERVER_INFERENCE_*`` — which is *disabled* unless an
+    #: operator opts in. Nothing is discovered, loaded or contacted until
+    #: then; the typed inference routes answer 503 INFERENCE_NOT_CONFIGURED.
+    inference: Any = None
     max_workers: int = 4
     #: Resource governor profile: "" (auto-detect) | default | g560.
     #: Distinct from ``profile`` above, which is the A33 *permission*
@@ -154,6 +163,7 @@ class ServerConfig:
             session_ttl=env_float("FORGE_SERVER_SESSION_TTL", 12 * 3600),
             local_dev_mode=os.environ.get(
                 "FORGE_SERVER_AUTH_MODE", "local-dev") != "production",
+            inference=InferenceServiceConfig.from_env(),
         )
         for key, value in overrides.items():
             setattr(config, key, value)
@@ -227,6 +237,21 @@ class ForgeServer:
         self.health_monitor = HealthMonitor(self)
         self.recovery = RecoveryService(self)
 
+        # -- inference service (Session 11) -----------------------------------
+        # Shares the server's Resource Governor and A33 audit log, so a
+        # generation is subject to exactly the same resource verdicts (G560
+        # denies local model loading) and is recorded in the same audit trail
+        # as every other decision. Built lazily: constructing the server never
+        # touches a model directory or the network.
+        inference_config = self.config.inference
+        if inference_config is None:
+            inference_config = InferenceServiceConfig.from_env()
+        if not getattr(inference_config, "resource_profile", ""):
+            inference_config.resource_profile = self.config.resource_profile
+        self.inference = ServerInferenceService(
+            config=inference_config, governor=self.governor,
+            audit=self.audit, emit=self.emit)
+
         # -- in-memory, per-boot state ------------------------------------------------
         self._controls: Dict[str, Any] = {}
         self._controls_lock = threading.Lock()
@@ -289,6 +314,7 @@ class ForgeServer:
         self.started_at = time.time()
         self.pool.start()
         self.scheduler.start()
+        self.inference.start()
         self._started = True
         self.emit("", "", "server.started",
                   {"boot_id": self.boot_id,
@@ -304,6 +330,12 @@ class ForgeServer:
         """Stop the scheduler and worker pool. Durable state is untouched."""
         self._stopping.set()
         self.scheduler.stop()
+        try:
+            # Cancel in-flight generations and drop resident models before
+            # the worker pool goes away; never blocks shutdown on a backend.
+            self.inference.stop()
+        except Exception:
+            pass
         self.pool.shutdown(wait=wait)
         if self._started:
             self.emit("", "", "server.stopped",
@@ -781,6 +813,7 @@ class ForgeServer:
             "active_sessions": self.sessions.count_active(),
             "pending_approvals": len(self.approvals.pending()),
             "unread_notifications": self.notifications.unread_count(),
+            "inference": self.inference.status(),
         }
 
     def health(self) -> Dict[str, Any]:
