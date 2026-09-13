@@ -2990,8 +2990,10 @@ class ModelRuntime:
     """
 
     def __init__(self, config: Optional[RuntimeConfig] = None,
-                 backends: Optional[Sequence[ModelBackend]] = None) -> None:
+                 backends: Optional[Sequence[ModelBackend]] = None,
+                 governor: Optional["ResourceGovernor"] = None) -> None:
         self.config = (config or RuntimeConfig()).validate()
+        self._governor: Optional["ResourceGovernor"] = governor
         self._backends: Dict[str, ModelBackend] = {}
         self._models: Dict[str, RuntimeModel] = {}
         self._in_flight: Dict[str, _InFlight] = {}
@@ -3016,7 +3018,9 @@ class ModelRuntime:
 
     @classmethod
     def from_defaults(cls, config: Optional[RuntimeConfig] = None,
-                      *, load_config: bool = True) -> "ModelRuntime":
+                      *, load_config: bool = True,
+                      governor: Optional["ResourceGovernor"] = None
+                      ) -> "ModelRuntime":
         """Build a runtime from configuration. Never touches the network.
 
         Raises ``ValueError`` if the configured default backend is not one of
@@ -3025,7 +3029,7 @@ class ModelRuntime:
         """
         configuration = config or (RuntimeConfig.load() if load_config
                                    else RuntimeConfig())
-        runtime = cls(configuration)
+        runtime = cls(configuration, governor=governor)
         for name in configuration.backends:
             runtime.register_backend(create_backend(name, configuration))
         if configuration.default_backend not in runtime._backends:
@@ -3233,11 +3237,32 @@ class ModelRuntime:
         raise ModelNotFoundError(
             "Unknown model {0!r}. Run discovery first.".format(wanted))
 
+    def set_governor(self, governor: Optional["ResourceGovernor"]) -> None:
+        """Attach (or clear) the unified resource governor.
+
+        A governor that denies local model loading (the g560 profile)
+        makes ``load()`` refuse with a capacity error before any
+        backend is touched — a thin client never becomes an inference
+        machine.
+        """
+        self._governor = governor
+
+    @property
+    def governor(self) -> Optional["ResourceGovernor"]:
+        return self._governor
+
     def load(self, model_id: str, backend: str = "",
              timeout: Optional[float] = None) -> RuntimeModel:
         """Load a model through its backend's loading abstraction."""
         self._check_open()
         model = self.resolve_model(model_id, backend)
+        if self._governor is not None:
+            ok, reason = self._governor.check_model_load(
+                int(getattr(model, "size_bytes", 0) or 0))
+            if not ok:
+                raise RuntimeCapacityError(
+                    "Governor refused local model load for {0}: {1}"
+                    .format(model.model_id, reason))
         instance = self.get_backend(model.backend)
         token = CancellationToken()
         started = time.perf_counter()
@@ -3786,6 +3811,8 @@ class ModelRuntime:
             "resources": self.resources().to_dict(),
             "counters": counters,
             "in_flight": self.in_flight(),
+            "governor": (self._governor.snapshot()
+                         if self._governor is not None else None),
         }
 
     def history(self, limit: int = 50) -> List[Dict[str, Any]]:

@@ -390,6 +390,7 @@ def _build_runtime(args):
     access stays off unless explicitly requested, so these commands are safe
     to run anywhere.
     """
+    from forge.core.resource_governor import ResourceGovernor, select_profile
     from forge.runtime.model_runtime import (BUILTIN_BACKENDS, ModelRuntime,
                                              RuntimeConfig)
 
@@ -409,7 +410,11 @@ def _build_runtime(args):
             config.backends = tuple(list(config.backends) + [backend])
         config.default_backend = backend
     config.validate()
-    return ModelRuntime.from_defaults(config)
+    # Unified resource governor: explicit --profile > FORGE_RESOURCE_PROFILE
+    # > auto-detection. A g560-class device refuses local model loads.
+    profile = select_profile(getattr(args, "profile", "") or "")
+    governor = ResourceGovernor(profile)
+    return ModelRuntime.from_defaults(config, governor=governor)
 
 
 def _runtime_status_text(status) -> str:
@@ -442,6 +447,14 @@ def _runtime_status_text(status) -> str:
                      f"timeouts={item['timeouts']}")
         if item["error"]:
             lines.append(f"      error: {item['error']}")
+    governor = status.get("governor")
+    if governor:
+        gprofile = governor["profile"]
+        lines.append(
+            f"  governor: {gprofile['name']} "
+            f"(workers={gprofile['max_workers']}, "
+            f"model_loading={'allowed' if gprofile['model_loading_allowed'] else 'DENIED'}, "
+            f"network={gprofile['network_policy']})")
     resources = status["resources"]
     lines.append("  resources:")
     lines.append(f"    cpu={resources['cpu_count']} "
@@ -2141,6 +2154,10 @@ def main() -> None:
         target.add_argument(
             "--json", action="store_true", default=argparse.SUPPRESS,
             help="Emit machine-readable JSON")
+        target.add_argument(
+            "--profile", default=argparse.SUPPRESS,
+            help="Resource profile: default|g560 "
+                 "(default: auto-detect; FORGE_RESOURCE_PROFILE)")
 
     _runtime_common(runtime_parser)
     runtime_subs = runtime_parser.add_subparsers(dest="runtime_subcommand")

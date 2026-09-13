@@ -93,6 +93,10 @@ class ServerConfig:
     #: Task executor; None uses the real SupervisorExecutor.
     executor: Any = None
     max_workers: int = 4
+    #: Resource governor profile: "" (auto-detect) | default | g560.
+    #: Distinct from ``profile`` above, which is the A33 *permission*
+    #: profile. The resource profile can only reduce ``max_workers``.
+    resource_profile: str = ""
     max_tasks_per_project: int = 1
     default_max_retries: int = 2
     retry_backoff_seconds: float = 2.0
@@ -131,6 +135,7 @@ class ServerConfig:
             port=env_int("FORGE_SERVER_PORT", 8300),
             bootstrap_token=os.environ.get("FORGE_SERVER_TOKEN", ""),
             profile=os.environ.get("FORGE_SERVER_PROFILE", "assisted"),
+            resource_profile=os.environ.get("FORGE_RESOURCE_PROFILE", ""),
             max_workers=env_int("FORGE_SERVER_MAX_WORKERS", 4),
             max_tasks_per_project=env_int(
                 "FORGE_SERVER_MAX_TASKS_PER_PROJECT", 1),
@@ -205,7 +210,11 @@ class ForgeServer:
             self.executor = SupervisorExecutor(fabric=self.fabric)
 
         # -- background machinery ---------------------------------------------------
-        self.pool = WorkerPool(max_workers=self.config.max_workers)
+        from forge.core.resource_governor import ResourceGovernor, select_profile
+        self.governor = ResourceGovernor(select_profile(
+            self.config.resource_profile))
+        self.pool = WorkerPool(
+            max_workers=self.governor.clamp_workers(self.config.max_workers))
         self.scheduler = Scheduler(
             self, poll_interval=self.config.poll_interval)
         self.health_monitor = HealthMonitor(self)
@@ -749,6 +758,7 @@ class ForgeServer:
             "uptime_seconds": (time.time() - self.started_at
                                if self.started_at else 0.0),
             "profile": self.config.profile,
+            "resource_profile": self.governor.profile.to_dict(),
             "workers": {
                 "max": self.pool.max_workers,
                 "busy": self.pool.busy,

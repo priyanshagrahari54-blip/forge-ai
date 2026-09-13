@@ -352,9 +352,15 @@ class DesktopBackend:
         if self.runtime is not None:
             return self.runtime
         try:
+            from forge.core.resource_governor import ResourceGovernor
             from forge.runtime.model_runtime import ModelRuntime
 
-            self.runtime = ModelRuntime.from_defaults()
+            # Auto-detect the device class: a 2 GB thin client (g560)
+            # refuses local model loading and clamps concurrency, so the
+            # desktop never becomes an inference machine. An explicit
+            # FORGE_RESOURCE_PROFILE always wins.
+            self.runtime = ModelRuntime.from_defaults(
+                governor=ResourceGovernor())
         except Exception as exc:
             raise BackendError(
                 f"Could not start the model runtime: {exc}") from exc
@@ -448,8 +454,15 @@ class DesktopBackend:
         except Exception as exc:
             raise BackendError(f"Runtime summary failed: {exc}") from exc
         resources = status.get("resources", {})
+        governor = status.get("governor") or {}
+        gprofile = (governor or {}).get("profile", {}) or {}
         return redact_payload({
             "version": status.get("runtime", {}).get("version", ""),
+            "resource_profile": gprofile.get("name", ""),
+            "model_loading_allowed": bool(
+                gprofile.get("model_loading_allowed", True)),
+            "concurrency_capacity": int(
+                gprofile.get("max_workers", 0) or 0),
             "default_backend": status.get("runtime", {})
                 .get("config", {}).get("default_backend", ""),
             "allow_network": bool(status.get("runtime", {})
