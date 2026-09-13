@@ -91,6 +91,21 @@ class ModelFabric:
         self.default_model = config.default_model if config else None
         self.preferred_provider = config.preferred_provider if config else None
         self.model_policy = model_policy
+        #: Optional long-term memory (A81): when attached, every routed-call
+        #: outcome is also recorded as model-performance memory. ``None``
+        #: (default) preserves exact legacy behavior.
+        self.memory = None
+        self.memory_project = ""
+
+    def attach_memory(self, memory, *, project: str = "") -> "ModelFabric":
+        """Record model-performance memory on each routed feedback event.
+
+        ``memory`` is a :class:`forge.memory.LongTermMemory`; ``project``
+        scopes the records. Attaching is optional and purely additive.
+        """
+        self.memory = memory
+        self.memory_project = project or ""
+        return self
 
     # -- construction ----------------------------------------------------
 
@@ -544,6 +559,25 @@ class ModelFabric:
             output_tokens=feedback.output_tokens,
             error=feedback.error,
         )
+        if self.memory is not None and feedback.model:
+            try:
+                from forge.memory.integrations import remember_model_performance
+
+                remember_model_performance(
+                    self.memory, self.memory_project or "default",
+                    feedback.model, provider=feedback.provider,
+                    capability=feedback.capability,
+                    success=feedback.success,
+                    latency_ms=feedback.latency_ms or 0.0,
+                    tokens=(feedback.input_tokens or 0)
+                    + (feedback.output_tokens or 0),
+                    error=feedback.error,
+                    source="model-router",
+                )
+            except Exception:
+                # Memory is best-effort: a memory failure must never break
+                # routing or the calling pipeline.
+                pass
 
     def record_result(self, model: str, success: bool, **kwargs: Any) -> None:
         """Alias for :meth:`record_feedback` (master-spec naming)."""

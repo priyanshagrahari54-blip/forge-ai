@@ -109,6 +109,11 @@ class ForgeDesktopApp(tk.Tk):
                                 command=self._show_runtime_async)
         menubar.add_cascade(label="Models", menu=models_menu)
 
+        agents_menu = tk.Menu(menubar, tearoff=False)
+        agents_menu.add_command(label="Agent Manager...",
+                                command=self._open_agent_manager)
+        menubar.add_cascade(label="Agents", menu=agents_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Setup guide", command=self._show_setup)
         help_menu.add_command(label="About", command=self._show_about)
@@ -203,6 +208,33 @@ class ForgeDesktopApp(tk.Tk):
         self._report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         report_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._notebook.add(report_tab, text="Report")
+
+        memory_tab = ttk.Frame(self._notebook, padding=4)
+        memory_controls = ttk.Frame(memory_tab)
+        memory_controls.pack(fill=tk.X)
+        self._memory_search_var = tk.StringVar()
+        self._memory_search = ttk.Entry(memory_controls,
+                                        textvariable=self._memory_search_var)
+        self._memory_search.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(memory_controls, text="Search",
+                   command=self._search_memory).pack(side=tk.LEFT, padx=2)
+        ttk.Button(memory_controls, text="Refresh",
+                   command=self._refresh_memory).pack(side=tk.LEFT, padx=2)
+        ttk.Button(memory_controls, text="Delete",
+                   command=self._delete_selected_memory).pack(side=tk.LEFT,
+                                                             padx=2)
+        self._memory_list = tk.Listbox(memory_tab, activestyle="dotbox",
+                                       height=14)
+        self._memory_list.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._memory_list.bind("<<ListboxSelect>>",
+                               self._on_memory_selected)
+        self._memory_detail = tk.Text(memory_tab, wrap=tk.WORD,
+                                      state=tk.DISABLED, height=12,
+                                      bg="#0d1117", fg="#e6edf3",
+                                      insertbackground="#e6edf3")
+        self._memory_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._memory_ids: list[str] = []
+        self._notebook.add(memory_tab, text="Memory")
         paned.add(right, weight=3)
 
     def _build_statusbar(self) -> None:
@@ -548,6 +580,113 @@ class ForgeDesktopApp(tk.Tk):
         text.insert(tk.END, body)
         text.configure(state=tk.DISABLED)
 
+    # -- memory viewer ---------------------------------------------------------
+
+    def _memory_ready(self) -> bool:
+        return bool(self.backend.running and self._current_project_id())
+
+    def _refresh_memory(self) -> None:
+        self._memory_ids = []
+        self._memory_list.delete(0, tk.END)
+        if not self._memory_ready():
+            self._memory_list.insert(tk.END, "(start a project to view memory)")
+            return
+        project = self._current_project_id()
+        try:
+            records = self.backend.list_memory(project, limit=200)
+        except BackendError as exc:
+            self._memory_list.insert(tk.END, f"error: {exc}")
+            self._set_status(f"Memory: {exc}")
+            return
+        for record in records:
+            label = (f"[{record['type']}] {record['summary'][:80] or record['content'][:80]} "
+                     f"conf={record['confidence']:.2f} imp={record['importance']:.2f}")
+            self._memory_list.insert(tk.END, label)
+            self._memory_ids.append(record["id"])
+        self._set_status(f"Memory: {len(records)} item(s)")
+
+    def _search_memory(self) -> None:
+        query = self._memory_search_var.get().strip()
+        if not self._memory_ready():
+            self._refresh_memory()
+            return
+        if not query:
+            self._refresh_memory()
+            return
+        project = self._current_project_id()
+        self._memory_ids = []
+        self._memory_list.delete(0, tk.END)
+        try:
+            results = self.backend.search_memory(project, query, limit=50)
+        except BackendError as exc:
+            self._memory_list.insert(tk.END, f"error: {exc}")
+            self._set_status(f"Memory search: {exc}")
+            return
+        for result in results:
+            record = result["record"]
+            label = (f"[{record['type']}] score={result['score']:.3f} "
+                     f"{record['summary'][:80] or record['content'][:80]}")
+            self._memory_list.insert(tk.END, label)
+            self._memory_ids.append(record["id"])
+        self._set_status(f"Memory search: {len(results)} match(es)")
+
+    def _on_memory_selected(self, _event=None) -> None:
+        selection = self._memory_list.curselection()
+        if not selection or not self._memory_ready():
+            return
+        index = selection[0]
+        if index >= len(self._memory_ids):
+            return
+        memory_id = self._memory_ids[index]
+        try:
+            records = self.backend.list_memory(self._current_project_id(),
+                                               limit=200)
+        except BackendError:
+            return
+        record = next((item for item in records if item["id"] == memory_id),
+                      None)
+        if record is None:
+            return
+        lines = [
+            f"type: {record['type']}    project: {record['project']}",
+            f"source: {record['source']}    via: {record['via']}",
+            f"confidence: {record['confidence']:.2f}    "
+            f"importance: {record['importance']:.2f}",
+            f"retention: {record['retention']}    "
+            f"status: {record['status']}    version: {record['version']}",
+            f"created: {record['created_at']}    "
+            f"redactions: {record['redaction_count']}",
+            "",
+            record["content"],
+        ]
+        if record["summary"]:
+            lines += ["", f"summary: {record['summary']}"]
+        self._memory_detail.configure(state=tk.NORMAL)
+        self._memory_detail.delete("1.0", tk.END)
+        self._memory_detail.insert(tk.END, "\n".join(lines))
+        self._memory_detail.configure(state=tk.DISABLED)
+
+    def _delete_selected_memory(self) -> None:
+        selection = self._memory_list.curselection()
+        if not selection or not self._memory_ready():
+            return
+        index = selection[0]
+        if index >= len(self._memory_ids):
+            return
+        memory_id = self._memory_ids[index]
+        if not messagebox.askyesno(
+                APP_TITLE, f"Delete memory item {memory_id[:8]}...?"):
+            return
+        try:
+            result = self.backend.delete_memory(
+                self._current_project_id(), memory_id)
+        except BackendError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._set_status(f"Memory delete: {result['id'][:8]}... "
+                         f"{'deleted' if result['deleted'] else 'not found'}")
+        self._refresh_memory()
+
     # -- readiness / models ---------------------------------------------------------
 
     def _refresh_readiness_async(self, first: bool = False) -> None:
@@ -747,6 +886,27 @@ class ForgeDesktopApp(tk.Tk):
         text.insert(tk.END, "\n".join(lines))
         text.configure(state=tk.DISABLED)
 
+    # -- agent manager ---------------------------------------------------------
+
+    def _open_agent_manager(self) -> None:
+        if not self.backend.running:
+            messagebox.showinfo(APP_TITLE, "Start the backend first (open a project folder).")
+            return
+        project_id = self._current_project_id()
+        if not project_id:
+            messagebox.showinfo(APP_TITLE, "Select a project first.")
+            return
+        existing = getattr(self, "_agent_manager", None)
+        if existing is not None:
+            try:
+                existing.lift()
+                existing.focus_force()
+                return
+            except tk.TclError:
+                self._agent_manager = None
+        self._agent_manager = AgentManagerWindow(self, self.backend,
+                                                 project_id)
+
     # -- dialogs ----------------------------------------------------------------------
 
     def _first_run(self) -> None:
@@ -802,6 +962,199 @@ class ForgeDesktopApp(tk.Tk):
                             "Tasks run through the same guarded pipeline\n"
                             "as the browser cockpit: plan, code, test,\n"
                             "review, acceptance - with approvals for writes.")
+
+
+class AgentManagerWindow(tk.Toplevel):
+    """Agent Manager: create, benchmark, and lifecycle created agents.
+
+    Thin view over ``DesktopBackend.agents_*``: every backend call runs in
+    a worker thread and the result is applied on the main thread via
+    ``after()``. Creation grants nothing — grants are recorded by the
+    operator through the backend, never by an agent.
+    """
+
+    OPERATIONS = ("validate", "test", "enable", "pause", "resume",
+                  "disable", "retire")
+
+    def __init__(self, parent: tk.Tk, backend: DesktopBackend,
+                 project_id: str) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.project_id = project_id
+        self.title(f"Agent Manager - {project_id}")
+        self.geometry("760x560")
+        self.minsize(620, 460)
+        self._agents: list[dict[str, Any]] = []
+        self._templates: list[dict[str, Any]] = []
+
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill=tk.X)
+        ttk.Label(top, text="Template:").pack(side=tk.LEFT)
+        self._template = tk.StringVar()
+        self._template_box = ttk.Combobox(top,
+                                          textvariable=self._template,
+                                          state="readonly", width=18)
+        self._template_box.pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(top, text="Name:").pack(side=tk.LEFT)
+        self._name = tk.StringVar()
+        ttk.Entry(top, textvariable=self._name, width=22).pack(
+            side=tk.LEFT, padx=(4, 8))
+        ttk.Button(top, text="Create",
+                   command=self._create_async).pack(side=tk.LEFT)
+
+        middle = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        middle.pack(fill=tk.BOTH, expand=True, padx=8)
+        left = ttk.Frame(middle)
+        self._list = tk.Listbox(left, activestyle="dotbox", width=34)
+        self._list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._list.bind("<<ListboxSelect>>", self._on_selected)
+        scroll = ttk.Scrollbar(left, command=self._list.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._list.configure(yscrollcommand=scroll.set)
+        middle.add(left, weight=1)
+        right = ttk.Frame(middle)
+        self._details = tk.Text(right, wrap=tk.WORD, state=tk.DISABLED,
+                                width=40)
+        self._details.pack(fill=tk.BOTH, expand=True)
+        middle.add(right, weight=2)
+
+        buttons = ttk.Frame(self, padding=8)
+        buttons.pack(fill=tk.X)
+        for operation in self.OPERATIONS:
+            ttk.Button(buttons, text=operation.capitalize(),
+                       command=lambda op=operation: self._operate_async(
+                           op)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(buttons, text="Refresh",
+                   command=self._refresh_async).pack(side=tk.LEFT,
+                                                     padx=(8, 2))
+
+        self._status = tk.StringVar(value="Loading agents...")
+        ttk.Label(self, textvariable=self._status,
+                  padding=(8, 0)).pack(fill=tk.X)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._refresh_async()
+
+    # -- worker plumbing -------------------------------------------------
+
+    def _run_async(self, label: str, call) -> None:
+        self._status.set(f"{label}...")
+
+        def work() -> None:
+            try:
+                result = call()
+            except BackendError as exc:
+                self.after(0, lambda: self._failed(label, str(exc)))
+                return
+            except Exception as exc:  # never strand the UI thread
+                self.after(0, lambda: self._failed(label, str(exc)))
+                return
+            self.after(0, lambda: self._done(label, result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _failed(self, label: str, error: str) -> None:
+        self._status.set(f"{label} failed: {error}")
+        messagebox.showerror(APP_TITLE, f"{label} failed:\n{error}", parent=self)
+
+    def _done(self, label: str, result: Any) -> None:
+        if isinstance(result, dict) and "agents" in result \
+                and "templates" in result:
+            self._agents = result["agents"]
+            self._templates = result["templates"]
+            self._template_box.configure(
+                values=[t["id"] for t in self._templates])
+            if self._templates and not self._template.get():
+                self._template.set(self._templates[0]["id"])
+            self._render_list()
+            self._status.set(f"{len(self._agents)} agent(s) in "
+                             f"{self.project_id}")
+        else:
+            self._show_result(label, result)
+            self._refresh_async(silent=True)
+
+    # -- actions ----------------------------------------------------------
+
+    def _refresh_async(self, silent: bool = False) -> None:
+        def call():
+            return {"agents": self.backend.agents_list(self.project_id),
+                    "templates": self.backend.agents_templates()}
+
+        if silent:
+            def work() -> None:
+                try:
+                    result = call()
+                except Exception:
+                    return
+                self.after(0, lambda: self._done("Refresh", result))
+
+            threading.Thread(target=work, daemon=True).start()
+        else:
+            self._run_async("Refresh", call)
+
+    def _selected_name(self) -> str:
+        selection = self._list.curselection()
+        if not selection or selection[0] >= len(self._agents):
+            return ""
+        return str(self._agents[selection[0]].get("name", ""))
+
+    def _create_async(self) -> None:
+        template = self._template.get().strip()
+        name = self._name.get().strip()
+        if not template or not name:
+            messagebox.showinfo(APP_TITLE, "Pick a template and a name first.",
+                                parent=self)
+            return
+        self._run_async(
+            "Create",
+            lambda: self.backend.agents_create(self.project_id, template,
+                                               name))
+
+    def _operate_async(self, operation: str) -> None:
+        name = self._selected_name()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.",
+                                parent=self)
+            return
+        action = getattr(self.backend, "agents_%s" % operation)
+        self._run_async(operation.capitalize(),
+                         lambda: action(self.project_id, name))
+
+    def _on_selected(self, _event=None) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+
+        def work() -> None:
+            try:
+                package = self.backend.agents_show(self.project_id, name)
+            except Exception as exc:
+                self.after(0, lambda: self._status.set(str(exc)))
+                return
+            self.after(0, lambda: self._show_result("Agent", package))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # -- rendering --------------------------------------------------------
+
+    def _render_list(self) -> None:
+        self._list.delete(0, tk.END)
+        for agent in self._agents:
+            self._list.insert(tk.END,
+                              f"{agent.get('name')} "
+                              f"v{agent.get('version')} "
+                              f"[{agent.get('state')}]")
+
+    def _show_result(self, label: str, result: Any) -> None:
+        self._details.configure(state=tk.NORMAL)
+        self._details.delete("1.0", tk.END)
+        self._details.insert(tk.END, f"{label}\n\n"
+                             + json.dumps(result, indent=2, default=str))
+        self._details.configure(state=tk.DISABLED)
+        if isinstance(result, dict) and result.get("name"):
+            self._status.set(f"{label}: {result['name']} "
+                             f"[{result.get('state', '?')}]")
+        else:
+            self._status.set(f"{label} finished")
 
 
 def launch(projects: dict[str, str] | None = None,

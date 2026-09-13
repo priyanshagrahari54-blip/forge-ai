@@ -1164,21 +1164,36 @@ def _windows_memory() -> Tuple[int, int]:
         return (0, 0)
 
 
-def _posix_memory() -> Tuple[int, int]:
-    """Total/available physical bytes via ``os.sysconf``, or ``(0, 0)``."""
+#: ``os.sysconf`` is POSIX-only — the Windows reference target has no such
+#: attribute, so naming it directly would raise ``AttributeError`` there.
+#: It is resolved once through ``getattr`` instead, which keeps this module
+#: importable everywhere without depending on ``forge.core.portability``
+#: (the runtime must stay independent of the AI Engine).
+_SYSCONF = getattr(os, "sysconf", None)
+
+
+def _sysconf(name: str) -> int:
+    """``os.sysconf(name)`` where the platform provides it, else ``-1``."""
+    if _SYSCONF is None:
+        return -1
     try:
-        page = os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
-        total_pages = os.sysconf("SC_PHYS_PAGES")  # type: ignore[attr-defined]
-        total = int(page) * int(total_pages)
-        available = 0
-        try:
-            available = int(page) * int(
-                os.sysconf("SC_AVPHYS_PAGES"))  # type: ignore[attr-defined]
-        except (ValueError, OSError, AttributeError):
-            available = _read_meminfo_available()
-        return (total, available)
+        return int(_SYSCONF(name))
     except (ValueError, OSError, AttributeError):
+        return -1
+
+
+def _posix_memory() -> Tuple[int, int]:
+    """Total/available physical bytes via ``sysconf``, or ``(0, 0)``."""
+    page = _sysconf("SC_PAGE_SIZE")
+    total_pages = _sysconf("SC_PHYS_PAGES")
+    if page <= 0 or total_pages <= 0:
         return (0, 0)
+    total = page * total_pages
+    available_pages = _sysconf("SC_AVPHYS_PAGES")
+    available = page * available_pages if available_pages > 0 else 0
+    if not available:
+        available = _read_meminfo_available()
+    return (total, available)
 
 
 def _read_meminfo_available() -> int:

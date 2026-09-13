@@ -25,7 +25,6 @@ import csv
 import os
 import platform
 import shutil
-import signal
 import socket
 import struct
 import subprocess
@@ -33,6 +32,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from forge.core.portability import stop_signal
 
 MAX_FILE_BYTES = 1_000_000
 MAX_TEXT_CHARS = 2_000
@@ -290,7 +291,9 @@ class LocalDesktopProvider:
         if not running:
             return {"ok": False, "action": "process", "kind": "not_found",
                     "error": f"pid {pid} is not running"}
-        signum = signal.SIGTERM if op == "terminate" else signal.SIGKILL
+        # Windows has no signal.SIGKILL, so the naive ternary raised
+        # AttributeError there (uncaught by the OSError handlers below).
+        signum, signalled = stop_signal(op)
         try:
             os.kill(pid, signum)
         except ProcessLookupError:
@@ -303,7 +306,7 @@ class LocalDesktopProvider:
             return {"ok": False, "action": "process",
                     "kind": "backend_error", "error": str(exc)[:200]}
         return {"ok": True, "action": "process", "pid": pid,
-                "signalled": signum == signal.SIGTERM and "SIGTERM" or "SIGKILL"}
+                "signalled": signalled}
 
     def system_info(self) -> dict[str, Any]:
         backends = self.backends()

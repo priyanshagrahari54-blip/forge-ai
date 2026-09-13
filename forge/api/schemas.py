@@ -180,6 +180,16 @@ class ResearchQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class ResearchQueryRequest(BaseModel):
+    """Secure multi-source research query (provenance-tracked)."""
+
+    question: str = Field(min_length=1, max_length=2000)
+    allow_web: bool = True
+    sources: List[str] = Field(default_factory=list, max_length=8)
+    user_notes: List[str] = Field(default_factory=list, max_length=10)
+    allow_model_knowledge: bool = False
+
+
 # -- A48 compute -------------------------------------------------------------------------
 
 class ComputeExecuteRequest(BaseModel):
@@ -341,3 +351,47 @@ class FinalGateVerifyRequest(BaseModel):
 
 class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
+
+
+# -- agent creation engine (first-party) -------------------------------------------
+
+class EngineCreateRequest(BaseModel):
+    template: str = Field(default="", max_length=32)
+    name: str = Field(default="", max_length=48)
+    spec: Optional[dict] = None
+    overrides: Optional[dict] = None
+
+
+class EngineUpdateRequest(BaseModel):
+    spec: dict
+    reason: str = Field(default="", max_length=300)
+
+
+class EngineGrantRequest(BaseModel):
+    index: int = Field(ge=0, le=100)
+    expect: Optional[dict] = None
+
+
+class EngineVersionRequest(BaseModel):
+    notes: str = Field(default="", max_length=280)
+    kind: str = Field(default="patch", max_length=16)
+
+
+class EngineToolCall(BaseModel):
+    tool: str = Field(min_length=1, max_length=64)
+    args: dict = Field(default_factory=dict)
+
+
+class EngineRunRequest(BaseModel):
+    # Deliberately no approval flag and no test command: remote callers
+    # can neither self-approve tool writes (approval flows through
+    # redeemable approval tokens) nor choose the verification command
+    # (tests-required specs run the harness's fixed pytest suite).
+    requirement: str = Field(min_length=1, max_length=4000)
+    approval_token_id: str = Field(default="", max_length=200)
+    tool_calls: List[EngineToolCall] = Field(default_factory=list,
+                                             max_length=8)
+
+
+class EngineImportRequest(BaseModel):
+    payload: dict

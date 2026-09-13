@@ -497,6 +497,196 @@ class DesktopBackend:
         return {"path": rel_path, "content": text, "truncated": truncated,
                 "size": candidate.stat().st_size}
 
+    # -- agent manager (creation engine) ----------------------------------------
+
+    def _engine_for(self, project_id: str):
+        from forge.agents.creation import AgentCreationEngine
+
+        plane = self._require_plane()
+        try:
+            project = plane.get_project(project_id)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        if not hasattr(self, "_agent_engines"):
+            self._agent_engines: dict[str, Any] = {}
+        engine = self._agent_engines.get(project_id)
+        if engine is None:
+            store = str(Path(project.root) / ".forge" / "agent-engine.json")
+            try:
+                engine = AgentCreationEngine(store_path=store)
+            except ValueError as exc:
+                raise BackendError(f"Agent store error: {exc}") from exc
+            self._agent_engines[project_id] = engine
+        return engine
+
+    def agents_templates(self) -> list[dict[str, Any]]:
+        from forge.agents.creation import AgentCreationEngine
+
+        return AgentCreationEngine().templates()
+
+    def agents_list(self, project_id: str) -> list[dict[str, Any]]:
+        return [package.manifest()
+                for package in self._engine_for(project_id).list()]
+
+    def agents_create(self, project_id: str, template: str,
+                      name: str) -> dict[str, Any]:
+        engine = self._engine_for(project_id)
+        try:
+            package = engine.create_from_template(
+                template, name, created_by=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return package.to_dict()
+
+    def agents_show(self, project_id: str, name: str) -> dict[str, Any]:
+        try:
+            return self._engine_for(project_id).get(name).to_dict()
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _agents_lifecycle(self, operation: str, project_id: str,
+                          name: str) -> dict[str, Any]:
+        engine = self._engine_for(project_id)
+        try:
+            if operation == "validate":
+                return engine.validate(name, actor=self.actor)
+            if operation == "test":
+                return engine.benchmark(name, actor=self.actor)
+            return getattr(engine, operation)(
+                name, actor=self.actor).to_dict()
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def agents_validate(self, project_id: str,
+                        name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("validate", project_id, name)
+
+    def agents_test(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("test", project_id, name)
+
+    def agents_enable(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("enable", project_id, name)
+
+    def agents_pause(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("pause", project_id, name)
+
+    def agents_resume(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("resume", project_id, name)
+
+    def agents_disable(self, project_id: str,
+                       name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("disable", project_id, name)
+
+    def agents_retire(self, project_id: str, name: str) -> dict[str, Any]:
+        return self._agents_lifecycle("retire", project_id, name)
+
+    def agents_grant(self, project_id: str, name: str,
+                     index: int,
+                     expected: dict[str, Any] | None = None
+                     ) -> dict[str, Any]:
+        try:
+            grant = self._engine_for(project_id).grant_permission(
+                name, index, approver=self.actor, expected=expected)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "grant": grant}
+
+    def agents_revoke(self, project_id: str, name: str,
+                      index: int) -> dict[str, Any]:
+        try:
+            revoked = self._engine_for(project_id).revoke_permission(
+                name, index, approver=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "revoked": revoked}
+
+    def agents_update(self, project_id: str, name: str,
+                      spec: dict[str, Any],
+                      reason: str = "") -> dict[str, Any]:
+        try:
+            package = self._engine_for(project_id).update(
+                name, spec, actor=self.actor, reason=reason)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return package.to_dict()
+
+    def agents_version(self, project_id: str, name: str, *,
+                       kind: str = "patch",
+                       notes: str = "") -> dict[str, Any]:
+        try:
+            record = self._engine_for(project_id).publish_version(
+                name, kind=kind, notes=notes, actor=self.actor)
+        except ValueError as exc:
+            raise BackendError(str(exc)) from exc
+        return {"agent": name, "release": record}
+    # -- long-term memory ------------------------------------------------------
+
+    def _long_term_memory(self):
+        """Lazily open the long-term memory store over the plane database."""
+        from forge.memory import LongTermMemory
+
+        plane = self._require_plane()
+        if getattr(self, "_ltm", None) is None:
+            self._ltm = LongTermMemory(plane._db)
+        return self._ltm
+
+    def list_memory(self, project_id: str, memory_type: str = "",
+                    limit: int = 100) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            records = memory.list(project=project_id,
+                                  memory_type=memory_type or None,
+                                  limit=limit)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [record.to_dict() for record in records]
+
+    def search_memory(self, project_id: str, query: str,
+                      limit: int = 20) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            results = memory.search(query, project=project_id, k=limit)
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return [result.to_dict() for result in results]
+
+    def memory_stats(self, project_id: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            return dict(memory.stats(project=project_id))
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
+    def delete_memory(self, project_id: str,
+                      memory_id: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            deleted = memory.delete(memory_id, project=project_id,
+                                    source=self.actor,
+                                    reason="deleted from desktop")
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return {"deleted": deleted, "id": memory_id}
+
+    def correct_memory(self, project_id: str, memory_id: str,
+                       new_content: str) -> dict[str, Any]:
+        memory = self._long_term_memory()
+        try:
+            record = memory.correct(memory_id, new_content,
+                                    project=project_id, source=self.actor,
+                                    reason="corrected from desktop")
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+        return record.to_dict()
+
+    def memory_provenance(self, project_id: str,
+                          memory_id: str) -> list[dict[str, Any]]:
+        memory = self._long_term_memory()
+        try:
+            return [dict(item) for item in memory.provenance(memory_id)]
+        except Exception as exc:
+            raise BackendError(str(exc)) from exc
+
     # -- polling snapshot ----------------------------------------------------
 
     def poll_snapshot(self, project_id: str, selected_task_id: str = "",

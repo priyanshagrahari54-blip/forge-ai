@@ -13,6 +13,8 @@ env/
 # Build artifacts
 build/
 dist/
+# PyInstaller writes a .spec next to the entry point on every build
+*.spec
 
 # IDE
 .vscode/
@@ -25,3 +27,4 @@ dist/
 .forge/*.db-journal
 .forge/audit.jsonl
 .forge/self/history/
+.forge/research_cache/
