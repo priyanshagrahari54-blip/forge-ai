@@ -245,7 +245,7 @@ unit-tested; the widget code is exercised through the stub-tkinter harness.
 
 ## 11. Testing
 
-`tests/test_a81_*` (182 tests) plus `tests/helpers_a81.py`:
+`tests/test_a81_*` (205 tests) plus `tests/helpers_a81.py`:
 
 | File | Covers |
 | --- | --- |
@@ -256,11 +256,107 @@ unit-tested; the widget code is exercised through the stub-tkinter harness.
 | `test_a81_agent_benchmark.py` (20) | report honesty, skipped ≠ passed, required scenarios |
 | `test_a81_agent_cli.py` (23) | every subcommand, output, exit codes |
 | `test_a81_desktop_agent_manager.py` (18) | backend API + Agent Manager window |
+| `test_a81_agent_hardening.py` (23) | one regression per defect found by adversarial review — see §12 |
 
 Isolation and permission boundaries are verified against the real
 subsystems — a real temporary project, the real Tool Runtime, PolicyGate,
 MemoryStore, and CheckpointManager, with a scripted provider behind the
 real Model Fabric.
 
-A81 result: **182 new tests; full suite 2005 passed, 3 skipped** (baseline:
+A81 result: **205 new tests; full suite 2028 passed, 3 skipped** (baseline:
 1823 passed, 3 skipped).
+
+## 12. Hardening review
+
+After the engine was green, it was re-examined adversarially — driving the
+real runtime and reading what came back, rather than reading the code and
+assuming. Fourteen defects were confirmed and fixed. Three were serious
+enough that the engine could report success for work it had not verified.
+
+### Verification bypass through `terminal` (critical)
+
+`files_changed` was built only from a tool's `path` argument. `terminal`
+takes a *command*, so an agent could write a file with a shell redirect
+and the run record would show no changes at all: `_verify()` returned zero
+gates, the security scan the spec required never ran, and the run was
+reported `success: true` with a secret sitting in the worktree.
+
+Reproduced before the fix:
+
+```
+success: True   stage: complete   gates: []   files_changed: []
+leaked.py exists: True    content: 'api_key = "abcdefgh12345678"'
+```
+
+Fixed by making the checkpoint snapshot the authority. It already records a
+hash for every file in the worktree before the first write, so
+`AgentSandbox.observed_changes()` diffs the tree against it and reports
+everything added, modified, or deleted — regardless of which tool did it.
+Verification and rollback both consume that list.
+
+### Path escape through a symlink (critical)
+
+`_authorize_path()` checked the path string: relative, no `..`, not under a
+protected directory. None of that sees a symlink, so a directory inside the
+project pointing elsewhere let `src/escaped.py` resolve outside the root:
+
+```
+_authorize_path ALLOWED 'src/escaped.py'
+  resolves to: /tmp/outside-…/escaped.py
+  inside project root? False
+```
+
+Fixed by `_assert_inside_root()`, which resolves the path and refuses it
+unless the result is the root or inside it.
+
+### Unverifiable model identity accepted as real (critical)
+
+The fallback probe was wrapped in `except Exception: fallback = False`.
+When the probe raised, an unverifiable response was recorded as "not a
+fallback", so the offline placeholder satisfied a spec that forbids
+fallback models:
+
+```
+[probe OK]      stage: model     | refused correctly
+[probe RAISES]  stage: complete  | success: True   <-- accepted
+```
+
+Fixed by failing closed: an unverifiable response is treated as a fallback
+and the reason is carried into the run error.
+
+### Everything reported as success when nothing was done
+
+A run whose every requested action was refused still returned
+`success: true, stage: complete`. Now a run that asked for work and was
+refused on every item fails, naming the refusals.
+
+### Package store
+
+| Defect | Fix |
+| --- | --- |
+| `history(limit=0)` returned the whole list (`runs[-0:]` is everything) | zero/negative limits return `[]` |
+| A 12.6 MB package file was parsed despite `MAX_FILE_BYTES = 4 MB` | the read path bounds size like the write path |
+| `benchmarks()` sorted by random hex filename, not recency | sorted by `recorded_at`, newest first |
+| `remove()` used `rmtree(ignore_errors=True)`, so a partial delete reported success | a surviving directory raises |
+| `create()` checked `exists()` then wrote — a race could clobber a package, and a mid-way failure left an agent with no grants ledger | the manifest is opened `O_EXCL`; a partial create is discarded |
+| `_atomic_write` reused one temp filename, so concurrent writers could clobber each other, and nothing was fsynced | unique temp name, `fsync` before the rename, temp removed on failure |
+| `record_benchmark` rejected `/` and `..` in a run id but not `\` | backslash rejected too |
+
+### Audit trail
+
+| Defect | Fix |
+| --- | --- |
+| `ActionRecord.decision` was overwritten, so the PolicyGate verdict was lost | the gate verdict is kept in its own `gate` field |
+| Budget was charged before authorisation, so refused calls were counted as work | charged only once the call is authorised |
+| A bookkeeping failure was swallowed, so a run looked recorded when it was not | `recorded: false` plus the reason in `notes` |
+| Nothing checked a hand-edited manifest, so a tampered spec ran as approved | the run refuses when the spec no longer matches the manifest's recorded fingerprint (`stage: integrity`) |
+
+Every one of these is pinned by a test in
+`tests/test_a81_agent_hardening.py`, written as the exploit first and the
+guarantee second.
+
+Two further suspicions were investigated and found **not** to be defects,
+so they were left alone: a non-UTF-8 manifest already surfaces as
+`AgentPackageError` (`UnicodeDecodeError` is a `ValueError` subclass), and
+there is no checkpoint leak on the failure path because
+`CheckpointManager.rollback()` calls `cleanup()` itself.

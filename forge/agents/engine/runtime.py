@@ -22,10 +22,11 @@ back and the run is reported as failed — never as partially successful.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -52,6 +53,7 @@ from forge.security.permissions import (
     PermissionManager,
 )
 from forge.security.policy_gate import PolicyDecision, PolicyGate
+from forge.security.verification import is_excluded
 from forge.tools.checkpoint import CheckpointManager
 
 #: Restrictiveness order: lower is stricter. An agent's effective mode is
@@ -80,11 +82,16 @@ class ActionRecord:
     output: str = ""
     path: str = ""
     decision: str = ""
+    #: The PolicyGate's own verdict, kept separately from ``decision`` so
+    #: the audit trail shows both what the gate said and what the tool then
+    #: did — the gate can allow a call that the handler later fails.
+    gate: str = ""
 
     def to_dict(self) -> dict:
         return {"tool": self.tool, "allowed": self.allowed,
                 "reason": self.reason, "output": self.output[:500],
-                "path": self.path, "decision": self.decision}
+                "path": self.path, "decision": self.decision,
+                "gate": self.gate}
 
 
 @dataclass
@@ -125,6 +132,10 @@ class AgentRunResult:
     checkpoint: str = ""
     rolled_back: bool = False
     files_changed: list = field(default_factory=list)
+    #: Whether the run reached the persisted history/manifest. ``False``
+    #: means the outcome is real but its bookkeeping is not, and the
+    #: reason is in ``notes``.
+    recorded: bool = True
 
     @property
     def allowed_actions(self) -> list:
@@ -148,6 +159,7 @@ class AgentRunResult:
             "checkpoint": self.checkpoint,
             "rolled_back": self.rolled_back,
             "files_changed": list(self.files_changed),
+            "recorded": self.recorded,
         }
 
 
@@ -185,6 +197,9 @@ class AgentSandbox:
         self.checkpoint = None
         self.checkpoint_manager: Any = None
         self._calls: dict = {}
+        #: Memoised worktree diff, computed once — before any rollback, so
+        #: the run record still describes what actually changed.
+        self._observed: list | None = None
 
     # -- tools -----------------------------------------------------------
 
@@ -193,14 +208,19 @@ class AgentSandbox:
 
     def use_tool(self, name: str, **kwargs: Any) -> dict:
         """Execute one declared tool through every gate, or refuse."""
-        self._budget.check_wall()
-        self._budget.charge_tool()
         name = (name or "").strip()
         kwargs = self._declared_arguments(name, kwargs)
         record = ActionRecord(tool=name, allowed=False,
                               path=str(kwargs.get("path", "") or ""))
         try:
+            self._budget.check_wall()
             self._authorize_tool(name, kwargs, record)
+            # Charged only once the call is authorised, so a refused call
+            # cannot burn the run's tool budget. A limit that trips here is
+            # recorded as a refusal like any other instead of escaping as
+            # an exception, which would leave the refusal out of the audit
+            # trail entirely.
+            self._budget.charge_tool()
         except (AgentPermissionError, AgentLimitError) as exc:
             record.reason = str(exc)
             record.decision = PolicyDecision.DENY.value
@@ -332,8 +352,9 @@ class AgentSandbox:
                         if self._spec.capabilities else ""),
             approved=self._approved, mode=self._manager.mode,
             agent=self._spec.name, task_id=self._task_id)
-        record.decision = outcome.decision.value
+        record.gate = outcome.decision.value
         if outcome.decision != PolicyDecision.ALLOW:
+            record.decision = outcome.decision.value
             raise AgentPermissionError(
                 "PolicyGate %s for %s: %s"
                 % (outcome.decision.value, operation, outcome.reason))
@@ -350,6 +371,7 @@ class AgentSandbox:
             if part in parts:
                 raise AgentPermissionError(
                     "Path %r touches protected directory %r" % (path, part))
+        self._assert_inside_root(path)
         lowered = candidate.name.lower()
         if lowered == ".env" or lowered.endswith(".env") or \
                 any(token in lowered for token in _CREDENTIAL_TOKENS):
@@ -367,6 +389,21 @@ class AgentSandbox:
                 "Path %r is outside the allowed paths (%s)"
                 % (path, ", ".join(allowed)))
 
+    def _assert_inside_root(self, path: str) -> None:
+        """Refuse a path that resolves outside the project root.
+
+        The lexical checks above cannot see symlinks: a directory inside
+        the project may point anywhere, so ``src/x.py`` can resolve to
+        ``/etc/x.py`` while looking perfectly project-relative. Resolving
+        and comparing is the only check that holds.
+        """
+        root = Path(self._root).resolve()
+        resolved = (root / path).resolve()
+        if resolved != root and root not in resolved.parents:
+            raise AgentPermissionError(
+                "Path %r resolves outside the project root (%s)"
+                % (path, resolved))
+
     def _take_checkpoint(self) -> None:
         """Snapshot the worktree before the first write of this run.
 
@@ -380,16 +417,69 @@ class AgentSandbox:
             declared=list(self.files_changed))
         self.checkpoint_manager = manager
 
+    def observed_changes(self) -> list:
+        """Every path that differs from the pre-write snapshot.
+
+        ``files_changed`` only knows about tools that declare a ``path``
+        argument. A tool such as ``terminal`` writes wherever its command
+        says, so trusting ``files_changed`` alone lets an agent write a
+        file that verification never looks at — and a run that was never
+        scanned gets reported as a success.
+
+        The snapshot is the authority: it recorded a hash for every file in
+        the worktree before the first write, so anything added, modified,
+        or deleted since is discoverable regardless of which tool did it.
+        """
+        checkpoint = self.checkpoint
+        if self._observed is not None:
+            return list(self._observed)
+        if checkpoint is None:
+            self._observed = list(self.files_changed)
+            return list(self._observed)
+        recorded = dict(getattr(checkpoint, "files", {}) or {})
+        root = Path(self._root).resolve()
+        seen = set(self.files_changed)
+        observed = list(self.files_changed)
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative = path.relative_to(root)
+            except ValueError:  # pragma: no cover - rglob stays under root
+                continue
+            if is_excluded(relative.parts):
+                continue
+            rel = relative.as_posix()
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                # Unreadable now but present before: that is a change.
+                if rel in recorded:
+                    digest = ""
+                else:
+                    continue
+            if recorded.get(rel) != digest and rel not in seen:
+                seen.add(rel)
+                observed.append(rel)
+        for rel in recorded:
+            if rel not in seen and not (root / rel).is_file():
+                seen.add(rel)
+                observed.append(rel)
+        self._observed = observed
+        return list(observed)
+
     def rollback(self) -> bool:
         """Restore the pre-write snapshot. ``False`` when there was none.
 
         Reporting a rollback that never happened would be a lie in the run
         record, so callers must use this return value rather than assume.
+        Restoring covers everything that actually changed, not just the
+        paths a tool happened to declare.
         """
         if self.checkpoint is None or self.checkpoint_manager is None:
             return False
         self.checkpoint_manager.rollback(self.checkpoint,
-                                         changed_files=self.files_changed)
+                                         changed_files=self.observed_changes())
         return True
 
     def cleanup(self) -> None:
@@ -501,6 +591,15 @@ class AgentRuntime:
             result.error = "A task is required"
             self._finish(package, result, started)
             return result
+        integrity = package.integrity_error()
+        if integrity:
+            # The spec is what the operator approved and what the grant
+            # ledger was bounded by. If the manifest no longer matches its
+            # own recorded fingerprint the agent must not run on it.
+            result.stage = "integrity"
+            result.error = integrity
+            self._finish(package, result, started)
+            return result
         refusal = lifecycle_refusal(package)
         if refusal:
             result.error = refusal
@@ -534,16 +633,35 @@ class AgentRuntime:
                     % response.get("error", "unknown error"))
             if response.get("fallback") and \
                     not package.spec.model.allow_fallback:
+                probe_error = response.get("probe_error") or ""
                 raise AgentPermissionError(
                     "The offline placeholder answered; the spec requires a "
-                    "real model (model.allow_fallback=false)")
+                    "real model (model.allow_fallback=false)"
+                    + (" — model identity could not be confirmed: %s"
+                       % probe_error if probe_error else ""))
             payload = _parse_actions(response.get("text", ""))
             result.output = (payload.get("summary")
                              or response.get("text", "")).strip()[:4000]
             result.stage = "tools"
-            for action in payload.get("actions", [])[:16]:
+            requested = list(payload.get("actions", []))[:16]
+            for action in requested:
                 sandbox.use_tool(str(action.get("tool", "")),
                                  **_safe_kwargs(action.get("args")))
+            if requested and not sandbox.actions:
+                raise AgentPermissionError(
+                    "The model requested %d action(s) but none were "
+                    "recorded" % len(requested))
+            if requested and all(not record.allowed
+                                 for record in sandbox.actions):
+                # An agent that asked for work and was refused on every
+                # item did not accomplish the task. Reporting that run as
+                # a success is the kind of lie this engine exists to
+                # prevent.
+                raise AgentPermissionError(
+                    "Every requested action was refused (%d): %s"
+                    % (len(sandbox.actions),
+                       "; ".join(record.reason for record in sandbox.actions
+                                 if record.reason)[:300]))
             result.stage = "memory"
             for key, value in list(
                     (payload.get("memory") or {}).items())[:16]:
@@ -583,7 +701,7 @@ class AgentRuntime:
             result.refusals = list(sandbox.refusals)
             result.notes = list(sandbox.notes)
             result.memory = list(sandbox.memory_written)
-            result.files_changed = list(sandbox.files_changed)
+            result.files_changed = sandbox.observed_changes()
             result.checkpoint = (sandbox.checkpoint.id
                                  if sandbox.checkpoint is not None else "")
         result.budget = budget.to_dict() if budget is not None else {}
@@ -613,16 +731,23 @@ class AgentRuntime:
             max_latency_ms=model.max_latency_ms or None)
         response = self.fabric.generate(request)
         fallback = False
+        probe_error = ""
         try:
             fallback = bool(is_fallback_response(
                 self.fabric, response.model or "", response.provider or ""))
-        except Exception:
-            fallback = False
+        except Exception as exc:
+            # Fail closed. An unverifiable response must not be accepted as
+            # a real model's: guessing "not a fallback" here is exactly how
+            # the offline placeholder ends up satisfying a spec that
+            # forbids it.
+            fallback = True
+            probe_error = "%s: %s" % (type(exc).__name__, exc)
         budget.charge_output(len(response.text or ""))
         return {"success": bool(response.success), "text": response.text,
                 "model": response.model, "provider": response.provider,
                 "latency_ms": response.latency_ms,
-                "error": response.error, "fallback": fallback}
+                "error": response.error, "fallback": fallback,
+                "probe_error": probe_error}
 
     def _verify(self, package: AgentPackage, sandbox: AgentSandbox,
                 budget: RunBudget) -> list:
@@ -630,7 +755,10 @@ class AgentRuntime:
 
         spec = package.spec.verification
         gates: list = []
-        changed = list(sandbox.files_changed)
+        # Judge what actually changed on disk. A tool that writes without
+        # declaring a path (``terminal``) would otherwise slip past every
+        # gate and the run would be reported as verified.
+        changed = sandbox.observed_changes()
         if not changed:
             # Nothing was written: the write-scoped gates have nothing to
             # judge, and saying so is honest — they are not "passed".
@@ -690,9 +818,16 @@ class AgentRuntime:
             package.run_count += 1
             package.last_run = entry
             self.store.write_manifest(package)
-        except Exception:
-            # A bookkeeping failure must not mask the run outcome.
-            pass
+            result.recorded = True
+        except Exception as exc:
+            # A bookkeeping failure must not mask the run outcome — but it
+            # must not be invisible either. Silently swallowing it means
+            # the result claims to be on the audit trail when there is a
+            # hole in it, which is worse than the failure itself.
+            result.recorded = False
+            result.notes.append(
+                "bookkeeping failed; this run was not recorded: %s: %s"
+                % (type(exc).__name__, exc))
         if self.audit is not None:
             try:
                 self.audit.record_decision(
