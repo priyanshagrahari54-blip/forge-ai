@@ -1,4 +1,4 @@
-"""A82 — agent specification validation and the six first-party templates.
+"""A83 — agent specification validation and the six first-party templates.
 
 The spec is the only source of an agent's power, so these tests pin the
 closed vocabularies, the cross-checks between sections, and the floor

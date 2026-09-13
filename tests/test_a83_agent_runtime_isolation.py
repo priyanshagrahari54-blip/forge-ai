@@ -1,4 +1,4 @@
-"""A82 — runtime isolation and permission boundaries.
+"""A83 — runtime isolation and permission boundaries.
 
 Every test here drives the real :class:`AgentRuntime`: a scripted model
 behind the real Model Fabric, the real Tool Runtime over a real temporary
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a82 import (  # noqa: E402
+from helpers_a83 import (  # noqa: E402
     AgentProvider,
     action_payload,
     make_agent_fabric,

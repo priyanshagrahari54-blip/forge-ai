@@ -1,4 +1,4 @@
-# A82 — Agent Creation Engine
+# A83 — Agent Creation Engine
 
 Forge can create new specialized software agents from structured
 specifications. An agent is not a prompt and not a Python class: it is a
@@ -245,26 +245,26 @@ unit-tested; the widget code is exercised through the stub-tkinter harness.
 
 ## 11. Testing
 
-`tests/test_a82_*` (205 tests) plus `tests/helpers_a82.py`:
+`tests/test_a83_*` (205 tests) plus `tests/helpers_a83.py`:
 
 | File | Covers |
 | --- | --- |
-| `test_a82_agent_spec.py` (34) | closed vocabularies, cross-checks, floor, templates |
-| `test_a82_agent_factory.py` (27) | package layout, validation, lifecycle, versioning |
-| `test_a82_agent_permissions.py` (21) | grants, ceilings, no-self-grant, mode tightening |
-| `test_a82_agent_runtime_isolation.py` (39) | sandbox surface, path/PolicyGate/memory/limit isolation, verification + rollback |
-| `test_a82_agent_benchmark.py` (20) | report honesty, skipped ≠ passed, required scenarios |
-| `test_a82_agent_cli.py` (23) | every subcommand, output, exit codes |
-| `test_a82_desktop_agent_manager.py` (18) | backend API + Agent Manager window |
-| `test_a82_agent_hardening.py` (23) | one regression per defect found by adversarial review — see §12 |
+| `test_a83_agent_spec.py` (34) | closed vocabularies, cross-checks, floor, templates |
+| `test_a83_agent_factory.py` (27) | package layout, validation, lifecycle, versioning |
+| `test_a83_agent_permissions.py` (21) | grants, ceilings, no-self-grant, mode tightening |
+| `test_a83_agent_runtime_isolation.py` (39) | sandbox surface, path/PolicyGate/memory/limit isolation, verification + rollback |
+| `test_a83_agent_benchmark.py` (20) | report honesty, skipped ≠ passed, required scenarios |
+| `test_a83_agent_cli.py` (23) | every subcommand, output, exit codes |
+| `test_a83_desktop_agent_manager.py` (18) | backend API + Agent Manager window |
+| `test_a83_agent_hardening.py` (23) | one regression per defect found by adversarial review — see §12 |
 
 Isolation and permission boundaries are verified against the real
 subsystems — a real temporary project, the real Tool Runtime, PolicyGate,
 MemoryStore, and CheckpointManager, with a scripted provider behind the
 real Model Fabric.
 
-A82 result: **205 new tests; full suite 2280 passed, 3 skipped** on the
-merged tree (2075 from `main` plus these 205).
+A83 result: **205 new tests; full suite 2463 passed, 3 skipped** on the
+merged tree (2258 from `main` plus these 205).
 
 ## 12. Hardening review
 
@@ -352,7 +352,7 @@ refused on every item fails, naming the refusals.
 | Nothing checked a hand-edited manifest, so a tampered spec ran as approved | the run refuses when the spec no longer matches the manifest's recorded fingerprint (`stage: integrity`) |
 
 Every one of these is pinned by a test in
-`tests/test_a82_agent_hardening.py`, written as the exploit first and the
+`tests/test_a83_agent_hardening.py`, written as the exploit first and the
 guarantee second.
 
 Two further suspicions were investigated and found **not** to be defects,

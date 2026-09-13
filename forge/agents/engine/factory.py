@@ -1,4 +1,4 @@
-"""The agent factory (A82): specification → validated, packaged agent.
+"""The agent factory (A83): specification → validated, packaged agent.
 
 The factory is the only way an agent package comes into existence or
 changes. Its rules:

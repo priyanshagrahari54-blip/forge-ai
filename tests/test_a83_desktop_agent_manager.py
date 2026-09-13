@@ -1,4 +1,4 @@
-"""A82 — the desktop Agent Manager.
+"""A83 — the desktop Agent Manager.
 
 Two layers, both exercised headlessly:
 
@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a82 import make_agent_fabric, make_project  # noqa: E402
+from helpers_a83 import make_agent_fabric, make_project  # noqa: E402
 
 from forge.desktop_app.backend import BackendError, DesktopBackend  # noqa: E402
 
@@ -148,7 +148,7 @@ def test_desktop_revokes_a_permission(backend):
 
 
 def test_desktop_run_uses_the_same_engine(backend, repo):
-    from helpers_a82 import AgentProvider, action_payload, write_action
+    from helpers_a83 import AgentProvider, action_payload, write_action
 
     backend.create_agent("demo", "exporter", template="coding")
     backend.validate_agent("demo", "exporter")

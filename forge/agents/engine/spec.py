@@ -1,4 +1,4 @@
-"""Agent specifications (A82): the contract an agent is built from.
+"""Agent specifications (A83): the contract an agent is built from.
 
 An :class:`AgentSpec` is the *only* source of an agent's power. It
 declares what the agent is for, which capabilities it routes on, which

@@ -1,4 +1,4 @@
-"""Agent versioning (A82): immutable, semver-labelled spec snapshots.
+"""Agent versioning (A83): immutable, semver-labelled spec snapshots.
 
 A version record is evidence about what an agent *was*: the exact spec,
 its fingerprint, who recorded it, and why. Records are never rewritten.

@@ -1,4 +1,4 @@
-"""Agent execution (A82): every run goes through the real subsystems.
+"""Agent execution (A83): every run goes through the real subsystems.
 
 An agent run is a fixed pipeline, and no stage can be skipped by the
 agent itself:

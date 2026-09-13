@@ -739,7 +739,7 @@ Checkpoints — never around them.
   scenarios, quota, versions, and runs. It calls the same engine the CLI
   uses, with the same actor.
 
-See `docs/A83-SPEC-AGENT-ENGINE.md`. Full suite after A83: 2394
+See `docs/A83-SPEC-AGENT-ENGINE.md`. Full suite after A83: 2463
 passed, 3 skipped.
 passed, 3 skipped.
 

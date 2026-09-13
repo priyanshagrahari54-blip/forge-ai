@@ -1,4 +1,4 @@
-"""The Agent Creation Engine façade (A82).
+"""The Agent Creation Engine façade (A83).
 
 :class:`AgentCreationEngine` wires the pieces together — package store,
 factory, grant ledger, governor, memory, tool runtime, PolicyGate, and the

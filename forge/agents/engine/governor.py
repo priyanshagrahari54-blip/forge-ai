@@ -1,4 +1,4 @@
-"""Resource limits (A82): declared bounds, enforced while running.
+"""Resource limits (A83): declared bounds, enforced while running.
 
 The spec's :class:`~forge.agents.engine.spec.ResourceLimits` are not
 advisory. A run acquires a :class:`RunBudget` before it does anything and

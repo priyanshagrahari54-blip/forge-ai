@@ -1,4 +1,4 @@
-"""Agent lifecycle (A82): explicit states that gate execution.
+"""Agent lifecycle (A83): explicit states that gate execution.
 
 States and the only transitions allowed between them::
 

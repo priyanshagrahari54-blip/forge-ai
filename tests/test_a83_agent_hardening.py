@@ -1,4 +1,4 @@
-"""A82 — hardening regressions.
+"""A83 — hardening regressions.
 
 Each test here pins one defect that was found by driving the real engine
 and observing a wrong answer. They are written as the exploit first and
@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
 
-from helpers_a82 import (  # noqa: E402
+from helpers_a83 import (  # noqa: E402
     AgentProvider,
     action_payload,
     make_agent_fabric,
