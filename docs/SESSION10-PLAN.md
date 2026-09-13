@@ -3,6 +3,15 @@
 Goal: ONE coherent, secure, maintainable Forge architecture. No duplicated
 subsystems, no fake functionality. Every change is implemented and tested.
 
+## Status: COMPLETE
+
+All phases implemented, tested, and committed (see `SESSION10-REPORT.md`
+for the final report): A (fenced DAG scheduler, `79b889e`/`0280a58`),
+B (A83 port, `50677eb`), C (training/training CLIs, `d1465f4`),
+D1 (resource governor + G560 profile, `6e08a97`), D2 (true thin client
++ challenge/response, `4ee4fe6`), E (failure injection + cancel
+hardening, `7b03882`). Full suite: **2582 passed, 3 skipped**.
+
 ## Canonical map (what exists on main and stays canonical)
 
 | Subsystem            | Canonical location                                   |
