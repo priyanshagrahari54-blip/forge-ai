@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from forge.models.fabric import ModelFabric
@@ -182,7 +182,14 @@ class CoderAgent(AgentExecutor):
     def __init__(self, runtime: ToolRuntime | None = None, root: str = ".", router: ModelRouter | None = None,
                  fabric: "ModelFabric | None" = None, approval_store=None,
                  model_policy=None,
-                 approval_callback: ApprovalCallback | None = None):
+                 approval_callback: ApprovalCallback | None = None,
+                 commit_guard: Callable[[], str] | None = None):
+        #: Execution-fence guard for this coder's writes (Session 10).
+        #: A per-request ``request.guard`` wins over this instance-level
+        #: default; both default to ``None`` (unfenced, unchanged
+        #: behavior). When set, a fenced attempt's writes are refused
+        #: before they touch the filesystem.
+        self.commit_guard = commit_guard
         # Routing input priority: explicit fabric > explicit legacy router >
         # default fabric. The fabric is canonical; the legacy router argument
         # is a compatibility adapter preserved verbatim so pre-existing
@@ -357,7 +364,8 @@ class CoderAgent(AgentExecutor):
 
     def _apply_changes(self, changes: dict[str, str], approved: bool,
                        extra: dict | None = None, task_id: str = "",
-                       approval_token_id: str = "") -> tuple[list[str], list[str]]:
+                       approval_token_id: str = "",
+                       commit_guard: Callable[[], str] | None = None) -> tuple[list[str], list[str]]:
         """Apply validated changes through the controlled change-application layer.
 
         Per-change risk and old-state guards parsed from the model response
@@ -367,6 +375,11 @@ class CoderAgent(AgentExecutor):
         change shortcut (``request.metadata["changes"]`` is ignored).
         """
         meta = (extra or {}).get("change_meta", {})
+        # Per-request execution fence wins over the instance-level guard
+        # (Session 10): a fenced attempt cannot write, even if the coder
+        # was constructed with a live guard.
+        effective_guard = commit_guard if commit_guard is not None \
+            else self.commit_guard
         result = self.applier.apply(
             [
                 CodeChange(
@@ -384,6 +397,7 @@ class CoderAgent(AgentExecutor):
             actor=self.name,
             task_id=task_id,
             approval_token_id=approval_token_id,
+            commit_guard=effective_guard,
         )
         self.last_decisions = list(result.decisions)
         self.last_task_grant = result.task_grant
@@ -545,7 +559,8 @@ class CoderAgent(AgentExecutor):
             extra["classification"] = classify_text(prompt_text).value
             applied, errors = self._apply_changes(
                 changes, approved, extra, task_id=request.task.id,
-                approval_token_id=token_id)
+                approval_token_id=token_id,
+                commit_guard=getattr(request, "guard", None))
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})
@@ -591,7 +606,8 @@ class CoderAgent(AgentExecutor):
             extra["classification"] = classify_text(prompt_text).value
             applied, errors = self._apply_changes(
                 changes, approved, extra, task_id=request.task.id,
-                approval_token_id=token_id)
+                approval_token_id=token_id,
+                commit_guard=getattr(request, "guard", None))
             if errors:
                 return AgentResponse(False, error=errors[0], agent=self.name,
                                      stage=request.stage, metadata={"files": applied})

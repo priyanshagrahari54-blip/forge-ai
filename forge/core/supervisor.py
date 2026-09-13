@@ -126,6 +126,7 @@ class Supervisor:
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
         control: SupervisorControl | None = None,
         approval_callback: ApprovalCallback | None = None,
+        commit_guard: Callable[[], str] | None = None,
     ) -> dict[str, Any]:
         """Execute model → code → test/debug → review/security → acceptance.
 
@@ -270,10 +271,12 @@ class Supervisor:
             task.status = TaskStatus.PLANNING
             coder = CoderAgent(runtime=shared_runtime, root=str(self.root), router=router, fabric=fabric,
                                approval_store=approval_store, model_policy=model_policy,
-                               approval_callback=approval_callback)
+                               approval_callback=approval_callback,
+                               commit_guard=commit_guard)
             debugger = DebuggerAgent(str(self.root), runtime=shared_runtime, router=router, fabric=fabric,
                                      approval_store=approval_store, model_policy=model_policy,
-                                     approval_callback=approval_callback)
+                                     approval_callback=approval_callback,
+                                     commit_guard=commit_guard)
             # Every registered executor is real: the reviewer runs the
             # deterministic ReviewGate over the request context (plus
             # optional model findings when a fabric is available), the

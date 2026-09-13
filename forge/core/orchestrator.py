@@ -24,9 +24,9 @@ Honesty invariants:
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -269,6 +269,7 @@ class MultiAgentOrchestrator:
         control: SupervisorControl | None = None,
         agent_identity: str = "forge-orchestrator",
         task_id: str = "",
+        store_path: str = "",
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -287,6 +288,14 @@ class MultiAgentOrchestrator:
         self.control = control
         self.agent_identity = agent_identity
         self.task_id = task_id
+        #: When set, the fenced scheduler persists tasks, attempts, and
+        #: its monotonically sequenced event log here (SQLite), so runs
+        #: survive restart and are inspectable (`forge tasks`).
+        self.store_path = store_path
+        # The scheduler running the current execute() (if any), so
+        # cancel() can reach the scheduler-level fence — not just the
+        # cooperative per-attempt checkpoint.
+        self._active_scheduler: Any = None
 
     # -- planning -----------------------------------------------------------
 
@@ -325,6 +334,20 @@ class MultiAgentOrchestrator:
     # -- execution -----------------------------------------------------------
 
     def execute(self, plan: OrchestrationPlan) -> OrchestrationReport:
+        """Execute the plan on the canonical fenced DAG scheduler.
+
+        Every step attempt carries a unique ``(step_id, generation)``
+        identity. A step that times out is fenced the moment the watchdog
+        expires: its late result is rejected by the scheduler, and its
+        guard refuses further writes through the change-set and tool
+        choke points. Retries start at a strictly higher generation, so
+        an abandoned attempt can never overlap a fresh one.
+        """
+        from forge.core.dag_scheduler import DAGScheduler
+        from forge.core.fencing import (CANCELLED, FENCED,
+                                        SKIPPED as _SKIPPED_STATE,
+                                        SUCCEEDED)
+
         plan.validate(self.registry)
         run_id = uuid.uuid4().hex
         started = time.time()
@@ -341,114 +364,115 @@ class MultiAgentOrchestrator:
             self._emit("orchestration_finished", report.to_dict())
             return report
 
-        outcomes: dict[str, StepOutcome] = {}
-        running: dict[str, Future[StepOutcome]] = {}
-        cancelled = False
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            while True:
-                try:
-                    self._checkpoint()
-                except TaskCancelled:
-                    cancelled = True
-                    for future in running.values():
-                        future.cancel()
-                    break
-                progressed = False
-                for step in plan.steps:
-                    if step.id in outcomes or step.id in running:
-                        continue
-                    if not step.depends_on:
-                        outcomes[step.id] = StepOutcome(
-                            step.id, step.agent, step.role, step.capability,
-                            StepStatus.PENDING)
-                        running[step.id] = pool.submit(self._run_step, step)
-                        progressed = True
-                        continue
-                    statuses = []
-                    pending_dep = False
-                    for dependency in step.depends_on:
-                        dep_outcome = outcomes.get(dependency)
-                        if dep_outcome is None:
-                            pending_dep = True
-                            break
-                        statuses.append(dep_outcome.status)
-                    if pending_dep:
-                        continue
-                    if any(status in (StepStatus.FAILED, StepStatus.DENIED,
-                                      StepStatus.CANCELLED)
-                           for status in statuses):
-                        outcomes[step.id] = StepOutcome(
-                            step.id, step.agent, step.role, step.capability,
-                            StepStatus.SKIPPED,
-                            error="dependency step did not succeed")
-                        progressed = True
-                    elif all(status == StepStatus.SUCCEEDED
-                             for status in statuses):
-                        outcomes[step.id] = StepOutcome(
-                            step.id, step.agent, step.role, step.capability,
-                            StepStatus.PENDING)
-                        running[step.id] = pool.submit(self._run_step, step)
-                        progressed = True
-                if running:
-                    done, _ = wait(tuple(running.values()), timeout=0.05,
-                                   return_when=FIRST_COMPLETED)
-                    for future in done:
-                        for step_id, pending in list(running.items()):
-                            if pending is not future:
-                                continue
-                            running.pop(step_id)
-                            try:
-                                outcomes[step_id] = future.result()
-                            except TaskCancelled:
-                                cancelled = True
-                                outcomes[step_id] = StepOutcome(
-                                    step_id, plan_by_id(plan, step_id).agent,
-                                    plan_by_id(plan, step_id).role,
-                                    plan_by_id(plan, step_id).capability,
-                                    StepStatus.CANCELLED,
-                                    error="cancelled by operator")
-                            break
-                    if not running and all(
-                            step.id in outcomes for step in plan.steps):
-                        break
-                    continue
-                if all(step.id in outcomes for step in plan.steps):
-                    break
-                if not progressed:
-                    # Validated plans always make progress; guard anyway.
-                    cancelled = True
-                    break
+        by_id = {step.id: step for step in plan.steps}
+        step_data: dict[str, dict[str, Any]] = {
+            step.id: {"messages": [], "started": False}
+            for step in plan.steps}
+        dispatch_cache: dict[str, tuple[bool, str]] = {}
+        cache_lock = threading.Lock()
 
-        remaining = [step.id for step in plan.steps if step.id not in outcomes]
-        if cancelled:
-            for step in plan.steps:
-                if step.id not in outcomes:
-                    outcomes[step.id] = StepOutcome(
-                        step.id, step.agent, step.role, step.capability,
-                        StepStatus.CANCELLED, error="cancelled by operator")
-            del remaining[:]
-        elif remaining:
-            for step in plan.steps:
-                if step.id in outcomes:
-                    continue
-                statuses = [outcomes[dependency].status
-                            for dependency in step.depends_on
-                            if dependency in outcomes]
-                outcomes[step.id] = StepOutcome(
-                    step.id, step.agent, step.role, step.capability,
-                    StepStatus.SKIPPED if statuses else StepStatus.CANCELLED,
-                    error="dependency step did not succeed" if statuses
-                    else "never scheduled")
+        def executor(task: Any, attempt: Any, control: Any, guard: Any):
+            step = by_id[task.task_id]
+            # External operator control (A38 cockpit cancel): checked
+            # before each attempt and again after the call returns, so a
+            # cancel that lands mid-invoke still wins the report.
+            try:
+                self._checkpoint()
+                control.checkpoint("step-start")
+            except TaskCancelled:
+                return {"success": False, "cancelled": True,
+                        "terminal": True, "output": "",
+                        "error": "cancelled by operator", "metadata": {}}
+            with cache_lock:
+                if task.task_id not in dispatch_cache:
+                    dispatch_cache[task.task_id] = self._dispatch_permission(
+                        step)
+            allowed, reason = dispatch_cache[task.task_id]
+            if not allowed:
+                return {"success": False, "terminal": True, "output": "",
+                        "error": reason or "dispatch not authorized",
+                        "metadata": {"denied": True}}
+            outcome = self._run_attempt(step, attempt, control, guard,
+                                        step_data[task.task_id])
+            try:
+                self._checkpoint()
+            except TaskCancelled:
+                return {"success": False, "cancelled": True,
+                        "terminal": True, "output": outcome.output,
+                        "error": "cancelled by operator", "metadata": {}}
+            return {"success": outcome.status == StepStatus.SUCCEEDED,
+                    "cancelled": outcome.status == StepStatus.CANCELLED,
+                    "terminal": outcome.status != StepStatus.FAILED,
+                    "output": outcome.output, "error": outcome.error,
+                    "metadata": {}}
+
+        scheduler = DAGScheduler(
+            self.store_path, max_workers=self.max_workers,
+            owner=self.agent_identity)
+        for step in plan.steps:
+            scheduler.add_task(
+                step.id, step.instructions, depends_on=step.depends_on,
+                timeout=self.step_timeout, max_attempts=self.max_attempts)
+        self._active_scheduler = scheduler
+        try:
+            results = scheduler.run(executor)
+        finally:
+            self._active_scheduler = None
+
+        outcomes: dict[str, StepOutcome] = {}
+        for step in plan.steps:
+            result = results.get(step.id)
+            state = result.state if result is not None else _SKIPPED_STATE
+            data = step_data[step.id]
+            attempts = result.attempts if result is not None else 0
+            error = (result.error if result is not None
+                     else "dependency step did not succeed")
+            output = (result.output if result is not None else "")
+            if state == SUCCEEDED:
+                status = StepStatus.SUCCEEDED
+            elif state == CANCELLED:
+                status = StepStatus.CANCELLED
+            elif state == _SKIPPED_STATE:
+                status = StepStatus.SKIPPED
+            elif state == FENCED:
+                # A fenced step (timeout, abandoned worker) is a failure
+                # with the watchdog's reason — never a success.
+                status = StepStatus.FAILED
+            else:
+                status = StepStatus.FAILED
+            if status == StepStatus.FAILED and result is not None \
+                    and result.metadata.get("denied"):
+                status = StepStatus.DENIED
+                attempts = 0
+            outcomes[step.id] = StepOutcome(
+                step.id, step.agent, step.role, step.capability, status,
+                output=output[:MAX_HANDOFF_CONTEXT],
+                error=error[:1000] if status != StepStatus.SUCCEEDED else "",
+                attempts=attempts,
+                started_at=None, finished_at=time.time(),
+                messages=list(data["messages"]))
 
         ordered = [outcomes[step.id] for step in plan.steps]
         failed = [outcome for outcome in ordered
                   if outcome.status in (StepStatus.FAILED, StepStatus.DENIED)]
         succeeded = [outcome for outcome in ordered
                      if outcome.status == StepStatus.SUCCEEDED]
-        if cancelled:
+        step_cancelled = any(outcome.status == StepStatus.CANCELLED
+                             for outcome in ordered)
+        host_cancel = bool(self.control is not None
+                           and self.control.cancel_requested)
+        # A cancelled run is never a success — not even a partial one.
+        # (A host-injected control may be absent, so the step outcomes
+        # are the authoritative signal.)
+        if host_cancel or step_cancelled:
             status = ReportStatus.CANCELLED
         elif failed:
             status = ReportStatus.FAILED
+        elif not succeeded:
+            # Nothing succeeded and nothing failed: every step ended
+            # skipped or cancelled. That is a cancellation, not a
+            # success — report it as one.
+            status = ReportStatus.CANCELLED
         else:
             status = ReportStatus.SUCCEEDED
         summary = (
@@ -465,63 +489,52 @@ class MultiAgentOrchestrator:
         self._emit("orchestration_finished", report.to_dict())
         return report
 
-    # -- one step -------------------------------------------------------------
+    # -- one step attempt ------------------------------------------------------
 
-    def _run_step(self, step: OrchestrationStep) -> StepOutcome:
+    def _run_attempt(self, step: OrchestrationStep, attempt: Any, control: Any,
+                     guard: Any, data: dict[str, Any]) -> StepOutcome:
+        """Run exactly one fenced attempt of a step."""
         started = time.time()
-        self._emit("step_started", {
+        if not data["started"]:
+            data["started"] = True
+            self._emit("step_started", {
+                "step_id": step.id, "agent": step.agent,
+                "capability": step.capability, "role": step.role})
+        self._emit("step_attempt", {
             "step_id": step.id, "agent": step.agent,
-            "capability": step.capability, "role": step.role})
+            "attempt": attempt.attempt, "attempt_id": attempt.attempt_id})
         try:
-            self._checkpoint()
+            response, step_messages = self._invoke(step, guard)
         except TaskCancelled:
             return self._outcome(step, StepStatus.CANCELLED,
                                  error="cancelled by operator",
-                                 started_at=started)
-        allowed, reason = self._dispatch_permission(step)
-        if not allowed:
-            return self._outcome(step, StepStatus.DENIED,
-                                 error=reason or "dispatch not authorized",
-                                 started_at=started)
-        attempts = 0
-        last_error = ""
-        messages: list[AgentMessage] = []
-        while attempts < self.max_attempts:
-            attempts += 1
-            self._emit("step_attempt", {
-                "step_id": step.id, "agent": step.agent, "attempt": attempts})
-            try:
-                response, step_messages = self._invoke(step)
-                messages.extend(step_messages)
-            except StepTimeoutError:
-                last_error = f"step timed out after {self.step_timeout}s"
-                self._emit("step_failed", {
-                    "step_id": step.id, "agent": step.agent,
-                    "error": last_error, "attempt": attempts})
-                continue
-            if response is not None and response.success:
-                return self._outcome(
-                    step, StepStatus.SUCCEEDED,
-                    output=response.output or "", attempts=attempts,
-                    started_at=started, messages=messages)
-            last_error = (response.error if response is not None
-                          else "agent produced no response")
-            self._emit("step_failed", {
-                "step_id": step.id, "agent": step.agent,
-                "error": last_error, "attempt": attempts})
-            try:
-                self._checkpoint()
-            except TaskCancelled:
-                return self._outcome(step, StepStatus.CANCELLED,
-                                     error="cancelled by operator",
-                                     attempts=attempts, started_at=started,
-                                     messages=messages)
-        return self._outcome(step, StepStatus.FAILED, error=last_error,
-                             attempts=attempts, started_at=started,
-                             messages=messages)
+                                 attempts=attempt.attempt, started_at=started,
+                                 messages=list(data["messages"]))
+        data["messages"].extend(step_messages)
+        if response is not None and response.success:
+            return self._outcome(
+                step, StepStatus.SUCCEEDED,
+                output=response.output or "", attempts=attempt.attempt,
+                started_at=started, messages=list(data["messages"]))
+        error = (response.error if response is not None
+                 else "agent produced no response")
+        self._emit("step_failed", {
+            "step_id": step.id, "agent": step.agent,
+            "error": error, "attempt": attempt.attempt})
+        return self._outcome(step, StepStatus.FAILED, error=error,
+                             attempts=attempt.attempt, started_at=started,
+                             messages=list(data["messages"]))
 
-    def _invoke(self, step: OrchestrationStep) -> tuple[
+    def _invoke(self, step: OrchestrationStep, guard: Any = None) -> tuple[
             AgentResponse | None, list[AgentMessage]]:
+        """Invoke the step's agent with the attempt's fence guard attached.
+
+        The scheduler's watchdog owns the step timeout: when it expires
+        the attempt is fenced (late results rejected, late writes
+        refused by ``guard``) while the underlying provider call
+        finishes under its own bounded network timeout. No thread is
+        leaked by the orchestrator itself.
+        """
         registration = self.registry.get(step.agent)
         task_id = self.task_id or f"orchestration-{uuid.uuid4().hex[:12]}"
         request = AgentRequest(
@@ -530,28 +543,38 @@ class MultiAgentOrchestrator:
                 description=step.instructions, status=TaskStatus.RUNNING),
             stage=TaskStatus.RUNNING,
             instructions=step.instructions,
-            metadata={"capability": step.capability, "role": step.role})
-        if self.step_timeout is None:
-            response = registration.executor.execute(request)
-        else:
-            pool = ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(registration.executor.execute, request)
-            done, _ = wait((future,), timeout=self.step_timeout)
-            if not done:
-                # shutdown(cancel_futures=True) is 3.9+; with a single
-                # held future, cancelling it directly is equivalent.
-                future.cancel()
-            pool.shutdown(wait=False)
-            if not done:
-                raise StepTimeoutError(step.id, self.step_timeout)
-            response = future.result()
+            metadata={"capability": step.capability, "role": step.role},
+            guard=guard)
+        response = registration.executor.execute(request)
         message = AgentMessage(
             sender=step.agent, receiver=self.agent_identity,
             task_id=request.task.id, message_type="result",
             content=(response.output or response.error)[:MAX_MESSAGE_CONTENT],
-            evidence=(f"attempts={1}", f"success={response.success}"),
+            evidence=(f"success={response.success}",),
             confidence=1.0 if response.success else 0.0)
         return response, [message]
+
+    def cancel(self) -> None:
+        """Request cancellation of the in-flight orchestration.
+
+        Two complementary paths, both fail closed:
+
+        * The per-attempt control asks each running worker to stop at its
+          next checkpoint (cooperative).
+        * The scheduler-level ``cancel_all`` marks queued steps cancelled
+          and moves running steps to ``CANCELLING``. A worker that
+          ignores checkpoints is fenced after the cancel grace and its
+          late result is rejected as stale — so cancellation cannot be
+          defeated by a hung worker, and no retry ever starts afterwards.
+        """
+        if self.control is not None:
+            self.control.request_cancel()
+        scheduler = self._active_scheduler
+        if scheduler is not None:
+            try:
+                scheduler.cancel_all()
+            except Exception:
+                pass
 
     def _dispatch_permission(self, step: OrchestrationStep) -> tuple[
             bool, str]:

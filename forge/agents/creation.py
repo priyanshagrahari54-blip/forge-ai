@@ -28,6 +28,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,6 +59,23 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
+#: Per-store-path mutation locks. Every engine instance that shares a
+#: store file takes the same lock, so a check-then-write (create after
+#: an existence check, grant after a spec read) is atomic across
+#: instances within one process. The stat guard in :meth:`_save` still
+#: catches out-of-band writers from other processes.
+_STORE_LOCKS: dict[str, threading.RLock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(store_path: str) -> threading.RLock:
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(store_path)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[store_path] = lock
+        return lock
+
 
 def agent_identity(name: str) -> str:
     """Canonical runtime identity for a created agent."""
@@ -68,6 +86,40 @@ def spec_fingerprint(spec: dict[str, Any]) -> str:
     """Full SHA-256 over the canonical spec JSON (change detection)."""
     canonical = json.dumps(spec, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def package_integrity_error(package: Any) -> str:
+    """Why ``package`` cannot be trusted, or ``""`` when it can.
+
+    The spec is what the operator approved and the grants were bounded
+    by. When the package records an ``approved_hash`` (the spec
+    fingerprint at the last approved mutation) that no longer matches
+    the spec, the package was edited outside the factory and must not
+    run as "approved". Packages with no recorded hash (imports, legacy
+    stores) are not judged — there is nothing to compare against.
+
+    Accepts :class:`AgentPackage` objects or raw store dicts so the
+    mediated runtime can judge callers that bypass the engine's load.
+    """
+    if isinstance(package, dict):
+        spec = package.get("spec", {})
+        recorded = str(package.get("approved_hash", "") or "")
+        name = str(package.get("name", ""))
+    else:
+        spec = getattr(package, "spec", {}) or {}
+        recorded = str(getattr(package, "approved_hash", "") or "")
+        name = str(getattr(package, "name", ""))
+    if not isinstance(spec, dict):
+        return "agent package %r has a corrupt spec" % (name,)
+    if not recorded.strip():
+        return ""
+    actual = spec_fingerprint(spec)
+    if actual != recorded:
+        return ("agent package %r does not match its recorded approval "
+                "fingerprint (recorded %s, spec now %s); the specification "
+                "was edited outside the factory and must be re-approved"
+                % (name, recorded[:12], actual[:12]))
+    return ""
 
 
 def bump_version(version: str, kind: str) -> str:
@@ -137,6 +189,11 @@ class AgentPackage:
     versions: list[dict[str, Any]] = field(default_factory=list)
     benchmarks: list[dict[str, Any]] = field(default_factory=list)
     transitions: list[dict[str, Any]] = field(default_factory=list)
+    #: Fingerprint of the spec at the last operator-approved mutation.
+    #: The spec is the authority on what this agent may do, so a package
+    #: whose spec no longer matches this recorded fingerprint was edited
+    #: outside the factory and must not run as "approved".
+    approved_hash: str = ""
 
     def agent_spec(self) -> AgentSpec:
         return AgentSpec.from_dict(self.spec)
@@ -155,6 +212,10 @@ class AgentPackage:
             "tools": list(spec.get("tools", [])),
             "grants": len(self.grants),
             "spec_hash": spec_fingerprint(spec),
+            #: Fingerprint of the spec at the last operator-approved
+            #: mutation. When it differs from ``spec_hash`` the package
+            #: was edited outside the factory and is not trustworthy.
+            "approved_hash": self.approved_hash,
             "created_by": self.created_by,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -173,6 +234,7 @@ class AgentPackage:
             "versions": list(self.versions),
             "benchmarks": list(self.benchmarks),
             "transitions": list(self.transitions),
+            "approved_hash": self.approved_hash,
             "manifest": self.manifest(),
         }
 
@@ -227,6 +289,7 @@ class AgentPackage:
             versions=list(payload.get("versions", [])),
             benchmarks=list(payload.get("benchmarks", [])),
             transitions=list(payload.get("transitions", [])),
+            approved_hash=str(payload.get("approved_hash", "") or ""),
         )
         if package.name != package.spec.get("name"):
             raise ValueError("package name does not match its spec")
@@ -240,6 +303,13 @@ class AgentCreationEngine:
         self.store_path = store_path
         self._packages: dict[str, AgentPackage] = {}
         self._store_stat: tuple[float, int] | None = None
+        #: Serializes mutations so two concurrent creates of the same
+        #: agent cannot both pass the existence check and clobber each
+        #: other (the store file itself stays atomic: temp + rename).
+        #: Engines sharing a store path share one lock, so the
+        #: check-then-write is atomic across instances in this process.
+        self._lock = (_store_lock(os.path.abspath(store_path))
+                      if store_path else threading.RLock())
         if store_path:
             self._load()
 
@@ -279,13 +349,50 @@ class AgentCreationEngine:
             packages[package.name] = package
         self._packages = packages
         self._store_stat = self._stat_store()
+        self._enforce_integrity()
+
+    def _enforce_integrity(self) -> bool:
+        """Reset any package whose spec was edited outside the factory.
+
+        A hand-edited store row that keeps claiming ``enabled`` and its
+        old grants would be an approved agent no operator approved. The
+        reset is the engine's existing rule for *any* change to what an
+        agent may do: clear the grants, return to ``created``, record the
+        reason in the transition log. Returns True when anything changed.
+        """
+        changed = False
+        for package in self._packages.values():
+            if not package_integrity_error(package):
+                continue
+            now = time.time()
+            note = ("spec edited outside the factory (integrity mismatch); "
+                    "grants cleared, re-validation required")
+            package.transitions.append(
+                {"from": package.state, "to": "created", "at": now,
+                 "actor": "forge-integrity", "note": note})
+            package.transitions = package.transitions[-MAX_HISTORY:]
+            package.state = "created"
+            package.grants = []
+            package.updated_at = now
+            self._rebind_integrity(package)
+            changed = True
+        if changed and self.store_path:
+            self._save()
+        return changed
 
     def _save(self) -> None:
         if not self.store_path:
             return
-        if self._store_stat is not None \
-                and os.path.exists(self.store_path) \
-                and self._stat_store() != self._store_stat:
+        current = self._stat_store()
+        if self._store_stat is None:
+            # The file did not exist when this engine loaded. If it does
+            # now, another engine created it in the meantime — writing
+            # over it would silently clobber its state.
+            if current is not None:
+                raise ValueError(
+                    "agent store %r appeared on disk; reload before "
+                    "writing" % (self.store_path,))
+        elif current != self._store_stat:
             raise ValueError(
                 "agent store %r changed on disk; reload before writing"
                 % (self.store_path,))
@@ -326,15 +433,22 @@ class AgentCreationEngine:
 
     def create_from_spec(self, payload: dict[str, Any], *,
                          created_by: str = "") -> AgentPackage:
-        spec = AgentSpec.from_dict(payload).check()
-        return self._store(spec, created_by=created_by)
+        with self._lock:
+            spec = AgentSpec.from_dict(payload).check()
+            return self._store(spec, created_by=created_by)
 
     def create_from_template(self, template: str, name: str, *,
                              created_by: str = "",
                              overrides: dict[str, Any] | None = None,
                              ) -> AgentPackage:
-        spec = build_template(template, name, overrides)
-        return self._store(spec, created_by=created_by)
+        with self._lock:
+            spec = build_template(template, name, overrides)
+            return self._store(spec, created_by=created_by)
+
+    @staticmethod
+    def _rebind_integrity(package: AgentPackage) -> None:
+        """Re-record the approval fingerprint after an operator mutation."""
+        package.approved_hash = spec_fingerprint(package.spec)
 
     def _store(self, spec: AgentSpec, *, created_by: str) -> AgentPackage:
         if len(self._packages) >= MAX_PACKAGES:
@@ -355,6 +469,7 @@ class AgentCreationEngine:
                        "actor": (created_by or "").strip()[:64],
                        "at": now,
                        "spec_hash": spec_fingerprint(spec.to_dict())}])
+        self._rebind_integrity(package)
         self._packages[package.name] = package
         self._save()
         return package
@@ -403,6 +518,7 @@ class AgentCreationEngine:
             package.transitions = package.transitions[-MAX_HISTORY:]
         package.state = "created"
         package.updated_at = time.time()
+        self._rebind_integrity(package)
         self._record_release(package, kind="patch",
                              notes="spec power changed (%s); "
                              "re-validation required" % reason,
@@ -424,6 +540,10 @@ class AgentCreationEngine:
 
     def validate(self, name: str, *, actor: str = "") -> dict[str, Any]:
         """Re-validate the spec; created → validated on success."""
+        with self._lock:
+            return self._validate_locked(name, actor=actor)
+
+    def _validate_locked(self, name: str, *, actor: str = "") -> dict[str, Any]:
         package = self.get(name)
         _refuse_self_admin(package.name, actor, "validate")
         if package.state != "created":
@@ -443,6 +563,11 @@ class AgentCreationEngine:
         """Run the benchmark suite; validated → tested when the score
         clears the spec's minimum. Re-running on tested/enabled/paused
         agents records a fresh result without moving state."""
+        with self._lock:
+            return self._benchmark_locked(name, actor=actor, fabric=fabric)
+
+    def _benchmark_locked(self, name: str, *, actor: str = "",
+                          fabric: Any = None) -> dict[str, Any]:
         from forge.agents.agent_bench import run_agent_benchmark
 
         package = self.get(name)
@@ -484,32 +609,43 @@ class AgentCreationEngine:
                 "benchmark before enabling" % (package.name,))
 
     def enable(self, name: str, *, actor: str = "") -> AgentPackage:
-        package = self.get(name)
-        self._require_fresh_benchmark(package)
-        return self._transition(package, "enabled", actor)
+        with self._lock:
+            package = self.get(name)
+            self._require_fresh_benchmark(package)
+            return self._transition(package, "enabled", actor)
 
     def pause(self, name: str, *, actor: str = "") -> AgentPackage:
-        return self._transition(self.get(name), "paused", actor)
+        with self._lock:
+            return self._transition(self.get(name), "paused", actor)
 
     def resume(self, name: str, *, actor: str = "") -> AgentPackage:
-        package = self.get(name)
-        if package.state != "paused":
-            raise ValueError("agent %r is %s; only paused agents resume"
-                             % (name, package.state))
-        self._require_fresh_benchmark(package)
-        return self._transition(package, "enabled", actor)
+        with self._lock:
+            package = self.get(name)
+            if package.state != "paused":
+                raise ValueError("agent %r is %s; only paused agents resume"
+                                 % (name, package.state))
+            self._require_fresh_benchmark(package)
+            return self._transition(package, "enabled", actor)
 
     def disable(self, name: str, *, actor: str = "") -> AgentPackage:
-        return self._transition(self.get(name), "disabled", actor)
+        with self._lock:
+            return self._transition(self.get(name), "disabled", actor)
 
     def retire(self, name: str, *, actor: str = "") -> AgentPackage:
-        return self._transition(self.get(name), "retired", actor)
+        with self._lock:
+            return self._transition(self.get(name), "retired", actor)
 
     # -- spec updates (always re-earn the lifecycle) ---------------------
 
     def update(self, name: str, payload: dict[str, Any], *,
                actor: str = "", reason: str = "") -> AgentPackage:
         """Replace the spec, bump patch, and reset to ``created``."""
+        with self._lock:
+            return self._update_locked(name, payload, actor=actor,
+                                       reason=reason)
+
+    def _update_locked(self, name: str, payload: dict[str, Any], *,
+                       actor: str = "", reason: str = "") -> AgentPackage:
         package = self.get(name)
         _refuse_self_admin(package.name, actor, "update")
         if package.state == "retired":
@@ -534,6 +670,12 @@ class AgentCreationEngine:
         reviewed, so a spec change between listing and granting refuses
         instead of granting a re-pointed index. Grants widen power, so
         the lifecycle resets to ``created``."""
+        with self._lock:
+            return self._grant_locked(name, index, approver=approver,
+                                      expected=expected)
+
+    def _grant_locked(self, name: str, index: int, *, approver: str = "",
+                      expected: dict[str, Any] | None = None) -> dict[str, Any]:
         package = self.get(name)
         approver = (approver or "").strip()
         if not approver:
@@ -568,6 +710,11 @@ class AgentCreationEngine:
                           approver: str = "") -> dict[str, Any]:
         """Revoke one grant. Like grants, revocations change effective
         power, so the lifecycle resets to ``created``."""
+        with self._lock:
+            return self._revoke_locked(name, index, approver=approver)
+
+    def _revoke_locked(self, name: str, index: int, *,
+                       approver: str = "") -> dict[str, Any]:
         package = self.get(name)
         approver = (approver or "").strip()
         if not approver:
@@ -591,7 +738,13 @@ class AgentCreationEngine:
                         notes: str = "", actor: str = "") -> dict[str, Any]:
         """Record a release marker. The spec is unchanged, so no reset is
         needed — the spec hash in the record proves it."""
-        package = self.get(name)
+        with self._lock:
+            package = self.get(name)
+            return self._publish_locked(package, kind=kind, notes=notes,
+                                        actor=actor)
+
+    def _publish_locked(self, package: AgentPackage, *, kind: str,
+                        notes: str, actor: str) -> dict[str, Any]:
         _refuse_self_admin(package.name, actor, "re-version")
         if package.state == "retired":
             raise ValueError("retired agents cannot publish versions")
@@ -611,6 +764,11 @@ class AgentCreationEngine:
 
     def import_package(self, payload: Any, *,
                        created_by: str = "") -> AgentPackage:
+        with self._lock:
+            return self._import_locked(payload, created_by)
+
+    def _import_locked(self, payload: Any,
+                       created_by: str) -> AgentPackage:
         if not isinstance(payload, dict):
             raise ValueError("an import payload must be an object")
         if payload.get("format") != "forge-agent-package":
