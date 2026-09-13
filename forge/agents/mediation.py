@@ -337,6 +337,7 @@ class GatedAgentRuntime:
     def execute_tool(self, package: Any, tool: str, run_id: str = "",
                      *, approver: str = "", approved: bool = False,
                      approval_token_id: str = "",
+                     commit_guard: Any = None,
                      **kwargs: Any) -> dict[str, Any]:
         """Run one tool call through allowlist, grants, gate, runtime.
 
@@ -431,7 +432,8 @@ class GatedAgentRuntime:
             result = self.tool_runtime.execute(
                 tool, approved=approved, actor=agent_identity(name),
                 task_id=run_id, approval_token_id=approval_token_id,
-                risk=risk, request_id=chain_id, **kwargs)
+                risk=risk, request_id=chain_id,
+                commit_guard=commit_guard, **kwargs)
         except Exception as exc:
             raise MediationError("TOOL_FAILED",
                                  "tool %r crashed: %s" % (tool, exc)
@@ -595,7 +597,8 @@ class GatedAgentRuntime:
             actor: str = "", approver: str = "",
             tool_calls: list[dict[str, Any]] | None = None,
             approved: bool = False,
-            approval_token_id: str = "") -> dict[str, Any]:
+            approval_token_id: str = "",
+            guard: Any = None) -> dict[str, Any]:
         """Run an enabled agent: fabric → tools → verification → memory.
 
         ``tool_calls`` (``{"tool": ..., "args": {...}}``) execute through
@@ -671,7 +674,8 @@ class GatedAgentRuntime:
                     result = self.execute_tool(
                         package, tool, run_id, approver=approver,
                         approved=approved,
-                        approval_token_id=approval_token_id, **args)
+                        approval_token_id=approval_token_id,
+                        commit_guard=guard, **args)
                 except MediationError:
                     _fail_rollback()
                     raise

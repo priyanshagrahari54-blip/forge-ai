@@ -561,8 +561,8 @@ class DAGScheduler:
         with self._db_lock:
             rows = self._conn.execute(
                 "SELECT task_id, description, dependencies, timeout,"
-                " max_attempts, resources, state, attempts, error"
-                " FROM tasks"
+                " max_attempts, resources, state, attempts, error,"
+                " output FROM tasks"
             ).fetchall()
         for row in rows:
             task_id = row["task_id"]
@@ -572,8 +572,10 @@ class DAGScheduler:
             if state in TERMINAL_STATES:
                 # Adopt read-only so a new add_task with the same id is
                 # refused instead of silently overwriting a terminal
-                # row; the state itself is never touched.
-                self._adopt_persisted(row, state)
+                # row; the state (and its error/output) is preserved.
+                self._adopt_persisted(row, state,
+                                      reason=row["error"] or "",
+                                      output=row["output"] or "")
                 continue
             if state == QUEUED:
                 task = self._adopt_persisted(row, state)
@@ -598,8 +600,8 @@ class DAGScheduler:
                 self._record_event(
                     task_id, "-", attempts, final, reason)
 
-    def _adopt_persisted(self, row: Any, state: str,
-                         reason: str = "") -> Optional[ScheduledTask]:
+    def _adopt_persisted(self, row: Any, state: str, reason: str = "",
+                         output: str = "") -> Optional[ScheduledTask]:
         """Load one persisted task row into the live graph (if not
         already present from an explicit add_task)."""
         task_id = row["task_id"]
@@ -621,7 +623,7 @@ class DAGScheduler:
             max_attempts=int(row["max_attempts"] or 1),
             resources=resources, priority=0,
             state=state, attempts_used=int(row["attempts"] or 0),
-            error=reason)
+            error=reason, output=output)
         self._tasks[task_id] = task
         return task
 
@@ -674,6 +676,7 @@ class DAGScheduler:
                     continue
                 fence = self.registry.begin(
                     task.task_id, owner=self.owner or "scheduler")
+                fence = self.registry.mark_running(task.task_id, fence)
                 control = SupervisorControl()
                 guard = _guard_for(fence, self.registry)
                 self._controls[task.task_id] = control
@@ -811,7 +814,12 @@ class DAGScheduler:
                         and attempt.abandon_at is None \
                         and task.state == RUNNING:
                     fence = attempt.fence
+                    fenced = False
                     try:
+                        # The state machine refuses the transition when
+                        # the worker committed first (SUCCEEDED/FAILED/
+                        # CANCELLED is already recorded) — in that race
+                        # the commit wins and there is nothing to fence.
                         self.registry.timeout(
                             task_id, fence,
                             reason="exceeded %.3gs" % (
@@ -819,20 +827,24 @@ class DAGScheduler:
                                 - attempt.dispatched_at))
                         self.registry.fence(
                             task_id, fence, reason="timeout")
+                        fenced = True
                     except Exception:
-                        pass  # already fenced by cancel/restart
-                    task.error = "attempt %d timed out" % fence.attempt
-                    self._persist_task(task)
-                    self._persist_attempt(
-                        task_id, fence.generation, FENCED, "timeout",
-                        fence.created_at, now, "",
-                        "attempt timed out")
-                    self._record_event(
-                        task_id, fence.attempt_id, fence.generation, FENCED,
-                        "attempt timed out; fenced")
-                    attempt.control.request_cancel()
-                    # Wait for the thread to actually end before retrying.
-                    attempt.abandon_at = now + self.abandon_wait
+                        pass  # already committed or fenced by cancel
+                    if fenced:
+                        task.error = "attempt %d timed out" \
+                            % fence.attempt
+                        self._persist_task(task)
+                        self._persist_attempt(
+                            task_id, fence.generation, FENCED, "timeout",
+                            fence.created_at, now, "",
+                            "attempt timed out")
+                        self._record_event(
+                            task_id, fence.attempt_id, fence.generation,
+                            FENCED, "attempt timed out; fenced")
+                        attempt.control.request_cancel()
+                        # Wait for the thread to actually end before
+                        # retrying.
+                        attempt.abandon_at = now + self.abandon_wait
                 # Abandoned-thread budget: the fenced thread did not
                 # finish in time. Do not overlap it; end the task
                 # deterministically.
@@ -890,13 +902,30 @@ class DAGScheduler:
         fence_state = self.registry.current(task.task_id)
         fence_state = fence_state.state if fence_state is not None else FENCED
         if outcome.get("rejected_stale"):
-            # Worker reported the commit was rejected; the task state was
-            # already driven by the watchdog (FENCED/TIMED_OUT path).
+            # Worker reported the commit was rejected. A terminal state
+            # may already have won (grace fence, restart recovery);
+            # it is durable and final — never re-queue over it.
+            if task.state in TERMINAL_STATES:
+                return
+            fence_now = self.registry.current(task.task_id)
+            fence_now = fence_now.state if fence_now is not None else FENCED
+            if fence_now in (CANCELLED, CANCELLING):
+                # Cancellation won the race: the worker's result arrived
+                # after the cancel request. Confirm CANCELLED — the
+                # worker's (possibly successful) work is not trusted.
+                self._finalize(
+                    task, CANCELLED,
+                    "worker result arrived after cancel request")
+                return
+            # Otherwise the watchdog fenced the attempt (timeout). The
+            # watchdog's reason (e.g. "attempt 1 timed out") is the
+            # accurate final error — keep it.
             if task.attempts_used < task.max_attempts:
                 self._requeue(task, "retry after fenced attempt")
             else:
-                self._finalize(task, FENCED,
-                               "all attempts fenced (stale results)")
+                self._finalize(
+                    task, FENCED,
+                    task.error or "all attempts fenced (stale results)")
             return
         if outcome.get("cancelled"):
             if fence_state == CANCELLED or task.state in (CANCELLED,
