@@ -301,6 +301,10 @@ class ModelFabric:
                 )
                 continue
 
+            #: Provenance survives the translation into the fabric's own
+            #: vocabulary: an agent must be able to tell a real model answer
+            #: from the deterministic rung, and see which backend produced it.
+            result_metadata = dict(getattr(result, "metadata", None) or {})
             response = ModelResponse(
                 text=result.text,
                 model=model.name,
@@ -309,8 +313,11 @@ class ModelFabric:
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 latency_ms=(perf_counter() - started) * 1000.0,
-                finish_reason="stop",
+                finish_reason=str(result_metadata.get("finish_reason") or "")
+                or "stop",
             )
+            for key, value in result_metadata.items():
+                response.metadata.setdefault(str(key), value)
             if classification is not None:
                 response.metadata["classification"] = classification.value
             self.record_feedback(

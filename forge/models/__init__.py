@@ -56,6 +56,99 @@ from forge.models.request import ModelRequest, ModelResponse
 # Imported last: the bridge depends on forge.runtime.model_runtime, which is
 # deliberately independent of this package (the dependency is one-way).
 from forge.models.runtime_bridge import RuntimeProvider, attach_runtime
+
+# -- Session 11: the real inference fabric -----------------------------------
+#
+# Identity, backends, verification, residency, routing, streaming, context
+# budgeting, the fallback ladder and the request path itself. Nothing here is
+# wired up by default: :func:`build_inference_fabric` and
+# :func:`attach_inference` are explicit, opt-in entry points, so enabling the
+# inference fabric can never silently change existing routing.
+from forge.models.backends import (
+    Backend,
+    BackendError,
+    BackendNotReadyError,
+    BackendRegistry,
+    BackendStatus,
+    ForgeCustomBackend,
+    LlamaCppCompatibleBackend,
+    NativeLocalBackend,
+    OllamaCompatibleBackend,
+    RemoteProviderBackend,
+    ResourceRequirements,
+    RuntimeBackendAdapter,
+)
+from forge.models.catalog import CatalogError, DiscoveryReport, ModelCatalog
+from forge.models.context_budget import (
+    ContextBudgetPlanner,
+    ContextPlan,
+    ContextSection,
+)
+from forge.models.engine import (
+    InferenceFabric,
+    InferenceResult,
+    InferenceStreamHandle,
+    Observation,
+    build_inference_fabric,
+    scan_model_output,
+)
+from forge.models.evidence import (
+    ROUTING_EVIDENCE_KINDS,
+    evidence_to_findings,
+    summarize_evidence,
+)
+from forge.models.fabric_bridge import (
+    InferenceFabricProvider,
+    attach_inference,
+    detach_inference,
+)
+from forge.models.fallback import (
+    DETERMINISTIC_MODEL_ID,
+    FallbackLadder,
+    FallbackPlan,
+    FallbackStep,
+    FallbackTier,
+    TerminalState,
+    classify_error,
+)
+from forge.models.identity import (
+    AvailabilityState,
+    IdentityError,
+    MemoryRequirements,
+    ModelIdentity,
+    ModelSpoofingError,
+    VerificationState,
+)
+from forge.models.model_cache import (
+    ModelResidencyCache,
+    ModelResidencyError,
+    ResidencyEntry,
+)
+from forge.models.reference_engine import (
+    ReferenceArtifactWriter,
+    ReferenceLocalBackend,
+    ReferenceModelConfig,
+)
+from forge.models.remote import (
+    RemoteHttpBackend,
+    RemoteProviderConfig,
+    RemoteProviderStatus,
+)
+from forge.models.routing import (
+    PolicyResult,
+    ResourceResult,
+    RoutingEngine,
+    RoutingPlan,
+    RoutingRequest,
+    RoutingState,
+)
+from forge.models.streams import BoundedStream, StreamEvent, join_deltas
+from forge.models.verification import (
+    ModelVerifier,
+    VerificationCheck,
+    VerificationResult,
+    fingerprint_artifact,
+)
 from forge.models.router import (
     FabricRouter,
     ModelInfo,
@@ -119,4 +212,70 @@ __all__ = [
     "consensus",
     "RuntimeProvider",
     "attach_runtime",
+    # -- Session 11 -------------------------------------------------------
+    "AvailabilityState",
+    "VerificationState",
+    "ModelIdentity",
+    "MemoryRequirements",
+    "IdentityError",
+    "ModelSpoofingError",
+    "Backend",
+    "BackendStatus",
+    "BackendRegistry",
+    "BackendError",
+    "BackendNotReadyError",
+    "RuntimeBackendAdapter",
+    "NativeLocalBackend",
+    "OllamaCompatibleBackend",
+    "LlamaCppCompatibleBackend",
+    "ForgeCustomBackend",
+    "RemoteProviderBackend",
+    "ResourceRequirements",
+    "RemoteHttpBackend",
+    "RemoteProviderConfig",
+    "RemoteProviderStatus",
+    "ReferenceLocalBackend",
+    "ReferenceArtifactWriter",
+    "ReferenceModelConfig",
+    "ModelCatalog",
+    "CatalogError",
+    "DiscoveryReport",
+    "ModelVerifier",
+    "VerificationResult",
+    "VerificationCheck",
+    "fingerprint_artifact",
+    "ModelResidencyCache",
+    "ModelResidencyError",
+    "ResidencyEntry",
+    "RoutingEngine",
+    "RoutingRequest",
+    "RoutingPlan",
+    "RoutingState",
+    "PolicyResult",
+    "ResourceResult",
+    "FallbackLadder",
+    "FallbackPlan",
+    "FallbackStep",
+    "FallbackTier",
+    "TerminalState",
+    "classify_error",
+    "DETERMINISTIC_MODEL_ID",
+    "BoundedStream",
+    "StreamEvent",
+    "join_deltas",
+    "ContextBudgetPlanner",
+    "ContextPlan",
+    "ContextSection",
+    "InferenceFabric",
+    "InferenceResult",
+    "InferenceStreamHandle",
+    "Observation",
+    "build_inference_fabric",
+    "scan_model_output",
+    "InferenceFabricProvider",
+    "attach_inference",
+    "detach_inference",
+    "ROUTING_EVIDENCE_KINDS",
+    "evidence_to_findings",
+    "summarize_evidence",
 ]

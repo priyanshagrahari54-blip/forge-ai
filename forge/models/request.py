@@ -36,6 +36,35 @@ class ModelRequest:
     max_latency_ms: float | None = None
     temperature: float | None = None
     trace_id: str = field(default_factory=lambda: uuid4().hex)
+    # -- Session 11: inference-fabric addressing and governance -----------
+    #: Explicit model selection (``"<backend>:<name>"`` or a bare name). The
+    #: routing engine still refuses it when it is unsafe or unavailable.
+    model: str = ""
+    #: Explicit backend selection. Never "whichever backend answers".
+    backend: str = ""
+    #: Execution identity: a stale attempt may not publish a result.
+    task_id: str = ""
+    attempt_id: str = ""
+    generation_id: str = ""
+    #: Bounded wall-clock budget in seconds (clamped by the device profile).
+    timeout: float | None = None
+    #: Declared data classification (``public``/``internal``/``confidential``/
+    #: ``secret``). Detection can still raise the level; it never lowers it.
+    classification: str = ""
+    #: Network policy override (``""`` = the device profile decides).
+    network_policy: str = ""
+    #: Explicit cost ceiling for this request, in USD.
+    cost_budget_usd: float | None = None
+    #: Device/hardware profile hint (``g560`` denies local model loading).
+    hardware_profile: str = ""
+    #: Require a *verified* model. Turning this off is explicit and recorded.
+    require_verified: bool = True
+    #: Allow the deterministic non-neural rung when no model can serve.
+    allow_deterministic: bool = True
+    #: Optional pre-built repository context (``ContextPack``) and evidence.
+    context_pack: Any = None
+    research_evidence: tuple = ()
+    memory_records: tuple = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -92,6 +121,23 @@ class ModelRequest:
             "max_output_tokens": self.max_output_tokens,
             "complexity": self.complexity,
             "trace_id": self.trace_id,
+            # Session 11: addressing/governance metadata only — never content.
+            "model": self.model,
+            "backend": self.backend,
+            "task_id": self.task_id,
+            "attempt_id": self.attempt_id,
+            "generation_id": self.generation_id,
+            "timeout": self.timeout,
+            "classification": self.classification,
+            "network_policy": self.network_policy,
+            "cost_budget_usd": self.cost_budget_usd,
+            "hardware_profile": self.hardware_profile,
+            "require_verified": self.require_verified,
+            "allow_deterministic": self.allow_deterministic,
+            "context_sections": (len(getattr(self.context_pack, "items", ()) or ())
+                                 if self.context_pack is not None else 0),
+            "research_evidence": len(self.research_evidence or ()),
+            "memory_records": len(self.memory_records or ()),
         }
 
 
