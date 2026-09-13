@@ -245,3 +245,67 @@ def test_slug_and_short_helpers(gui):
     assert gui._slug("") == "project"
     assert gui._short("t-" + "a" * 30).endswith("..")
     assert gui._short("t-1") == "t-1"
+
+
+def _runtime_payload():
+    """A realistic runtime payload for the desktop runtime window."""
+    return {
+        "status": {
+            "runtime": {"version": "1.0.0", "closed": False,
+                        "config": {"default_backend": "native",
+                                   "allow_network": False,
+                                   "timeout_seconds": 120.0,
+                                   "model_dirs": ["/models"]}},
+            "backends": [{"name": "native", "kind": "native", "local": True,
+                          "requires_network": False, "available": True,
+                          "detail": "Artifact discovery only",
+                          "description": "First-party runtime"}],
+            "models": {"total": 2, "loaded": 1, "by_backend": {"native": 2}},
+            "resources": {"cpu_count": 8, "memory_total_mb": 16384.0,
+                          "memory_available_mb": 8192.0,
+                          "python_version": "3.8.10",
+                          "platform": "Windows-7", "in_flight": 0},
+        },
+        "health": {"ready": False, "ready_backends": [],
+                   "health": [{"backend": "native", "status": "degraded",
+                               "models_available": 2, "models_loaded": 1,
+                               "generations": 3, "failures": 1,
+                               "detail": "No inference adapter configured",
+                               "error": "api_key=[REDACTED]"}]},
+    }
+
+
+def test_runtime_window_renders(gui):
+    app = gui.ForgeDesktopApp(DesktopBackend())
+    app._show_runtime_window(_runtime_payload())
+    # Empty payloads must not crash the window either.
+    app._show_runtime_window({})
+    app._on_close()
+
+
+def test_runtime_pill_renders_from_a_snapshot(gui):
+    app = gui.ForgeDesktopApp(DesktopBackend())
+    summary = {"available_backends": ["native"], "default_backend": "native",
+               "allow_network": False, "models_known": 2}
+    app._render_runtime_pill(summary)
+    app._render_runtime_pill({})  # no backends available
+    app._apply_snapshot({"project_id": "", "tasks": [], "approvals": [],
+                         "events": [], "event_cursor": 0, "errors": {},
+                         "runtime": summary})
+    # A missing runtime section is tolerated.
+    app._apply_snapshot({"project_id": "", "tasks": [], "approvals": [],
+                         "events": [], "event_cursor": 0, "errors": {}})
+    app._on_close()
+
+
+def test_runtime_menu_item_is_wired(gui, monkeypatch):
+    app = gui.ForgeDesktopApp(DesktopBackend())
+    called = {}
+
+    def fake_async():
+        called["shown"] = True
+
+    monkeypatch.setattr(app, "_show_runtime_async", fake_async)
+    app._show_runtime_async()
+    assert called["shown"] is True
+    app._on_close()

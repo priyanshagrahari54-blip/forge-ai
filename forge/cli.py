@@ -6,6 +6,9 @@ import os
 import platform
 import shutil
 import sys
+import threading
+import time
+import uuid
 
 from pathlib import Path
 
@@ -377,6 +380,555 @@ def _run_models(args) -> None:
             f"reliability={model.reliability:.2f} latency={model.latency_ms:.1f}ms "
             f"context={model.context_window}"
         )
+
+
+def _build_runtime(args):
+    """Build the Native Model Runtime from config file / env / CLI overrides.
+
+    The runtime is model *execution infrastructure*: it is separate from the
+    Model Fabric (routing) and from the AI Engine (orchestration). Network
+    access stays off unless explicitly requested, so these commands are safe
+    to run anywhere.
+    """
+    from forge.runtime.model_runtime import (BUILTIN_BACKENDS, ModelRuntime,
+                                             RuntimeConfig)
+
+    config = RuntimeConfig.load(getattr(args, "config", "") or None)
+    if getattr(args, "allow_network", False):
+        config.allow_network = True
+    extra_dirs = list(getattr(args, "model_dir", []) or [])
+    if extra_dirs:
+        config.model_dirs = tuple(list(config.model_dirs) + extra_dirs)
+    backend = getattr(args, "backend", "") or ""
+    if backend:
+        if backend not in BUILTIN_BACKENDS:
+            print(f"Unknown backend {backend!r}; built-in backends: "
+                  f"{', '.join(BUILTIN_BACKENDS)}", file=sys.stderr)
+            raise SystemExit(2)
+        if backend not in config.backends:
+            config.backends = tuple(list(config.backends) + [backend])
+        config.default_backend = backend
+    config.validate()
+    return ModelRuntime.from_defaults(config)
+
+
+def _runtime_status_text(status) -> str:
+    """Render a runtime status snapshot (never any prompt/response content)."""
+    runtime = status["runtime"]
+    config = runtime["config"]
+    lines = ["Forge Native Model Runtime"]
+    lines.append(f"  version: {runtime['version']} "
+                 f"({'closed' if runtime['closed'] else 'running'})")
+    lines.append(f"  default backend: {config['default_backend']}")
+    lines.append(f"  network access: "
+                 f"{'enabled' if config['allow_network'] else 'disabled'}")
+    lines.append(f"  timeout bound: {config['timeout_seconds']:.1f}s "
+                 f"(max {config['max_timeout_seconds']:.1f}s)")
+    dirs = ", ".join(config["model_dirs"]) or "(none)"
+    lines.append(f"  model dirs: {dirs}")
+    lines.append("  backends:")
+    for info in status["backends"]:
+        lines.append(f"    {info['name']}: kind={info['kind']} "
+                     f"available={info['available']} "
+                     f"network={info['requires_network']}")
+        if info["detail"]:
+            lines.append(f"      {info['detail']}")
+    lines.append("  health:")
+    for item in status["health"]:
+        lines.append(f"    {item['backend']}: {item['status']} "
+                     f"models={item['models_available']} "
+                     f"loaded={item['models_loaded']} "
+                     f"gen={item['generations']} fail={item['failures']} "
+                     f"timeouts={item['timeouts']}")
+        if item["error"]:
+            lines.append(f"      error: {item['error']}")
+    resources = status["resources"]
+    lines.append("  resources:")
+    lines.append(f"    cpu={resources['cpu_count']} "
+                 f"memory={resources['memory_total_mb']}MB "
+                 f"available={resources['memory_available_mb']}MB")
+    lines.append(f"    python={resources['python_version']} "
+                 f"platform={resources['platform']}")
+    lines.append(f"    models known={resources['models_known']} "
+                 f"loaded={resources['models_loaded']} "
+                 f"in-flight={resources['in_flight']}")
+    lines.append(f"  models: {status['models']['total']} known, "
+                 f"{status['models']['loaded']} loaded")
+    return "\n".join(lines)
+
+
+def _runtime_self_test(runtime, backend: str, as_json: bool,
+                       offline: bool) -> int:
+    """``forge runtime test`` — verify the runtime's own guarantees.
+
+    This exercises the *real* runtime code paths (routing, bounded timeouts,
+    cancellation, streaming, error classification, redaction, config
+    handling) against an in-process loopback backend. It is a contract test
+    of the execution layer, **not** proof that a real neural model is
+    installed or that real inference works — and it says so. A backend that
+    cannot serve is reported as such rather than being papered over with a
+    synthetic success.
+    """
+    from forge.runtime import model_runtime as mr
+
+    class _Loopback(mr.ModelBackend):
+        """In-process backend used only to exercise runtime guarantees."""
+
+        name = "selftest-loopback"
+        kind = mr.BackendKind.CUSTOM.value
+        description = "Transient loopback backend for `forge runtime test`."
+        local = True
+        requires_network = False
+
+        def __init__(self, mode: str = "ok", delay: float = 0.0) -> None:
+            self.mode = mode
+            self.delay = delay
+            self.calls = 0
+
+        def available(self):
+            return (True, "Loopback backend for the runtime self-check.")
+
+        def health(self, probe: bool = True) -> "object":
+            return mr.RuntimeHealth(
+                backend=self.name, kind=self.kind,
+                status=mr.RuntimeState.READY.value, checked_at=0.0,
+                detail="Loopback backend for the runtime self-check.")
+
+        def list_models(self):
+            return [mr.RuntimeModel(
+                model_id=mr.RuntimeModel.make_id(self.name, "loopback"),
+                name="loopback", backend=self.name, size_bytes=0,
+                format="loopback", local=True, loaded=False,
+                metadata={"source": "self-test"})]
+
+        def load_model(self, model, token=None):
+            model.loaded = True
+            return model
+
+        def _delay(self, token) -> None:
+            if self.delay <= 0:
+                return
+            deadline = time.monotonic() + self.delay
+            while time.monotonic() < deadline:
+                if token is not None:
+                    token.raise_if_cancelled()
+                time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+
+        def generate(self, request, token=None):
+            self.calls += 1
+            self._delay(token)
+            if self.mode == "boom":
+                raise mr.BackendUnavailableError("loopback failure")
+            if self.mode == "protocol":
+                return "not-a-RuntimeResponse"
+            if self.mode == "leak":
+                raise mr.ModelRuntimeError(
+                    "auth failed with api_key=sk-abcdefgh1234567890")
+            marker = "selftest-" + request.request_id
+            return mr.RuntimeResponse(
+                text=marker, success=True, model=request.model,
+                input_tokens=0, output_tokens=0)
+
+        def stream(self, request, token=None):
+            self.calls += 1
+            if self.mode == "boom":
+                raise mr.BackendUnavailableError("loopback stream failure")
+            for index in range(3):
+                if token is not None:
+                    token.raise_if_cancelled()
+                yield mr.RuntimeChunk(
+                    text="c%d " % index, request_id=request.request_id)
+
+    checks = []
+
+    def _check(name, detail, ok, expected=""):
+        checks.append({"name": name, "ok": bool(ok), "detail": detail,
+                       "expected": expected})
+        return bool(ok)
+
+    probe = _Loopback()
+    runtime.register_backend(probe, replace=True)
+
+    def _req(**kwargs):
+        kwargs.setdefault("model", "selftest-loopback:loopback")
+        kwargs.setdefault("backend", probe.name)
+        kwargs.setdefault("timeout", 5.0)
+        return mr.RuntimeRequest(**kwargs)
+
+    # 1. A successful generation returns exactly what the backend produced.
+    marker_id = "selftest-fixed-" + uuid.uuid4().hex[:8]
+    response = runtime.generate(_req(prompt="ping", request_id=marker_id))
+    _check("generation returns backend output verbatim",
+           "text={0!r} success={1} error_kind={2!r}".format(
+               response.text, response.success, response.error_kind),
+           response.success and response.text == "selftest-" + marker_id)
+
+    # 2. generate() never raises for an operational failure.
+    boom = _Loopback(mode="boom")
+    runtime.register_backend(boom, replace=True)
+    failed = runtime.generate(_req(prompt="ping", backend=boom.name))
+    _check("backend failure becomes a structured result, not an exception",
+           "success={0} error_kind={1!r} finish_reason={2!r}".format(
+               failed.success, failed.error_kind, failed.finish_reason),
+           not failed.success
+           and failed.error_kind == mr.ErrorKind.UNAVAILABLE.value
+           and failed.finish_reason == mr.FinishReason.ERROR.value)
+
+    # 3. A backend that breaks the protocol is classified, not swallowed.
+    broken = _Loopback(mode="protocol")
+    runtime.register_backend(broken, replace=True)
+    bad = runtime.generate(_req(prompt="ping", backend=broken.name))
+    _check("protocol violation is classified as 'protocol'",
+           "error_kind={0!r}".format(bad.error_kind),
+           not bad.success and bad.error_kind == mr.ErrorKind.PROTOCOL.value)
+
+    # 4. Secrets in an error message are redacted before they are kept.
+    leak = _Loopback(mode="leak")
+    runtime.register_backend(leak, replace=True)
+    leaked = runtime.generate(_req(prompt="ping", backend=leak.name))
+    clean = "sk-abcdefgh1234567890" not in (leaked.error or "")
+    _check("secrets in error text are redacted",
+           "error={0!r}".format(leaked.error),
+           not leaked.success and clean)
+
+    # 5. The timeout bound is enforced against a slow backend.
+    slow = _Loopback(delay=5.0)
+    runtime.register_backend(slow, replace=True)
+    started = time.perf_counter()
+    timed_out = runtime.generate(_req(prompt="ping", backend=slow.name,
+                                      timeout=0.3))
+    elapsed = time.perf_counter() - started
+    _check("timeout bound is enforced",
+           "timed_out={0} error_kind={1!r} elapsed={2:.2f}s".format(
+               timed_out.timed_out, timed_out.error_kind, elapsed),
+           not timed_out.success and timed_out.timed_out
+           and timed_out.error_kind == mr.ErrorKind.TIMEOUT.value
+           and elapsed < 4.5)
+
+    # 6. Cancellation is honoured and reported as cancelled, never timeout.
+    cancel_backend = _Loopback(delay=5.0)
+    runtime.register_backend(cancel_backend, replace=True)
+    request = _req(prompt="ping", backend=cancel_backend.name, timeout=30.0)
+    holder = {}
+    worker = threading.Thread(
+        target=lambda: holder.update(
+            {"response": runtime.generate(request)}), daemon=True)
+    worker.start()
+    time.sleep(0.15)
+    cancelled_ok = runtime.cancel(request.request_id)
+    worker.join(5.0)
+    cancelled = holder.get("response")
+    _check("cancellation is reported as cancelled, not timeout",
+           "cancel() returned {0}; cancelled={1} timed_out={2} "
+           "error_kind={3!r}".format(
+               cancelled_ok, cancelled is not None and cancelled.cancelled,
+               cancelled is not None and cancelled.timed_out,
+               cancelled.error_kind if cancelled else None),
+           cancelled_ok and cancelled is not None and cancelled.cancelled
+           and not cancelled.timed_out
+           and cancelled.error_kind == mr.ErrorKind.CANCELLED.value)
+
+    # 7. A duplicate request id is rejected rather than silently aliased.
+    dup_id = "selftest-dup-" + uuid.uuid4().hex[:8]
+    blocker = _Loopback(delay=5.0)
+    runtime.register_backend(blocker, replace=True)
+    blocking = _req(prompt="ping", backend=blocker.name, request_id=dup_id,
+                    timeout=30.0)
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.update({"response": runtime.generate(blocking)}),
+        daemon=True)
+    thread.start()
+    time.sleep(0.15)
+    duplicate = runtime.generate(_req(prompt="ping", backend=blocker.name,
+                                      request_id=dup_id, timeout=1.0))
+    runtime.cancel(dup_id)
+    thread.join(5.0)
+    _check("duplicate request id is rejected as a conflict",
+           "error_kind={0!r}".format(duplicate.error_kind),
+           not duplicate.success
+           and duplicate.error_kind == mr.ErrorKind.CONFLICT.value)
+
+    # 8. Streaming yields real chunks and a consistent final response.
+    streamer = _Loopback()
+    runtime.register_backend(streamer, replace=True)
+    collected = []
+    stream = runtime.stream(_req(prompt="ping", backend=streamer.name))
+    for chunk in stream:
+        collected.append(chunk.text)
+    final = stream.response
+    _check("streaming yields chunks and a consistent final response",
+           "chunks={0!r} success={1} finish_reason={2!r}".format(
+               collected, final.success, final.finish_reason),
+           collected == ["c0 ", "c1 ", "c2 "] and final.success
+           and final.text == "c0 c1 c2 ")
+
+    # 9. A stream failure raises with a classified error, never a raw type.
+    stream_boom = _Loopback(mode="boom")
+    runtime.register_backend(stream_boom, replace=True)
+    stream_error_kind = ""
+    stream_raised = False
+    try:
+        for _chunk in runtime.stream(_req(prompt="ping",
+                                          backend=stream_boom.name)):
+            pass
+    except mr.ModelRuntimeError as exc:
+        stream_raised = True
+        kind = getattr(exc, "kind", "")
+        stream_error_kind = kind.value if isinstance(kind, mr.ErrorKind) \
+            else str(kind)
+    _check("stream failure raises a classified runtime error",
+           "raised={0} error_kind={1!r}".format(stream_raised,
+                                               stream_error_kind),
+           stream_raised and stream_error_kind == "unavailable")
+
+    # 10. Backend selection is explicit: an unknown backend is refused.
+    unknown_kind = ""
+    try:
+        runtime.select_backend("selftest-does-not-exist")
+    except mr.ModelRuntimeError as exc:
+        kind = getattr(exc, "kind", "")
+        unknown_kind = kind.value if isinstance(kind, mr.ErrorKind) else ""
+    _check("unknown backend names are refused, never guessed",
+           "error_kind={0!r}".format(unknown_kind),
+           unknown_kind == mr.ErrorKind.NOT_FOUND.value)
+
+    # 11. Config handling rejects non-finite timeouts instead of coercing.
+    coerced = True
+    try:
+        mr.RuntimeConfig().clamp_timeout(float("nan"))
+    except ValueError:
+        coerced = False
+    _check("non-finite timeouts are rejected, not silently clamped",
+           "clamp_timeout(nan) raised ValueError={0}".format(not coerced),
+           not coerced)
+
+    # 12. Metrics reflect what actually happened during this self-check.
+    # Assert on the invariants that matter rather than on a magic request
+    # count that drifts whenever a check is added or removed: a real window,
+    # both outcomes represented, real latency, and the specific failure
+    # kinds this self-check deliberately provoked. Backend outcomes and
+    # pre-backend refusals are reported separately, and both are checked.
+    metrics = runtime.metrics()
+    provoked = {"unavailable", "protocol", "timeout", "cancelled"}
+    missing = sorted(provoked - set(metrics["error_kinds"]))
+    refused = metrics["refusals"]
+    _check("metrics report real recorded outcomes",
+           "requests={0} successes={1} failures={2} success_rate={3} "
+           "p50={4} error_kinds={5} refused={6} refusals={7}".format(
+               metrics["requests"], metrics["successes"],
+               metrics["failures"], metrics["success_rate"],
+               metrics["latency_ms"]["p50"], metrics["error_kinds"],
+               metrics["refused_requests"], refused),
+           metrics["requests"] >= 1 and metrics["successes"] >= 2
+           and metrics["failures"] >= 5
+           and metrics["success_rate"] is not None
+           and metrics["latency_ms"]["p50"] is not None
+           and not missing
+           and refused.get("conflict", 0) >= 1)
+
+    # 13. In-flight bookkeeping is clean: nothing leaks after failures.
+    _check("no in-flight requests leak after failures and cancellations",
+           "in_flight={0}".format(runtime.in_flight()),
+           not runtime.in_flight())
+
+    for name in (probe.name, boom.name, broken.name, leak.name, slow.name,
+                 cancel_backend.name, blocker.name, streamer.name,
+                 stream_boom.name):
+        try:
+            runtime.unregister_backend(name)
+        except mr.ModelRuntimeError:
+            pass
+
+    passed = sum(1 for item in checks if item["ok"])
+    total = len(checks)
+    # Separately, and honestly: can a *real* backend actually serve?
+    real_ready = []
+    real_detail = []
+    for item in runtime.health(backend, probe=not offline):
+        if item.backend.startswith("selftest-"):
+            continue
+        real_detail.append("{0}={1}".format(item.backend, item.status))
+        if item.status == mr.RuntimeState.READY.value:
+            real_ready.append(item.backend)
+
+    if as_json:
+        _emit_json({"checks": checks, "passed": passed, "total": total,
+                    "ready_backends": real_ready,
+                    "backend_states": real_detail})
+        return 0 if passed == total else 1
+
+    print("Runtime self-check")
+    for item in checks:
+        print("  [{0}] {1}".format("PASS" if item["ok"] else "FAIL",
+                                   item["name"]))
+        if not item["ok"]:
+            print("        observed: {0}".format(item["detail"]))
+    print("  {0}/{1} runtime contract checks passed".format(passed, total))
+    print("")
+    print("  Real inference backends: "
+          + (", ".join(real_detail) if real_detail else "(none registered)"))
+    if real_ready:
+        print("  READY to serve real models: " + ", ".join(real_ready))
+    else:
+        print("  No backend can serve a real model right now. The checks "
+              "above verify the runtime's guarantees using a loopback "
+              "backend; they do not prove real inference works. Configure a "
+              "serving backend or model_dirs and re-run.")
+    return 0 if passed == total else 1
+
+
+def _run_runtime(args) -> int:
+    """``forge runtime`` — model execution infrastructure inspection."""
+    from forge.runtime.model_runtime import ModelRuntimeError
+
+    subcommand = getattr(args, "runtime_subcommand", "status") or "status"
+    as_json = bool(getattr(args, "json", False))
+    try:
+        runtime = _build_runtime(args)
+    except ValueError as exc:
+        print(f"Runtime configuration error: {exc}", file=sys.stderr)
+        return 2
+    backend = getattr(args, "backend", "") or ""
+
+    if subcommand == "models":
+        if getattr(args, "discover", True):
+            try:
+                runtime.discover(backend)
+            except ModelRuntimeError as exc:
+                print(f"Discovery failed: {exc}", file=sys.stderr)
+        models = runtime.models(backend)
+        if as_json:
+            _emit_json({"models": [model.to_dict() for model in models],
+                        "discovery": runtime.discover(backend, refresh=False)})
+            return 0
+        print("Runtime models")
+        if not models:
+            print("  (none discovered - configure runtime.model_dirs or "
+                  "enable a serving backend)")
+        for model in models:
+            print(f"  {model.model_id}")
+            print(f"    backend={model.backend} format={model.format} "
+                  f"size={model.size_bytes} loaded={model.loaded}")
+            metadata = {key: value for key, value in model.metadata.items()
+                        if key not in ("source",)}
+            if metadata:
+                print(f"    metadata={metadata}")
+        return 0
+
+    if subcommand == "health":
+        probe = not getattr(args, "offline", False)
+        items = [item.to_dict() for item in runtime.health(backend,
+                                                           probe=probe)]
+        if as_json:
+            _emit_json({"health": items})
+            return 0 if any(item["status"] == "ready" for item in items) else 1
+        print("Runtime health")
+        for item in items:
+            print(f"  {item['backend']}: {item['status']} "
+                  f"(probed={item['probed']} "
+                  f"latency={item['latency_ms']:.1f}ms)")
+            if item["detail"]:
+                print(f"    {item['detail']}")
+            if item["error"]:
+                print(f"    error: {item['error']}")
+        ready = [item["backend"] for item in items
+                 if item["status"] == "ready"]
+        if ready:
+            print(f"READY - backends that can run inference: "
+                  f"{', '.join(ready)}")
+        else:
+            print("NOT READY - no registered backend can run inference "
+                  "right now. The runtime reports this instead of "
+                  "fabricating output; enable a backend that can serve a "
+                  "model (see `forge runtime backends`).")
+        return 0 if ready else 1
+
+    if subcommand == "backends":
+        infos = [info.to_dict() for info in runtime.backends()]
+        if as_json:
+            _emit_json({"backends": infos})
+            return 0
+        print("Runtime backends")
+        for info in infos:
+            print(f"  {info['name']}: kind={info['kind']} local={info['local']} "
+                  f"network={info['requires_network']} "
+                  f"available={info['available']}")
+            if info["description"]:
+                print(f"    {info['description']}")
+        return 0
+
+    if subcommand == "metrics":
+        payload = runtime.metrics(backend)
+        if as_json:
+            _emit_json(payload)
+            return 0
+        latency = payload["latency_ms"]
+        print("Runtime metrics")
+        print(f"  window: last {payload['window_size']} outcomes "
+              f"({payload['requests']} recorded)")
+        rate = payload["success_rate"]
+        print(f"  success rate: {'n/a' if rate is None else format(rate, '.1%')}"
+              f" ({payload['successes']} ok / {payload['failures']} failed)")
+        print(f"  latency ms: p50={latency['p50']} p95={latency['p95']} "
+              f"p99={latency['p99']} min={latency['min']} "
+              f"max={latency['max']}")
+        print(f"  retries: {payload['retried_requests']} request(s) retried, "
+              f"{payload['retry_attempts']} attempt(s) total")
+        if payload["error_kinds"]:
+            print("  error kinds:")
+            for kind, count in payload["error_kinds"].items():
+                print(f"    {kind}: {count}")
+        for name, entry in payload["by_backend"].items():
+            entry_latency = entry["latency_ms"]
+            entry_rate = entry["success_rate"]
+            print(f"  {name}: {entry['requests']} request(s), "
+                  f"success={'n/a' if entry_rate is None else format(entry_rate, '.1%')}, "
+                  f"p50={entry_latency['p50']}ms p95={entry_latency['p95']}ms")
+        return 0
+
+    if subcommand == "test":
+        return _runtime_self_test(runtime, backend, as_json,
+                                  bool(getattr(args, "offline", False)))
+
+    if subcommand in ("load", "unload"):
+        target = getattr(args, "model", "")
+        try:
+            try:
+                runtime.resolve_model(target, backend)
+            except ModelRuntimeError:
+                # A fresh CLI process has an empty model registry, so run
+                # discovery first instead of failing on an unknown name.
+                runtime.discover(backend)
+            if subcommand == "load":
+                model = runtime.load(target, backend)
+                payload = {"loaded": True, "model": model.to_dict()}
+            else:
+                released = runtime.unload(target, backend)
+                payload = {"loaded": False, "released": bool(released),
+                           "model_id": target}
+        except ModelRuntimeError as exc:
+            if as_json:
+                _emit_json({"loaded": False, "error": str(exc)})
+            else:
+                print(f"{subcommand.title()} failed: {exc}", file=sys.stderr)
+            return 1
+        if as_json:
+            _emit_json(payload)
+        else:
+            if subcommand == "load":
+                print(f"Loaded {payload['model']['model_id']}")
+            else:
+                print(f"Unloaded {target} "
+                      f"(released={payload['released']})")
+        return 0
+
+    status = runtime.status(probe=bool(getattr(args, "probe", False)))
+    if as_json:
+        _emit_json(status)
+        return 0
+    print(_runtime_status_text(status))
+    return 0
 
 
 def _build_fabric(args) -> "object":
@@ -1257,6 +1809,70 @@ def main() -> None:
         help="Emit machine-readable JSON",
     )
 
+    # Native Model Runtime commands (model execution infrastructure)
+    runtime_parser = subparsers.add_parser(
+        "runtime",
+        help="Inspect the Forge Native Model Runtime",
+        description="Model execution infrastructure: discovery, metadata, "
+        "load/unload, health, and resource reporting over explicitly "
+        "selected backends. The runtime is not a model and not the AI "
+        "Engine; it never fabricates output. Network access stays disabled "
+        "unless --allow-network is passed.",
+    )
+
+    def _runtime_common(target):
+        """Shared runtime flags, accepted before *and* after a subcommand.
+
+        ``argparse.SUPPRESS`` keeps the parent-level value intact when the
+        flag is absent from the subcommand, exactly like ``--json`` above.
+        """
+        target.add_argument(
+            "--backend", default=argparse.SUPPRESS,
+            help="Select one backend explicitly "
+            "(native|ollama|llama_cpp|forge)")
+        target.add_argument(
+            "--config", default=argparse.SUPPRESS,
+            help="Runtime config file (.forge/runtime.yaml|.json)")
+        target.add_argument(
+            "--model-dir", action="append", default=argparse.SUPPRESS,
+            metavar="DIR",
+            help="Add an explicit model directory for native discovery "
+            "(repeatable)")
+        target.add_argument(
+            "--allow-network", action="store_true",
+            default=argparse.SUPPRESS,
+            help="Explicitly permit the runtime to contact a configured "
+            "endpoint")
+        target.add_argument(
+            "--json", action="store_true", default=argparse.SUPPRESS,
+            help="Emit machine-readable JSON")
+
+    _runtime_common(runtime_parser)
+    runtime_subs = runtime_parser.add_subparsers(dest="runtime_subcommand")
+    for _rt_name, _rt_help in (("status", "Runtime status summary (default)"),
+                               ("models", "List models the runtime knows"),
+                               ("health", "Backend health checks"),
+                               ("backends", "Registered execution backends"),
+                               ("metrics", "Latency and reliability metrics"),
+                               ("test", "Run a real end-to-end self-check"),
+                               ("load", "Load a model"),
+                               ("unload", "Unload a model")):
+        _rt_sub = runtime_subs.add_parser(_rt_name, help=_rt_help)
+        _runtime_common(_rt_sub)
+        if _rt_name in ("load", "unload"):
+            _rt_sub.add_argument(
+                "model",
+                help="Model id ('<backend>:<name>') or a bare model name")
+    runtime_subs.choices["models"].add_argument(
+        "--no-discover", dest="discover", action="store_false", default=True,
+        help="List only what is already known (no backend query)")
+    runtime_subs.choices["health"].add_argument(
+        "--offline", action="store_true",
+        help="Report last known state without probing backends")
+    runtime_subs.choices["status"].add_argument(
+        "--probe", action="store_true",
+        help="Probe backends while building the status snapshot")
+
     # Agent Creation Engine: specs become lifecycle-gated agent packages
     agents_parser = subparsers.add_parser(
         "agents",
@@ -1691,6 +2307,9 @@ def main() -> None:
 
     elif args.command == "models":
         _run_models(args)
+
+    elif args.command == "runtime":
+        raise SystemExit(_run_runtime(args))
 
     elif args.command == "agents":
         raise SystemExit(_run_agents(args))

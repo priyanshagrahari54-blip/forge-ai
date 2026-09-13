@@ -21,6 +21,20 @@ class BackendError(RuntimeError):
     """User-facing backend failure with an actionable message."""
 
 
+def redact_payload(payload: Any) -> Any:
+    """Mask secret-looking values before anything is handed to the GUI.
+
+    The runtime already redacts everything it records; this is the last line
+    of defence for data that arrives from other subsystems.
+    """
+    try:
+        from forge.core.report import redact
+
+        return redact(payload)
+    except Exception:
+        return payload
+
+
 @dataclass
 class ProjectSession:
     project_id: str
@@ -40,6 +54,11 @@ class DesktopBackend:
     #: Seconds one approval may wait before it fails closed. Interactive
     #: users get a generous window; tests pass a small value.
     approval_timeout: float = 600.0
+    #: Optional pre-built :class:`~forge.runtime.model_runtime.ModelRuntime`.
+    #: When ``None`` the backend builds one from runtime configuration on
+    #: first use. Injecting one (with a test double backend) keeps the
+    #: runtime surface unit-testable and offline.
+    runtime: Any = None
     _plane: Any = field(default=None, init=False, repr=False)
     _sessions: dict[str, ProjectSession] = field(default_factory=dict,
                                                  init=False, repr=False)
@@ -320,6 +339,133 @@ class DesktopBackend:
             "routing_policy": state.get("routing_policy", {}),
         }
 
+    # -- native model runtime --------------------------------------------------
+
+    def _runtime(self):
+        """Return the process-wide model runtime, building it on first use.
+
+        The runtime is model *execution infrastructure* and is independent of
+        the control plane: these views work whether or not a project is open.
+        Building it never touches the network (``allow_network`` defaults to
+        off), so opening the desktop app cannot silently call out.
+        """
+        if self.runtime is not None:
+            return self.runtime
+        try:
+            from forge.runtime.model_runtime import ModelRuntime
+
+            self.runtime = ModelRuntime.from_defaults()
+        except Exception as exc:
+            raise BackendError(
+                f"Could not start the model runtime: {exc}") from exc
+        return self.runtime
+
+    def runtime_status(self, probe: bool = False) -> dict[str, Any]:
+        """Structured runtime snapshot: backends, health, models, resources.
+
+        ``probe=False`` (the default) reports last known state without
+        contacting any backend, which is what the polling loop uses.
+        """
+        try:
+            status = dict(self._runtime().status(probe=probe))
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(f"Runtime status failed: {exc}") from exc
+        return redact_payload(status)
+
+    def runtime_models(self, backend: str = "",
+                       discover: bool = True) -> list[dict[str, Any]]:
+        """Models the runtime knows about (optionally refreshed first).
+
+        Discovery failures are *not* raised here: the runtime isolates a
+        failing backend so one broken backend cannot hide the others.  Use
+        :meth:`runtime_discovery` to read the per-backend errors.
+        """
+        runtime = self._runtime()
+        if discover:
+            try:
+                runtime.discover(backend)
+            except Exception as exc:
+                raise BackendError(f"Model discovery failed: {exc}") from exc
+        try:
+            models = runtime.models(backend)
+        except Exception as exc:
+            raise BackendError(f"Runtime model list failed: {exc}") from exc
+        return [redact_payload(dict(model.to_dict())) for model in models]
+
+    def runtime_discovery(self, backend: str = "",
+                          refresh: bool = True) -> dict[str, Any]:
+        """Per-backend discovery report, including redacted errors.
+
+        A backend that cannot be queried appears with an ``error`` key and an
+        empty ``discovered`` list, so the UI can say why it shows nothing
+        instead of implying there are no models.
+        """
+        try:
+            report = dict(self._runtime().discover(backend, refresh=refresh))
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(f"Model discovery failed: {exc}") from exc
+        return redact_payload(report)
+
+    def runtime_health(self, probe: bool = True,
+                       backend: str = "") -> dict[str, Any]:
+        """Per-backend health plus an overall ``ready`` verdict.
+
+        ``ready`` is true only when some backend can actually run inference.
+        A backend that can only discover artifacts is reported as degraded,
+        never as ready — the desktop app must not imply that tasks will work.
+        """
+        try:
+            items = [dict(item.to_dict())
+                     for item in self._runtime().health(backend, probe=probe)]
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(f"Runtime health failed: {exc}") from exc
+        ready = [item["backend"] for item in items
+                 if item.get("status") == "ready"]
+        return redact_payload({
+            "ready": bool(ready),
+            "ready_backends": ready,
+            "health": items,
+        })
+
+    def runtime_summary(self) -> dict[str, Any]:
+        """A cheap, unprobed runtime summary for the status bar.
+
+        Deliberately does not probe backends, scan model directories, or
+        touch the network, so the GUI can refresh it on every poll cycle.
+        """
+        try:
+            runtime = self._runtime()
+            backends = [dict(info.to_dict()) for info in runtime.backends()]
+            status = runtime.status(probe=False)
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError(f"Runtime summary failed: {exc}") from exc
+        resources = status.get("resources", {})
+        return redact_payload({
+            "version": status.get("runtime", {}).get("version", ""),
+            "default_backend": status.get("runtime", {})
+                .get("config", {}).get("default_backend", ""),
+            "allow_network": bool(status.get("runtime", {})
+                                  .get("config", {})
+                                  .get("allow_network", False)),
+            "backends": backends,
+            "available_backends": [info["name"] for info in backends
+                                   if info.get("available")],
+            "models_known": int(resources.get("models_known", 0)),
+            "models_loaded": int(resources.get("models_loaded", 0)),
+            "in_flight": int(resources.get("in_flight", 0)),
+            "cpu_count": int(resources.get("cpu_count", 0)),
+            "memory_total_mb": float(resources.get("memory_total_mb", 0.0)),
+            "memory_available_mb": float(
+                resources.get("memory_available_mb", 0.0)),
+        })
 
     # -- files --------------------------------------------------------------
 
@@ -554,12 +700,19 @@ class DesktopBackend:
             "at": time.time(), "project_id": project_id,
             "tasks": [], "approvals": [],
             "selected": None, "events": [], "event_cursor": event_cursor,
+            "runtime": None,
             "errors": {},
         }
         try:
             snapshot["tasks"] = self.list_tasks(project_id, limit=50)
         except BackendError as exc:
             snapshot["errors"]["tasks"] = str(exc)
+        try:
+            # Unprobed: the poll loop must never trigger a network call or a
+            # filesystem scan, and must stay cheap enough to run every cycle.
+            snapshot["runtime"] = self.runtime_summary()
+        except BackendError as exc:
+            snapshot["errors"]["runtime"] = str(exc)
         try:
             snapshot["approvals"] = self.list_approvals(project_id)
         except BackendError as exc:
