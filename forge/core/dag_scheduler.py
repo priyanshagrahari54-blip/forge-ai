@@ -412,6 +412,59 @@ class DAGScheduler:
     def get_task(self, task_id: str) -> Optional[ScheduledTask]:
         return self._tasks.get(task_id)
 
+    def task_rows(self, limit: int = 100) -> List[dict]:
+        """Raw persisted task rows (read-only inspection surface).
+
+        A process that opens the store without executing (``forge
+        tasks``) sees the persisted graph here, not its own empty
+        in-memory graph.
+        """
+        limit = max(0, int(limit))
+        if limit <= 0 or self._conn is None:
+            return []
+        with self._db_lock:
+            rows = self._conn.execute(
+                "SELECT task_id, state, attempts, error, output,"
+                " dependencies, resources, timeout, description,"
+                " created_at FROM tasks ORDER BY task_id LIMIT ?",
+                (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def task_row(self, task_id: str) -> Optional[dict]:
+        """One persisted task row, or ``None`` when absent."""
+        if self._conn is None:
+            return None
+        with self._db_lock:
+            row = self._conn.execute(
+                "SELECT task_id, state, attempts, error, output,"
+                " dependencies, resources, timeout, description,"
+                " created_at FROM tasks WHERE task_id = ?",
+                (task_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def attempts(self, task_id: str = "", limit: int = 20) -> List[dict]:
+        """Attempt records, newest first (durable when the store is set).
+
+        Read-only: this is the inspection surface for ``forge tasks``.
+        """
+        limit = max(0, int(limit))
+        if limit <= 0 or self._conn is None:
+            return []
+        with self._db_lock:
+            if task_id:
+                rows = self._conn.execute(
+                    "SELECT task_id, generation, state, reason, started_at,"
+                    " finished_at, error FROM attempts WHERE task_id = ?"
+                    " ORDER BY generation DESC LIMIT ?",
+                    (task_id, limit)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT task_id, generation, state, reason, started_at,"
+                    " finished_at, error FROM attempts"
+                    " ORDER BY task_id, generation DESC LIMIT ?",
+                    (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
     def events(self, task_id: str = "", limit: int = 50) -> List[dict]:
         """Most recent events first (durable when the store is set)."""
         limit = max(0, int(limit))

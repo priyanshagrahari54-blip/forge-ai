@@ -1695,6 +1695,301 @@ def _run_server(args, parser) -> int:
     return 2
 
 
+# Durable record for fenced multi-agent runs. Control plane
+# orchestrations write one store per run under <project>/.forge/tasks/
+# (one file per orchestration); any orchestrator may also point
+# straight at a single store file.
+DEFAULT_TASKS_DIR = os.path.join(".forge", "tasks")
+
+
+def _task_stores(store_arg):
+    """Resolve the --store argument to [(run label, store path)].
+
+    Accepts a single store file or a directory of per-run stores
+    (the control plane default). An absent store resolves to [].
+    """
+    if store_arg:
+        if os.path.isdir(store_arg):
+            base = store_arg
+        elif os.path.exists(store_arg):
+            return [(os.path.splitext(os.path.basename(store_arg))[0],
+                     store_arg)]
+        else:
+            return []
+    else:
+        base = DEFAULT_TASKS_DIR
+    if not os.path.isdir(base):
+        return []
+    found = []
+    for name in sorted(os.listdir(base)):
+        if name.endswith(".db") and os.path.isfile(os.path.join(base, name)):
+            found.append((name[:-3], os.path.join(base, name)))
+    return found
+
+
+def _run_tasks(args) -> int:
+    """CLI entry for inspecting the fenced scheduler's durable record."""
+    from forge.core.dag_scheduler import DAGScheduler
+
+    store = getattr(args, "store", "") or ""
+    subcommand = getattr(args, "tasks_subcommand", "list") or "list"
+    as_json = bool(getattr(args, "json", False))
+
+    stores = _task_stores(store)
+    if not stores:
+        shown = store or os.path.join(DEFAULT_TASKS_DIR, "<run>.db")
+        if as_json:
+            _emit_json({"store": shown, "exists": False, "tasks": []})
+        else:
+            print(f"No scheduler store at {shown}.")
+            print("Fenced multi-agent runs (control plane orchestrations) "
+                  "record tasks, attempts, and their event log here.")
+        return 0
+
+    if subcommand == "list":
+        limit = max(0, int(getattr(args, "limit", 50) or 50))
+        rows = []
+        for label, path in stores:
+            scheduler = DAGScheduler(path)
+            for row in scheduler.task_rows(limit=limit):
+                entry = dict(row)
+                entry["run"] = label
+                rows.append(entry)
+        if as_json:
+            _emit_json({"store": store or DEFAULT_TASKS_DIR,
+                        "count": len(rows), "tasks": rows})
+        else:
+            if not rows:
+                print(f"Stores under {store or DEFAULT_TASKS_DIR} hold "
+                      f"no tasks yet.")
+            else:
+                run_width = max(len(r["run"]) for r in rows)
+                task_width = max(len(r["task_id"]) for r in rows)
+                print(f"{'RUN':<{run_width}}  "
+                      f"{'TASK':<{task_width}}  {'STATE':<10}  ATT  ERROR")
+                for row in rows:
+                    print(f"{row['run']:<{run_width}}  "
+                          f"{row['task_id']:<{task_width}}  "
+                          f"{row['state']:<10}  "
+                          f"{row['attempts']:<3}  "
+                          f"{row['error'] or '-'}")
+        return 0
+
+    if subcommand == "show":
+        found = None
+        for label, path in stores:
+            scheduler = DAGScheduler(path)
+            task = scheduler.task_row(args.task)
+            if task is not None:
+                found = (label, scheduler, task)
+                break
+        if found is None:
+            where = store or DEFAULT_TASKS_DIR
+            print(f"No task {args.task!r} in {where}.", file=sys.stderr)
+            return 2
+        label, scheduler, task = found
+        record = dict(task)
+        record["run"] = label
+        record["attempts_log"] = scheduler.attempts(task["task_id"])
+        record["events"] = scheduler.events(task["task_id"], limit=20)
+        if as_json:
+            _emit_json(record)
+        else:
+            print(f"Run:      {label}")
+            print(f"Task:     {task['task_id']}")
+            print(f"State:    {task['state']}")
+            if task.get("description"):
+                print(f"Desc:     {task['description'][:200]}")
+            print(f"Attempts: {task['attempts']}"
+                  f"  deps={task.get('dependencies') or '-'}"
+                  f"  timeout={task['timeout']}")
+            if task.get("error"):
+                print(f"Error:    {task['error'][:400]}")
+            if task.get("output"):
+                print(f"Output:   {task['output'][:400]}")
+            logs = scheduler.attempts(task["task_id"])
+            if logs:
+                print("Attempt log (newest first):")
+                for entry in logs:
+                    print(f"  g{entry['generation']} {entry['state']:<10} "
+                          f"{entry['reason'] or '-'}")
+            events = scheduler.events(task["task_id"], limit=10)
+            if events:
+                print("Events (newest first):")
+                for event in events:
+                    print(f"  #{event['seq']} {event['state']:<10} "
+                          f"{event['detail']}")
+        return 0
+
+    if subcommand == "events":
+        limit = max(0, int(getattr(args, "limit", 50) or 50))
+        wanted = getattr(args, "task", "") or ""
+        grouped = []  # (run label, events)
+        for label, path in stores:
+            scheduler = DAGScheduler(path)
+            events = scheduler.events(wanted, limit=limit)
+            if events:
+                grouped.append((label, events))
+        flat = [event for _, events in grouped for event in events]
+        if as_json:
+            _emit_json({"store": store or DEFAULT_TASKS_DIR,
+                        "count": len(flat),
+                        "runs": {label: events
+                                 for label, events in grouped}})
+        else:
+            if not grouped:
+                print(f"No events recorded in "
+                      f"{store or DEFAULT_TASKS_DIR}.")
+            elif len(grouped) == 1:
+                print(f"{'SEQ':>6}  {'TASK':<20}  {'STATE':<10}  DETAIL")
+                for event in grouped[0][1]:
+                    print(f"{event['seq']:>6}  "
+                          f"{event['task_id']:<20}  "
+                          f"{event['state']:<10}  {event['detail']}")
+            else:
+                for label, events in grouped:
+                    print(f"Run {label}:")
+                    for event in events:
+                        print(f"  #{event['seq']:>5}  "
+                              f"{event['task_id']:<20}  "
+                              f"{event['state']:<10}  {event['detail']}")
+        return 0
+
+    parser.error(f"Unknown tasks subcommand: {subcommand!r}")
+    return 2
+
+
+def _run_training(args) -> int:
+    """CLI entry for the agent training lab.
+
+    Every command is honest about what actually happened: with no
+    OPENAI_API_KEY, no collected data, or a policy refusal, the command
+    reports the refusal — it never fabricates a training job or a
+    trained model.
+    """
+    from forge.agents.training import AgentTrainingPipeline
+
+    subcommand = getattr(args, "training_subcommand", "scan") or "scan"
+    as_json = bool(getattr(args, "json", False))
+    pipeline = AgentTrainingPipeline("cli")
+
+    runs: list[dict] = []
+    if getattr(args, "runs", ""):
+        try:
+            with open(args.runs, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, ValueError) as exc:
+            print(f"Cannot read runs file {args.runs!r}: {exc}",
+                  file=sys.stderr)
+            return 2
+        if not isinstance(loaded, list):
+            print("Runs file must hold a JSON list of "
+                  "{requirement, output, status, task_id} objects.",
+                  file=sys.stderr)
+            return 2
+        runs = [entry for entry in loaded if isinstance(entry, dict)]
+
+    if subcommand in ("scan", "export", "start") and runs:
+        pipeline.collect_training_data(args.agent, runs)
+
+    if subcommand == "scan":
+        dataset = pipeline._datasets.get(args.agent)
+        if dataset is None or dataset.size == 0:
+            print(f"No training examples for agent {args.agent!r}."
+                  + (" Pass --runs runs.json with real run outcomes."
+                     if not runs else ""), file=sys.stderr)
+            return 2
+        from forge.agents.training import TrainingDataPolicy
+
+        verdict = TrainingDataPolicy().evaluate(dataset, authorized=False)
+        report = verdict["report"]
+        if as_json:
+            _emit_json({"agent": args.agent, "examples": dataset.size,
+                        "upload_allowed": verdict["allowed"],
+                        "reason": verdict["reason"], "scan": report})
+        else:
+            print(f"Agent:    {args.agent}")
+            rate = dataset.success_rate
+            print(f"Examples: {dataset.size} "
+                  f"(success rate {rate:.0%})")
+            print(f"Scan:     {report.get('clean', 0)} clean, "
+                  f"{report.get('confidential_or_pii', 0)} "
+                  f"PII/confidential, {report.get('secret', 0)} secret")
+            if report.get("secret_example_indexes"):
+                print(f"  secret example indexes: "
+                      f"{report['secret_example_indexes']}")
+            print(f"Upload:   "
+                  f"{'allowed' if verdict['allowed'] else 'REFUSED'} — "
+                  f"{verdict['reason']}")
+        return 0
+
+    if subcommand == "export":
+        report = pipeline.export_dataset(args.agent)
+        if "error" in report:
+            print(report["error"], file=sys.stderr)
+            return 2
+        if as_json:
+            _emit_json(report)
+        else:
+            tuner = report["fine_tuner_available"]
+            tuner_note = ("OPENAI_API_KEY set" if tuner
+                          else "OPENAI_API_KEY not set")
+            print(f"Agent:    {report['agent']}")
+            print(f"Examples: {report['examples']}")
+            print("Fine-tuner available: "
+                  f"{'yes' if tuner else 'no'} ({tuner_note})")
+            policy = report["upload_policy"]
+            verdict = "allowed" if policy["upload_allowed"] else "REFUSED"
+            print(f"Upload policy: {policy['mode']} — {verdict}"
+                  f" — {policy['reason']}")
+            print("JSONL preview:")
+            for line in report["jsonl_preview"].splitlines()[:5]:
+                print(f"  {line}")
+        return 0
+
+    if subcommand == "start":
+        if not runs:
+            print("start needs --runs runs.json with collected examples.",
+                  file=sys.stderr)
+            return 2
+        job = pipeline.start_fine_tuning(
+            args.agent, model=getattr(args, "model", "") or "gpt-4o-mini",
+            authorized=bool(getattr(args, "authorize", False)))
+        if "error" in job:
+            print(job["error"], file=sys.stderr)
+            return 3
+        if as_json:
+            _emit_json(job)
+        else:
+            result = job.get("result", {})
+            print(f"Agent:     {job['agent']}")
+            print(f"Model:     {job['model']}")
+            print(f"File id:   {job['file_id']}")
+            print(f"Job:       {result.get('id', result)}")
+            print("Fine-tuning was actually submitted to the provider; "
+                  "check it with `forge training job <id>`.")
+        return 0
+
+    if subcommand == "job":
+        status = pipeline.check_training_status(args.job_id)
+        if "error" in status:
+            print(status["error"], file=sys.stderr)
+            return 3
+        if as_json:
+            _emit_json(status)
+        else:
+            print(f"Job:     {status.get('id', args.job_id)}")
+            print(f"Status:  {status.get('status', 'unknown')}")
+            if status.get("fine_tuned_model"):
+                print(f"Model:   {status['fine_tuned_model']}")
+            if status.get("error"):
+                print(f"Error:   {status['error']}")
+        return 0
+
+    parser.error(f"Unknown training subcommand: {subcommand!r}")
+    return 2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -2252,9 +2547,89 @@ def main() -> None:
         else:
             _sub.add_argument("--url", default="",
                               help="Full API base URL "
-                              "(default: built from --host/--port).")
+                                   "(default: built from --host/--port).")
             _sub.add_argument("--json", action="store_true",
                               help="Emit machine-readable JSON")
+
+    # Fenced-scheduler task record (multi-agent orchestration runs)
+    tasks_parser = subparsers.add_parser(
+        "tasks",
+        help="Inspect the fenced scheduler's durable task record",
+        description="List tasks, show one task with its attempts and "
+        "events, or stream the monotonically sequenced event log from "
+        "the fenced DAG scheduler's store. Runs record here when the "
+        "control plane (or any orchestrator with a store) executes "
+        "multi-agent plans.",
+    )
+    tasks_parser.add_argument(
+        "--store", default="",
+        help=f"Scheduler store file or directory "
+             f"(default: {DEFAULT_TASKS_DIR}/)")
+    tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_subcommand")
+    _tasks_list = tasks_subparsers.add_parser(
+        "list", help="List tasks with state and attempts (default)")
+    _tasks_list.add_argument("--limit", type=int, default=50)
+    _tasks_show = tasks_subparsers.add_parser(
+        "show", help="Show one task, its attempts, and recent events")
+    _tasks_show.add_argument("task")
+    _tasks_events = tasks_subparsers.add_parser(
+        "events", help="Stream the event log (newest first)")
+    _tasks_events.add_argument("--task", default="",
+                               help="Only events for this task id")
+    _tasks_events.add_argument("--limit", type=int, default=50)
+    for _tasks_sub in (_tasks_list, _tasks_show, _tasks_events):
+        _tasks_sub.add_argument("--json", action="store_true",
+                                default=argparse.SUPPRESS,
+                                help="Emit machine-readable JSON")
+        _tasks_sub.add_argument("--store", default=argparse.SUPPRESS,
+                                help="Scheduler store file or directory "
+                                     f"(default: {DEFAULT_TASKS_DIR}/)")
+    tasks_parser.add_argument("--json", action="store_true",
+                              default=argparse.SUPPRESS,
+                              help="Emit machine-readable JSON")
+
+    # Agent training lab (honest: reports refusals, never fake jobs)
+    training_parser = subparsers.add_parser(
+        "training",
+        help="Inspect and run the agent training lab",
+        description="Scan, export, and (with real data, policy consent, "
+        "and OPENAI_API_KEY) start fine-tuning for a created agent. "
+        "Every refusal — missing key, missing data, policy block — is "
+        "reported; a training job is only claimed when one was actually "
+        "submitted to the provider.",
+    )
+    training_subparsers = training_parser.add_subparsers(
+        dest="training_subcommand")
+    _tr_scan = training_subparsers.add_parser(
+        "scan", help="Scan collected examples against the data policy "
+        "(default)")
+    _tr_scan.add_argument("agent")
+    _tr_scan.add_argument("--runs", default="",
+                          help="JSON file of real run outcomes "
+                               "([{requirement, output, status, task_id}])")
+    _tr_export = training_subparsers.add_parser(
+        "export", help="Export the dataset with the upload-policy verdict")
+    _tr_export.add_argument("agent")
+    _tr_export.add_argument("--runs", default="")
+    _tr_start = training_subparsers.add_parser(
+        "start", help="Upload data and start a fine-tuning job "
+                      "(policy-gated, key required)")
+    _tr_start.add_argument("agent")
+    _tr_start.add_argument("--runs", required=True)
+    _tr_start.add_argument("--model", default="gpt-4o-mini")
+    _tr_start.add_argument("--authorize", action="store_true",
+                           help="Explicit operator authorization for the "
+                                "upload (required by the data policy)")
+    _tr_job = training_subparsers.add_parser(
+        "job", help="Check a fine-tuning job's status")
+    _tr_job.add_argument("job_id")
+    for _tr in (_tr_scan, _tr_export, _tr_start, _tr_job):
+        _tr.add_argument("--json", action="store_true",
+                         default=argparse.SUPPRESS,
+                         help="Emit machine-readable JSON")
+    training_parser.add_argument("--json", action="store_true",
+                                 default=argparse.SUPPRESS,
+                                 help="Emit machine-readable JSON")
 
     args = parser.parse_args()
 
@@ -2315,6 +2690,12 @@ def main() -> None:
         raise SystemExit(_run_agents(args))
     elif args.command == "memory":
         raise SystemExit(_run_memory(args))
+
+    elif args.command == "tasks":
+        raise SystemExit(_run_tasks(args))
+
+    elif args.command == "training":
+        raise SystemExit(_run_training(args))
 
     elif args.command == "blender":
         raise SystemExit(_run_blender(args))

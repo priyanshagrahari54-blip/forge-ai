@@ -269,6 +269,7 @@ class MultiAgentOrchestrator:
         control: SupervisorControl | None = None,
         agent_identity: str = "forge-orchestrator",
         task_id: str = "",
+        store_path: str = "",
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -287,6 +288,10 @@ class MultiAgentOrchestrator:
         self.control = control
         self.agent_identity = agent_identity
         self.task_id = task_id
+        #: When set, the fenced scheduler persists tasks, attempts, and
+        #: its monotonically sequenced event log here (SQLite), so runs
+        #: survive restart and are inspectable (`forge tasks`).
+        self.store_path = store_path
 
     # -- planning -----------------------------------------------------------
 
@@ -398,7 +403,8 @@ class MultiAgentOrchestrator:
                     "metadata": {}}
 
         scheduler = DAGScheduler(
-            max_workers=self.max_workers, owner=self.agent_identity)
+            self.store_path, max_workers=self.max_workers,
+            owner=self.agent_identity)
         for step in plan.steps:
             scheduler.add_task(
                 step.id, step.instructions, depends_on=step.depends_on,
