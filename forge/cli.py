@@ -1421,11 +1421,13 @@ def main() -> None:
     for _sub in memory_subs.choices.values():
         _add_memory_common(_sub)
 
-    # Agents: the Agent Creation Engine (A82) — specifications, lifecycle,
-    # benchmarking, permissions, and runs.
+    # Specification-driven agent engine (A82). It registers as
+    # "agent-engine" rather than "agents" because the merged Forge Server
+    # work already owns the "agents" name; two parsers claiming the same
+    # name make every CLI entry point die with "conflicting subparser".
     from forge.agents.engine.cli import build_parser as build_agents_parser
 
-    build_agents_parser(subparsers)
+    build_agents_parser(subparsers, command="agent-engine")
 
     # Blender: procedural 3D scenes rendered headlessly
     blender_parser = subparsers.add_parser(
@@ -1703,7 +1705,7 @@ def main() -> None:
     elif args.command == "memory":
         raise SystemExit(_run_memory(args))
 
-    elif args.command == "agents":
+    elif args.command == "agent-engine":
         from forge.agents.engine.cli import run_agents_cli
 
         raise SystemExit(run_agents_cli(args))

@@ -407,10 +407,16 @@ def _target_state(command: str) -> str:
             "retire": AgentState.RETIRED}[command]
 
 
-def build_parser(subparsers: Any) -> None:
-    """Attach the ``agents`` subcommand tree to an argparse parser."""
+def build_parser(subparsers: Any, command: str = "agents") -> None:
+    """Attach the engine's subcommand tree to an argparse parser.
+
+    ``command`` is parameterised because the top-level name is a shared
+    namespace: another engine may already own ``agents``, and two parsers
+    registering the same name make every CLI entry point fail with
+    "conflicting subparser".
+    """
     parser = subparsers.add_parser(
-        "agents", help="Create and manage Forge agents",
+        command, help="Create and manage Forge agents (specification engine)",
         description="Create, validate, benchmark, enable, and run "
                     "specialized Forge agents from structured "
                     "specifications.")

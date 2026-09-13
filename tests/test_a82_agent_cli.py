@@ -44,7 +44,9 @@ def root(tmp_path, monkeypatch):
 
 
 def agents(*argv):
-    return ["forge", "agents", "--actor", "alice", *argv]
+    # The merged Forge Server work owns the top-level "agents" name, so
+    # this engine is registered as "agent-engine" (see forge/cli.py).
+    return ["forge", "agent-engine", "--actor", "alice", *argv]
 
 
 # -- discovery -----------------------------------------------------------
@@ -231,7 +233,7 @@ def test_cli_grant_and_revoke_one_operation(root, capsys):
 def test_cli_grant_refuses_self_grant(root, capsys):
     run_cli(agents("create", "--template", "coding", "--name", "exporter"))
     capsys.readouterr()
-    assert run_cli(["forge", "agents", "--actor", "exporter", "grant",
+    assert run_cli(["forge", "agent-engine", "--actor", "exporter", "grant",
                  "exporter", "write_file"]) == 1
     err = capsys.readouterr().err
     assert "cannot grant permissions to itself" in err
@@ -291,7 +293,7 @@ def _args(argv, root=None):
     parser = argparse.ArgumentParser()
     from forge.agents.engine.cli import build_parser
 
-    build_parser(parser.add_subparsers(dest="command"))
+    build_parser(parser.add_subparsers(dest="command"), command="agents")
     parsed = parser.parse_args(["agents", "--actor", "alice", *argv])
     return parsed
 
@@ -299,9 +301,9 @@ def _args(argv, root=None):
 def test_cli_flags_work_before_and_after_the_subcommand(root, capsys):
     run_cli(agents("create", "--template", "coding", "--name", "exporter"))
     capsys.readouterr()
-    run_cli(["forge", "agents", "--json", "list"])
+    run_cli(["forge", "agent-engine", "--json", "list"])
     assert json.loads(capsys.readouterr().out)["counts"]["total"] == 1
-    run_cli(["forge", "agents", "list", "--json"])
+    run_cli(["forge", "agent-engine", "list", "--json"])
     assert json.loads(capsys.readouterr().out)["counts"]["total"] == 1
 
 
