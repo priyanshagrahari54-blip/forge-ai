@@ -1644,6 +1644,12 @@ def _run_server_status(args) -> int:
     print(f"  endpoint:  {base.rsplit('/api', 1)[0]}")
     print(f"  version:   {payload.get('version', '?')} "
           f"(boot {payload.get('boot_id', '?')})")
+    resource_profile = payload.get("resource_profile") or {}
+    if resource_profile:
+        print(f"  resources: profile={resource_profile.get('name', '?')} "
+              f"workers<={resource_profile.get('max_workers', '?')} "
+              f"model_loading="
+              f"{'allowed' if resource_profile.get('model_loading_allowed') else 'DENIED'}")
     print(f"  uptime:    {float(payload.get('uptime_seconds', 0)):.1f}s  "
           f"profile: {payload.get('profile', '?')}")
     print(f"  workers:   {workers.get('busy', 0)}/{workers.get('max', 0)} "
@@ -1696,6 +1702,35 @@ def _run_server_health(args) -> int:
     return 0 if overall in ("ok", "degraded") else 1
 
 
+def _run_server_login(args) -> int:
+    from forge.server.client import ForgeServerClient, ForgeServerClientError
+
+    base = _server_base_url(args)
+    key = getattr(args, "key", "") or os.environ.get("FORGE_SERVER_TOKEN", "")
+    client = ForgeServerClient(base)
+    try:
+        if key:
+            result = client.login(key)
+        elif client.token:
+            result = {"session": {"token_source": "existing"}}
+        else:
+            print("Pass --key or set FORGE_SERVER_TOKEN.", file=sys.stderr)
+            return 2
+    except ForgeServerClientError as exc:
+        print(f"Login failed ({exc.code}): {exc.message}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        _emit_json(result)
+        return 0
+    token = result.get("token", "")
+    session = result.get("session", {})
+    print("Forge Server session token (use as Bearer credential):")
+    print(f"  {token}")
+    print(f"Principal: {session.get('principal', '?')} "
+          f"(role={session.get('role', '?')})")
+    return 0
+
+
 def _run_server(args, parser) -> int:
     subcommand = getattr(args, "server_subcommand", "") or "start"
     if subcommand == "start":
@@ -1704,6 +1739,8 @@ def _run_server(args, parser) -> int:
         return _run_server_status(args)
     if subcommand == "health":
         return _run_server_health(args)
+    if subcommand == "login":
+        return _run_server_login(args)
     parser.error(f"Unknown server subcommand: {subcommand!r}")
     return 2
 
@@ -2567,6 +2604,18 @@ def main() -> None:
                                    "(default: built from --host/--port).")
             _sub.add_argument("--json", action="store_true",
                               help="Emit machine-readable JSON")
+    _server_login = server_subs.add_parser(
+        "login",
+        help="Exchange an API key for a session token "
+             "(challenge/response, replay-resistant)")
+    _server_login.add_argument("--key", default="",
+                               help="API key (fsk_...) or existing token; "
+                                    "falls back to FORGE_SERVER_TOKEN")
+    _server_login.add_argument("--url", default="",
+                               help="Full API base URL "
+                                    "(default: built from --host/--port).")
+    _server_login.add_argument("--json", action="store_true",
+                               help="Emit machine-readable JSON")
 
     # Fenced-scheduler task record (multi-agent orchestration runs)
     tasks_parser = subparsers.add_parser(

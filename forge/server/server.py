@@ -97,6 +97,10 @@ class ServerConfig:
     #: Distinct from ``profile`` above, which is the A33 *permission*
     #: profile. The resource profile can only reduce ``max_workers``.
     resource_profile: str = ""
+    #: Require a fresh challenge nonce for every session exchange
+    #: (replay-resistant login). Off by default for compatibility with
+    #: existing local clients; the G560 thin client always uses one.
+    require_challenge: bool = False
     max_tasks_per_project: int = 1
     default_max_retries: int = 2
     retry_backoff_seconds: float = 2.0
@@ -136,6 +140,9 @@ class ServerConfig:
             bootstrap_token=os.environ.get("FORGE_SERVER_TOKEN", ""),
             profile=os.environ.get("FORGE_SERVER_PROFILE", "assisted"),
             resource_profile=os.environ.get("FORGE_RESOURCE_PROFILE", ""),
+            require_challenge=os.environ.get(
+                "FORGE_SERVER_REQUIRE_CHALLENGE", "").strip()
+                in ("1", "true", "yes", "on"),
             max_workers=env_int("FORGE_SERVER_MAX_WORKERS", 4),
             max_tasks_per_project=env_int(
                 "FORGE_SERVER_MAX_TASKS_PER_PROJECT", 1),

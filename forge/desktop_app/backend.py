@@ -63,6 +63,11 @@ class DesktopBackend:
     _sessions: dict[str, ProjectSession] = field(default_factory=dict,
                                                  init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
+    #: Thin-client handle to a Forge Server. When set, the desktop is
+    #: SERVER mode: UI, task submission, progress, and approvals only —
+    #: no local execution plane, no local inference.
+    _server_client: Any = field(default=None, init=False, repr=False)
+    _server_base_url: str = field(default="", init=False, repr=False)
 
     # -- lifecycle ------------------------------------------------------
 
@@ -154,9 +159,117 @@ class DesktopBackend:
             except BackendError:
                 pass
 
+    # -- connection (LOCAL / SERVER thin-client modes) ---------------------
+
+    @property
+    def connection_mode(self) -> str:
+        return "server" if self._server_client is not None else "local"
+
+    def connect_server(self, base_url: str, api_key: str = "",
+                       timeout: float = 10.0) -> dict[str, Any]:
+        """Switch to SERVER (thin-client) mode against a Forge Server.
+
+        Authenticates via the server's challenge/response exchange. No
+        local control plane is started or touched: in this mode the
+        desktop submits typed tasks and watches progress only.
+        """
+        from forge.server.client import ForgeServerClient
+
+        client = ForgeServerClient(base_url, timeout=timeout)
+        if api_key:
+            client.login(api_key)
+        elif not client.token:
+            raise BackendError(
+                "An API key (or existing session token) is required to "
+                "connect to a Forge Server.")
+        # Prove the credential works before switching modes.
+        client.whoami()
+        self._server_client = client
+        self._server_base_url = client.base_url
+        return self.connection_state()
+
+    def disconnect_server(self) -> dict[str, Any]:
+        """Leave SERVER mode (the embedded plane, if started, is kept)."""
+        self._server_client = None
+        self._server_base_url = ""
+        return self.connection_state()
+
+    def connection_state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "mode": self.connection_mode,
+            "server": self._server_base_url,
+            "principal": None,
+            "via": "",
+        }
+        if self._server_client is not None:
+            client = self._server_client
+            state["principal"] = client.principal
+            state["via"] = "session"
+        return state
+
+    # Explicit server-state → plane-state vocabulary (the desktop UI is
+    # built around the plane's uppercase states). "completed" means the
+    # task ran to a successful finish on the server.
+    _SERVER_STATUS_TO_RUN = {
+        "created": "QUEUED",
+        "queued": "QUEUED",
+        "started": "RUNNING",
+        "running": "RUNNING",
+        "paused": "PAUSED",
+        "waiting_for_approval": "WAITING_APPROVAL",
+        "completed": "SUCCEEDED",
+        "failed": "FAILED",
+        "cancelled": "CANCELLED",
+        "rolled_back": "ROLLED_BACK",
+    }
+
+    def _server_task_to_dict(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Map a server task onto the desktop's run shape."""
+        raw_status = str(task.get("status", "")).lower()
+        return {
+            "id": task.get("task_id", ""),
+            "project_id": task.get("project_id", ""),
+            "requirement": task.get("requirement", ""),
+            "status": self._SERVER_STATUS_TO_RUN.get(
+                raw_status, str(task.get("status", "")).upper()),
+            "stage": task.get("stage", ""),
+            "mode": task.get("mode", ""),
+            "actor": task.get("actor", ""),
+            "model": task.get("model", ""),
+            "provider": task.get("provider", ""),
+            "error": task.get("error", ""),
+            "rollback": False,
+            "files": list(task.get("files", []) or []),
+            "version": task.get("version", 0),
+            "created_at": task.get("created_at", 0.0),
+            "started_at": task.get("started_at", 0.0),
+            "finished_at": task.get("finished_at", 0.0),
+        }
+
+    def _require_server(self):
+        if self._server_client is None:
+            raise BackendError(
+                "Not connected to a Forge Server (local mode).")
+        return self._server_client
+
+    def _server_error(self, exc: Exception) -> BackendError:
+        return BackendError(str(exc))
+
     # -- projects & sessions --------------------------------------------
 
     def projects(self) -> list[dict[str, str]]:
+        if self._server_client is not None:
+            # The server knows its own projects; the thin client lists
+            # them (read-only view; no local registration possible).
+            from forge.server.client import ForgeServerClientError
+            try:
+                payload = self._require_server().list_projects()
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
+            return [{"id": p.get("project_id", ""),
+                     "name": p.get("name", ""),
+                     "root": p.get("root", "")}
+                    for p in payload.get("projects", [])]
         plane = self._require_plane()
         return [{"id": project.id, "name": project.name, "root": project.root}
                 for project in plane.projects.values()]
@@ -221,6 +334,16 @@ class DesktopBackend:
 
     def submit_task(self, project_id: str, requirement: str,
                     mode: str = "") -> dict[str, Any]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            if not requirement.strip():
+                raise BackendError("Describe the task first.")
+            try:
+                return self._server_task_to_dict(
+                    self._require_server().submit_task(
+                        project_id, requirement, mode=mode or ""))
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
         plane = self._require_plane()
         session = self._session_for(project_id)
         if not requirement.strip():
@@ -233,6 +356,15 @@ class DesktopBackend:
 
     def list_tasks(self, project_id: str, status: str = "",
                    limit: int = 50) -> list[dict[str, Any]]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            try:
+                payload = self._require_server().list_tasks(
+                    project_id=project_id, status=status, limit=limit)
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
+            return [self._server_task_to_dict(task)
+                    for task in payload.get("tasks", [])]
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
@@ -243,6 +375,13 @@ class DesktopBackend:
         return [self._run_to_dict(run) for run in runs]
 
     def get_task(self, project_id: str, task_id: str) -> dict[str, Any]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            try:
+                return self._server_task_to_dict(
+                    self._require_server().task(task_id))
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
@@ -262,6 +401,16 @@ class DesktopBackend:
 
     def get_task_events(self, project_id: str, task_id: str, *,
                         after: int = 0, limit: int = 200) -> dict[str, Any]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            try:
+                payload = self._require_server().task_events(
+                    task_id, after=after, limit=limit)
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
+            return {"events": [dict(event)
+                               for event in payload.get("events", [])],
+                    "latest": payload.get("latest_seq", after)}
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
@@ -285,6 +434,17 @@ class DesktopBackend:
 
     def _mutate_task(self, operation: str, project_id: str,
                      task_id: str) -> dict[str, Any]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            client = self._require_server()
+            try:
+                if operation == "cancel_task":
+                    return self._server_task_to_dict(client.cancel_task(task_id))
+                raise BackendError(
+                    f"{operation} is not supported in server thin-client "
+                    f"mode (the server governs its own task lifecycle).")
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
@@ -296,6 +456,14 @@ class DesktopBackend:
     # -- approvals --------------------------------------------------------
 
     def list_approvals(self, project_id: str) -> list[dict[str, Any]]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            try:
+                return [dict(item)
+                        for item in self._require_server()
+                        .pending_approvals(project_id)]
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
@@ -305,6 +473,13 @@ class DesktopBackend:
 
     def decide_approval(self, project_id: str, approval_id: str,
                         approved: bool) -> dict[str, Any]:
+        if self._server_client is not None:
+            from forge.server.client import ForgeServerClientError
+            try:
+                return dict(self._require_server().decide_approval(
+                    approval_id, approved))
+            except ForgeServerClientError as exc:
+                raise self._server_error(exc)
         plane = self._require_plane()
         session = self._session_for(project_id)
         try:
