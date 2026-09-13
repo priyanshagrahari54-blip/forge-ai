@@ -78,8 +78,16 @@ class SymbolIndexer:
         self.parser = PythonParser()
         self.gitignore = GitIgnoreMatcher(self.root)
 
-    def build(self) -> SymbolIndex:
+    def build(
+        self, parsed_files: dict[str, PythonFileInfo] | None = None
+    ) -> SymbolIndex:
+        """Build symbol index. Reuses pre-parsed AST result objects if provided."""
         index = SymbolIndex()
+
+        if parsed_files is not None:
+            for relative, parsed in parsed_files.items():
+                self._index_parsed_file(relative, parsed, index)
+            return index
 
         for path in self.root.rglob("*.py"):
             if self._should_ignore(path):
@@ -88,6 +96,22 @@ class SymbolIndexer:
             self._index_python_file(path, index)
 
         return index
+
+    def _index_parsed_file(
+        self,
+        relative: str,
+        parsed: PythonFileInfo,
+        index: SymbolIndex,
+    ) -> None:
+        for symbol in parsed.symbols:
+            index.add(
+                Symbol(
+                    name=symbol.name,
+                    kind=symbol.kind,
+                    file=relative,
+                    line=symbol.line,
+                )
+            )
 
     def _should_ignore(self, path: Path) -> bool:
         try:
@@ -114,12 +138,4 @@ class SymbolIndexer:
         except (OSError, UnicodeDecodeError, SyntaxError):
             return
 
-        for symbol in parsed.symbols:
-            index.add(
-                Symbol(
-                    name=symbol.name,
-                    kind=symbol.kind,
-                    file=relative,
-                    line=symbol.line,
-                )
-            )
+        self._index_parsed_file(relative, parsed, index)

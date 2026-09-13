@@ -15,3 +15,9 @@
 **Learning:** `RepositoryIntelligence._direct_dependency_paths` and `_direct_dependent_paths` were scanning the entire list of `DependencyGraph.dependencies` ($M$ dependencies) on every invocation, causing $O(K \times M)$ overhead during transitive context expansion across $K$ files. Additionally, `TestMapper` ran `rglob("*.py")` twice across disk.
 
 **Action:** Maintain an internal `_by_resolved` dict index in `DependencyGraph` for $O(1)$ resolved dependency lookups, use `deque.popleft()` for BFS traversals, and combine filesystem scans into single-pass traversals.
+
+## 2026-09-13 - Redundant AST Parsing across Indexers
+
+**Learning:** `RepositoryIntelligence.build` was building `SymbolIndex` and `DependencyGraph` separately by independently scanning and parsing every `.py` file twice via `SymbolIndexer` and `DependencyIndexer`. AST parsing (`ast.parse` and traversing `ast.walk`) across hundreds of files accounted for over 50% of overall build time.
+
+**Action:** Pass pre-parsed AST result objects (`parsed_files`) to indexers during repository building to perform AST traversal once per file and share results.

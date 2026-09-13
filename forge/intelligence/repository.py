@@ -13,6 +13,7 @@ from forge.intelligence.dependencies import (
     DependencyIndexer,
 )
 from forge.intelligence.dependency_analysis import DependencyAnalyzer
+from forge.intelligence.python_parser import PythonFileInfo, PythonParser
 from forge.intelligence.runtime_detection import (
     RuntimeDetector,
     RuntimeReport,
@@ -37,8 +38,25 @@ class RepositoryIntelligence:
     def build(cls, root: str | Path = ".") -> "RepositoryIntelligence":
         project_root = Path(root).resolve()
 
-        symbols = SymbolIndexer(project_root).build()
-        dependencies = DependencyIndexer(project_root).build()
+        # Performance optimization (Bolt ⚡): Parse non-ignored Python source files once
+        # and share AST parsing result objects (`PythonFileInfo`) across SymbolIndexer
+        # and DependencyIndexer, avoiding duplicate disk reads and redundant AST parsing.
+        dep_indexer = DependencyIndexer(project_root)
+        parser = PythonParser()
+        parsed_files: dict[str, PythonFileInfo] = {}
+
+        for path in project_root.rglob("*.py"):
+            if dep_indexer._should_ignore(path):
+                continue
+            try:
+                relative = path.relative_to(project_root).as_posix()
+                source = path.read_text(encoding="utf-8")
+                parsed_files[relative] = parser.parse(relative, source)
+            except (OSError, UnicodeDecodeError, SyntaxError):
+                continue
+
+        symbols = SymbolIndexer(project_root).build(parsed_files=parsed_files)
+        dependencies = dep_indexer.build(parsed_files=parsed_files)
         dependency_analysis = DependencyAnalyzer(dependencies)
         architecture = ArchitectureAnalyzer(project_root).analyze()
 
