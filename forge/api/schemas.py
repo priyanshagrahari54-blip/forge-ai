@@ -353,6 +353,44 @@ class FinalLoopRequest(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=5)
 
 
+# -- A82 staged builds ----------------------------------------------------------------------------
+
+class StagedBuildCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    roadmap: str = Field(default="", max_length=20000)
+    blueprint: str = Field(default="", max_length=20000)
+
+
+class StagedBuildUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    roadmap: Optional[str] = Field(default=None, max_length=20000)
+    blueprint: Optional[str] = Field(default=None, max_length=20000)
+
+
+class StagedStageItem(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
+class StagedStagesAddRequest(BaseModel):
+    stages: List[StagedStageItem] = Field(min_length=1, max_length=50)
+
+
+class StagedStageUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=160)
+    prompt: Optional[str] = Field(default=None, max_length=4000)
+
+
+class StagedRunRequest(BaseModel):
+    mode: str = Field(default="", max_length=32)
+
+
+class StagedPreviewUpdateRequest(BaseModel):
+    entry: str = Field(default="", max_length=512)
+
+
 # -- agent creation engine (first-party) -------------------------------------------
 
 class EngineCreateRequest(BaseModel):

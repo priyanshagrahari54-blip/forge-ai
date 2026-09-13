@@ -33,6 +33,9 @@
         <a href="#/projects" data-route="projects">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5c0-.8.7-1.5 1.5-1.5h3l1.5 2h5c.8 0 1.5.7 1.5 1.5v4c0 .8-.7 1.5-1.5 1.5h-10c-.8 0-1.5-.7-1.5-1.5Z" fill="none" stroke="currentColor"/></svg>
           <span>Projects</span></a>
+        <a href="#/builds" data-route="builds">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h12M2 8h12M2 12.5h7" fill="none" stroke="currentColor" stroke-linecap="round"/><circle cx="13" cy="12.5" r="1.6" fill="none" stroke="currentColor"/></svg>
+          <span>Builds</span></a>
         <a href="#/models" data-route="models">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="none" stroke="currentColor"/><path d="M6.5 1.5v2M9.5 1.5v2M6.5 12.5v2M9.5 12.5v2M1.5 6.5h2M1.5 9.5h2M12.5 6.5h2M12.5 9.5h2" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Models</span></a>
@@ -562,6 +565,35 @@
   <div id="p-list" class="card-grid"></div>
   <div class="section-header"><h3>Current project</h3></div>
   <div class="surface"><div id="p-current"></div></div>
+</template>
+
+<template id="tpl-builds">
+  <div class="page-head">
+    <div>
+      <h2>Staged Builds</h2>
+      <p class="muted">One section per project, one stage at a time — each stage verified for real before the next begins.</p>
+    </div>
+  </div>
+  <div class="build-layout">
+    <div class="surface build-side">
+      <div class="section-header">
+        <h3>Project sections</h3>
+        <button id="bld-new-toggle" class="btn small" type="button">+ New</button>
+      </div>
+      <form id="bld-new-form" class="hidden">
+        <label for="bld-new-name">Name</label>
+        <input id="bld-new-name" type="text" maxlength="120" placeholder="e.g. Shop API" required autocomplete="off">
+        <label for="bld-new-desc">Description</label>
+        <input id="bld-new-desc" type="text" maxlength="2000" placeholder="What is this project?" autocomplete="off">
+        <div class="btnrow">
+          <button class="btn primary small" type="submit">Create section</button>
+        </div>
+      </form>
+      <div id="bld-error" class="error" role="alert"></div>
+      <div id="bld-list" class="list"></div>
+    </div>
+    <div id="bld-detail" class="build-main"></div>
+  </div>
 </template>
 
 <template id="tpl-models">

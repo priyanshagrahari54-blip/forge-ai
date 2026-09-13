@@ -9,6 +9,10 @@ const state = {
   route: "dashboard",
   epoch: 0,
   taskId: null,
+  buildId: null,
+  buildEditing: false,
+  buildAutoRefresh: true,
+  buildBoardSig: "",
   deskToken: null,
   voiceToken: null,
   memToken: null,
@@ -35,6 +39,7 @@ const ROUTES = {
   tasks: { render: renderTasks, title: "Tasks" },
   task: { render: renderTask, title: "Task" },
   projects: { render: renderProjects, title: "Projects" },
+  builds: { render: renderBuilds, title: "Staged Builds" },
   models: { render: renderModels, title: "Models" },
   permissions: { render: renderPermissions, title: "Permissions" },
   git: { render: renderGit, title: "Git" },
@@ -223,6 +228,9 @@ function route() {
   if (parts[0] === "tasks" && parts[1]) {
     state.taskId = parts[1];
     show("task");
+  } else if (parts[0] === "builds") {
+    state.buildId = parts[1] ? decodeURIComponent(parts[1]) : null;
+    show("builds");
   } else if (ROUTES[parts[0]] && parts[0] !== "task") {
     show(parts[0]);
   } else {
@@ -1233,6 +1241,697 @@ async function renderProjects() {
   }
 }
 
+/* ---------- staged builds (A82) ---------- */
+
+function stageBadge(status) {
+  const tone = {
+    completed: "ok", failed: "bad", running: "accent", pending: "info",
+  }[status] || "";
+  const badge = el("span", "status-badge " + tone);
+  badge.appendChild(el("span", "status-dot " + (tone || "") +
+    (status === "running" ? " pulse" : "")));
+  badge.appendChild(el("span", null, String(status).toUpperCase()));
+  return badge;
+}
+
+function buildProgressBar(counts) {
+  const total = counts.total || 0;
+  const done = counts.completed || 0;
+  const bar = el("progress", "build-progress");
+  bar.max = total || 1;
+  bar.value = done;
+  bar.textContent = done + " of " + total + " stages verified";
+  return bar;
+}
+
+function buildTypingActive(box) {
+  if (state.buildEditing) return true;
+  const active = document.activeElement;
+  return !!active && box.contains(active) &&
+    (active.tagName === "TEXTAREA" || active.tagName === "INPUT");
+}
+
+async function renderBuilds() {
+  state.buildEditing = false;
+  const listBox = document.getElementById("bld-list");
+  const detailBox = document.getElementById("bld-detail");
+  const errBox = document.getElementById("bld-error");
+  const form = document.getElementById("bld-new-form");
+  document.getElementById("bld-new-toggle").addEventListener("click", () => {
+    form.classList.toggle("hidden");
+  });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    errBox.textContent = "";
+    const body = {
+      name: document.getElementById("bld-new-name").value,
+      description: document.getElementById("bld-new-desc").value,
+    };
+    try {
+      const data = await api("/api/v1/builds",
+        { method: "POST", body: body });
+      document.getElementById("bld-new-name").value = "";
+      document.getElementById("bld-new-desc").value = "";
+      form.classList.add("hidden");
+      window.location.hash = "#/builds/" + data.build.build_id;
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+
+  const loadList = async () => {
+    const snap = snapEpoch();
+    try {
+      const data = await api("/api/v1/builds");
+      if (stale(snap)) return data.builds || [];
+      listBox.innerHTML = "";
+      const builds = data.builds || [];
+      if (!builds.length) {
+        listBox.appendChild(el("div", "muted",
+          "No project sections yet. Create one to begin."));
+        return builds;
+      }
+      for (const item of builds) {
+        const counts = item.progress || {};
+        const row = el("a", "taskrow");
+        row.href = "#/builds/" + encodeURIComponent(item.build_id);
+        if (item.build_id === state.buildId) row.classList.add("active");
+        const main = el("div", "taskrow-main");
+        main.appendChild(el("div", "taskrow-title", item.name || item.build_id));
+        const bits = [
+          (counts.completed || 0) + "/" + (counts.total || 0) + " verified",
+        ];
+        if (counts.running) bits.push("running");
+        if (counts.failed) bits.push(counts.failed + " failed");
+        main.appendChild(el("div", "taskrow-meta", bits.join(" · ")));
+        row.appendChild(main);
+        listBox.appendChild(row);
+      }
+      return builds;
+    } catch (err) {
+      if (stale(snap)) return [];
+      errorState(listBox, "Unable to load project sections", err, loadList);
+      return [];
+    }
+  };
+
+  const loadBoard = async (quiet) => {
+    if (!state.buildId) return;
+    if (quiet && buildTypingActive(detailBox)) return;
+    const snap = snapEpoch();
+    try {
+      const boardUrl = "/api/v1/builds/" +
+        encodeURIComponent(state.buildId);
+      const boardPromise = api(boardUrl);
+      const previewPromise = api(boardUrl + "/preview").catch(() => null);
+      const board = await boardPromise;
+      const preview = await previewPromise;
+      if (stale(snap)) return;
+      if (quiet && buildTypingActive(detailBox)) return;
+      board._preview = preview;
+      const sig = buildBoardSig(board);
+      if (quiet && sig === state.buildBoardSig) return;
+      state.buildBoardSig = sig;
+      renderBoard(board, detailBox, errBox, loadList, loadBoard);
+    } catch (err) {
+      if (stale(snap)) return;
+      if (quiet) return;
+      errorState(detailBox, "Unable to load this section", err,
+        () => loadBoard(false));
+    }
+  };
+
+  const builds = await loadList();
+  if (!state.buildId && builds.length) {
+    state.buildId = builds[0].build_id;
+    await loadList();
+  }
+  if (state.buildId) {
+    detailBox.innerHTML = "";
+    detailBox.appendChild(el("div", "muted", "Loading section…"));
+    await loadBoard(false);
+  } else {
+    detailBox.innerHTML = "";
+    emptyState(detailBox, "No section selected.",
+      "Create a project section, add its roadmap, blueprint, and stage prompts, then run one stage at a time.",
+      "", "");
+  }
+  state.pollers.push(setInterval(async () => {
+    await loadList();
+    await loadBoard(true);
+  }, 4000));
+}
+
+function buildBoardSig(board) {
+  const stages = (board.stages || []).map((stage) => [
+    stage.position, stage.status, stage.run_id, stage.attempts,
+    stage.error || "",
+  ]);
+  const build = board.build || {};
+  return JSON.stringify({
+    progress: board.progress || {},
+    current: board.current_position || 0,
+    done: board.all_complete === true,
+    active: board.active_run_id || "",
+    stages: stages,
+    docs: [build.roadmap_chars || 0, build.blueprint_chars || 0,
+      build.preview_entry || ""],
+  });
+}
+
+function renderBoard(board, detailBox, errBox, loadList, loadBoard) {
+  state.buildEditing = false;
+  const keepFrame = !state.buildAutoRefresh
+    ? detailBox.querySelector("iframe.preview-frame")
+    : null;
+  if (keepFrame) keepFrame.remove();
+  detailBox.innerHTML = "";
+  errBox.textContent = "";
+  const build = board.build || {};
+  const stages = board.stages || [];
+  const counts = board.progress || {};
+  const running = (counts.running || 0) > 0;
+  const total = counts.total || 0;
+
+  const head = el("div", "surface");
+  head.appendChild(el("h3", null, build.name || build.build_id || "Section"));
+  if (build.description) {
+    head.appendChild(el("p", "muted", build.description));
+  }
+  const proof = el("p", "muted", (counts.completed || 0) + " of " + total +
+    " stages verified complete · " + (counts.failed || 0) + " failed");
+  head.appendChild(proof);
+  head.appendChild(buildProgressBar(counts));
+  const actions = el("div", "btnrow build-actions");
+  const runBtn = el("button", "btn primary", "Run next stage");
+  runBtn.type = "button";
+  runBtn.disabled = running || total === 0 || board.all_complete === true;
+  if (board.all_complete) runBtn.textContent = "All stages verified ✓";
+  else if (running) runBtn.textContent = "Stage running…";
+  runBtn.addEventListener("click", async () => {
+    errBox.textContent = "";
+    runBtn.disabled = true;
+    try {
+      await api("/api/v1/builds/" + encodeURIComponent(build.build_id) +
+        "/run-next", { method: "POST", body: {} });
+      await loadList();
+      await loadBoard(false);
+    } catch (err) {
+      errBox.textContent = err.message;
+      runBtn.disabled = false;
+    }
+  });
+  actions.appendChild(runBtn);
+  if (board.active_run_id) {
+    const live = el("a", "btn small", "Watch live run");
+    live.href = "#/tasks/" + encodeURIComponent(board.active_run_id);
+    actions.appendChild(live);
+  }
+  const delBtn = el("button", "btn small danger", "Delete section");
+  delBtn.type = "button";
+  delBtn.disabled = running;
+  delBtn.addEventListener("click", async () => {
+    errBox.textContent = "";
+    try {
+      await api("/api/v1/builds/" + encodeURIComponent(build.build_id),
+        { method: "DELETE" });
+      window.location.hash = "#/builds";
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+  actions.appendChild(delBtn);
+  head.appendChild(actions);
+  detailBox.appendChild(head);
+  detailBox.appendChild(renderPreview(board, errBox, loadBoard, keepFrame));
+
+  const docs = el("div", "surface");
+  const docsHead = el("div", "section-header");
+  docsHead.appendChild(el("h3", null, "Roadmap & blueprint"));
+  docs.appendChild(docsHead);
+  docs.appendChild(el("p", "muted",
+    "Sent with every stage run, one stage at a time. Edits apply to future stages."));
+  const roadmapLabel = el("label", null, "Roadmap");
+  roadmapLabel.setAttribute("for", "bld-roadmap");
+  docs.appendChild(roadmapLabel);
+  const roadmap = el("textarea", "mono");
+  roadmap.id = "bld-roadmap";
+  roadmap.rows = 6;
+  roadmap.maxLength = 20000;
+  roadmap.value = build.roadmap || "";
+  roadmap.placeholder = "Stage 1: auth … Stage 2: cart … (the full plan)";
+  docs.appendChild(roadmap);
+  const blueprintLabel = el("label", null, "Blueprint");
+  blueprintLabel.setAttribute("for", "bld-blueprint");
+  docs.appendChild(blueprintLabel);
+  const blueprint = el("textarea", "mono");
+  blueprint.id = "bld-blueprint";
+  blueprint.rows = 6;
+  blueprint.maxLength = 20000;
+  blueprint.value = build.blueprint || "";
+  blueprint.placeholder = "Architecture, contracts, conventions Forge must follow…";
+  docs.appendChild(blueprint);
+  const docsRow = el("div", "btnrow build-actions");
+  const saveDocs = el("button", "btn small", "Save roadmap & blueprint");
+  saveDocs.type = "button";
+  saveDocs.addEventListener("click", async () => {
+    errBox.textContent = "";
+    try {
+      await api("/api/v1/builds/" + encodeURIComponent(build.build_id),
+        {
+          method: "PATCH",
+          body: { roadmap: roadmap.value, blueprint: blueprint.value },
+        });
+      await loadBoard(false);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+  docsRow.appendChild(saveDocs);
+  docsRow.appendChild(el("span", "muted",
+    (build.roadmap_chars || 0) + " / " + (build.blueprint_chars || 0) + " chars"));
+  docs.appendChild(docsRow);
+  detailBox.appendChild(docs);
+
+  const adder = el("div", "surface");
+  const adderHead = el("div", "section-header");
+  adderHead.appendChild(el("h3", null, "Add a stage"));
+  adder.appendChild(adderHead);
+  adder.appendChild(el("p", "muted",
+    "Give every stage prompt up front — Forge still runs them strictly in order."));
+  const titleLabel = el("label", null, "Stage title");
+  titleLabel.setAttribute("for", "bld-stage-title");
+  adder.appendChild(titleLabel);
+  const titleInput = el("input");
+  titleInput.id = "bld-stage-title";
+  titleInput.type = "text";
+  titleInput.maxLength = 160;
+  titleInput.placeholder = "e.g. Stage 1 — User authentication";
+  titleInput.autocomplete = "off";
+  adder.appendChild(titleInput);
+  const promptLabel = el("label", null, "Stage prompt");
+  promptLabel.setAttribute("for", "bld-stage-prompt");
+  adder.appendChild(promptLabel);
+  const promptInput = el("textarea");
+  promptInput.id = "bld-stage-prompt";
+  promptInput.rows = 4;
+  promptInput.maxLength = 4000;
+  promptInput.placeholder = "Exactly what Forge must build in this stage, with tests…";
+  adder.appendChild(promptInput);
+  const addRow = el("div", "btnrow build-actions");
+  const addBtn = el("button", "btn primary small", "Add stage");
+  addBtn.type = "button";
+  addBtn.addEventListener("click", async () => {
+    errBox.textContent = "";
+    try {
+      await api("/api/v1/builds/" + encodeURIComponent(build.build_id) +
+        "/stages",
+        {
+          method: "POST",
+          body: {
+            stages: [{ title: titleInput.value, prompt: promptInput.value }],
+          },
+        });
+      titleInput.value = "";
+      promptInput.value = "";
+      await loadList();
+      await loadBoard(false);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+  addRow.appendChild(addBtn);
+  adder.appendChild(addRow);
+  detailBox.appendChild(adder);
+
+  const listHead = el("div", "section-header");
+  listHead.appendChild(el("h3", null, "Stages (in order)"));
+  detailBox.appendChild(listHead);
+  if (!stages.length) {
+    const empty = el("div", "surface");
+    empty.appendChild(el("p", "muted",
+      "No stages yet. Add the first stage prompt above."));
+    detailBox.appendChild(empty);
+    return;
+  }
+  for (const stage of stages) {
+    detailBox.appendChild(renderStageCard(stage, board, running,
+      errBox, loadList, loadBoard));
+  }
+}
+
+function previewRawUrl(buildId, path) {
+  return "/api/v1/builds/" + encodeURIComponent(buildId) +
+    "/preview/raw?path=" + encodeURIComponent(path);
+}
+
+function renderPreview(board, errBox, loadBoard, keepFrame) {
+  const build = board.build || {};
+  const buildId = build.build_id || "";
+  const meta = board._preview || {};
+  const entry = meta.entry || "";
+  const entryExists = meta.entry_exists === true;
+  const candidates = meta.candidates || [];
+  const made = meta.files_made || [];
+
+  const box = el("div", "surface build-preview");
+  const head = el("div", "section-header");
+  head.appendChild(el("h3", null, "Live preview"));
+  const auto = el("label", "checkbox-row");
+  const autoBox = el("input");
+  autoBox.type = "checkbox";
+  autoBox.checked = state.buildAutoRefresh;
+  autoBox.addEventListener("change", () => {
+    state.buildAutoRefresh = autoBox.checked;
+  });
+  auto.appendChild(autoBox);
+  auto.appendChild(el("span", null, "Auto-refresh on stage complete"));
+  head.appendChild(auto);
+  box.appendChild(head);
+  box.appendChild(el("p", "muted",
+    "What Forge is making, live. Sandboxed — previewed pages cannot " +
+    "touch the cockpit."));
+
+  const bar = el("div", "preview-bar");
+  if (candidates.length) {
+    const select = el("select");
+    select.setAttribute("aria-label", "Preview entry page");
+    if (!entry) {
+      const placeholder = el("option", null, "Pick an entry page…");
+      placeholder.value = "";
+      select.appendChild(placeholder);
+    }
+    for (const candidate of candidates) {
+      const option = el("option", null, candidate);
+      option.value = candidate;
+      if (candidate === entry) option.selected = true;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", async () => {
+      errBox.textContent = "";
+      try {
+        await api("/api/v1/builds/" + encodeURIComponent(buildId) +
+          "/preview", { method: "PATCH", body: { entry: select.value } });
+        await loadBoard(false);
+      } catch (err) {
+        errBox.textContent = err.message;
+      }
+    });
+    bar.appendChild(select);
+  }
+  const refresh = el("button", "btn small", "Refresh");
+  refresh.type = "button";
+  refresh.disabled = !(entry && entryExists);
+  refresh.addEventListener("click", () => {
+    const frame = box.querySelector("iframe.preview-frame");
+    if (frame) frame.setAttribute("src", previewRawUrl(buildId, entry));
+  });
+  bar.appendChild(refresh);
+  if (entry && entryExists) {
+    const full = el("a", "btn small", "Open full page");
+    full.href = previewRawUrl(buildId, entry);
+    full.target = "_blank";
+    full.rel = "noopener";
+    bar.appendChild(full);
+  }
+  box.appendChild(bar);
+
+  if (entry && !entryExists) {
+    box.appendChild(el("p", "error",
+      "The entry page was deleted — pick another one above."));
+  } else if (!candidates.length) {
+    box.appendChild(el("p", "muted",
+      "No HTML files yet — run a stage that builds a site."));
+  }
+  if (entry && entryExists) {
+    const frame = el("iframe", "preview-frame");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("title",
+      "Live preview of " + (build.name || "build"));
+    frame.setAttribute("src", previewRawUrl(buildId, entry));
+    frame.dataset.entry = entry;
+    if (keepFrame && keepFrame.dataset.entry === entry) {
+      box.appendChild(keepFrame);
+    } else {
+      box.appendChild(frame);
+    }
+  }
+
+  const madeHead = el("div", "section-header");
+  madeHead.appendChild(el("h3", null, "What was made"));
+  box.appendChild(madeHead);
+  const viewer = el("div", "file-viewer hidden");
+  let shown = false;
+  for (const group of made) {
+    const files = group.files || [];
+    if (!files.length && group.status !== "running") continue;
+    shown = true;
+    const section = el("div", "made-group");
+    const ghead = el("div", "made-head");
+    ghead.appendChild(el("span", "stage-pos", String(group.position)));
+    ghead.appendChild(el("strong", null,
+      group.title || ("Stage " + group.position)));
+    ghead.appendChild(stageBadge(group.status));
+    section.appendChild(ghead);
+    if (group.status === "running") {
+      const note = el("p", "muted", "Working on this stage right now… ");
+      if (group.run_id) {
+        const live = el("a", "link", "watch live run");
+        live.href = "#/tasks/" + encodeURIComponent(group.run_id);
+        note.appendChild(live);
+      }
+      section.appendChild(note);
+    }
+    if (files.length) {
+      const chips = el("div", "file-chips");
+      for (const file of files) {
+        const chip = el("button", "file-chip", file);
+        chip.type = "button";
+        chip.addEventListener("click", () => {
+          openPreviewFile(buildId, file, viewer);
+        });
+        chips.appendChild(chip);
+      }
+      section.appendChild(chips);
+    }
+    box.appendChild(section);
+  }
+  if (!shown) {
+    box.appendChild(el("p", "muted",
+      "Nothing made yet — completed stages list every file they " +
+      "created here."));
+  }
+  box.appendChild(viewer);
+  return box;
+}
+
+async function openPreviewFile(buildId, path, viewer) {
+  viewer.classList.remove("hidden");
+  viewer.innerHTML = "";
+  const head = el("div", "viewer-head");
+  head.appendChild(el("span", "mono", path));
+  const close = el("button", "btn small", "Close");
+  close.type = "button";
+  close.addEventListener("click", () => {
+    viewer.classList.add("hidden");
+    viewer.innerHTML = "";
+  });
+  head.appendChild(close);
+  viewer.appendChild(head);
+  viewer.appendChild(el("p", "muted", "Loading…"));
+  try {
+    const data = await api("/api/v1/builds/" +
+      encodeURIComponent(buildId) +
+      "/preview/file?path=" + encodeURIComponent(path));
+    viewer.querySelectorAll("p").forEach((node) => node.remove());
+    if (data.kind === "text") {
+      const pre = el("pre", "mono");
+      pre.textContent = (data.content || "") +
+        (data.truncated ? "\n…[truncated]" : "");
+      viewer.appendChild(pre);
+    } else if (data.kind === "image" && data.raw_url) {
+      const img = el("img");
+      img.src = data.raw_url;
+      img.alt = path;
+      viewer.appendChild(img);
+    } else {
+      viewer.appendChild(el("p", "muted",
+        "Binary file (" + (data.size || 0) + " bytes) — nothing to show."));
+    }
+  } catch (err) {
+    viewer.querySelectorAll("p").forEach((node) => node.remove());
+    viewer.appendChild(el("p", "error",
+      "Unable to load file: " + err.message));
+  }
+}
+
+function renderStageCard(stage, board, buildRunning, errBox, loadList, loadBoard) {
+  const buildId = (board.build || {}).build_id || "";
+  const card = el("div", "surface stage-card st-" + stage.status);
+  const head = el("div", "stage-head");
+  head.appendChild(el("span", "stage-pos", String(stage.position)));
+  const titleBox = el("div", "stage-titles");
+  titleBox.appendChild(el("h4", null, stage.title || ("Stage " + stage.position)));
+  const bits = ["attempts: " + (stage.attempts || 0)];
+  if (stage.run_id) bits.push("run " + shortId(stage.run_id));
+  titleBox.appendChild(el("div", "muted meta", bits.join(" · ")));
+  head.appendChild(titleBox);
+  head.appendChild(stageBadge(stage.status));
+  card.appendChild(head);
+
+  const blockedBy = (board.stages || []).filter((item) =>
+    item.position < stage.position && item.status !== "completed");
+  if (stage.status === "pending" && blockedBy.length) {
+    card.appendChild(el("p", "muted stage-lock",
+      "Locked — waiting for stage " + blockedBy[0].position +
+      " to verify complete. Stages run strictly in order."));
+  }
+
+  const details = el("details", "stage-prompt");
+  details.appendChild(el("summary", null, "Stage prompt"));
+  const pre = el("pre", "mono");
+  pre.textContent = stage.prompt || "";
+  details.appendChild(pre);
+  card.appendChild(details);
+
+  if (stage.status === "failed" && stage.error) {
+    const err = el("p", "error", "");
+    err.textContent = "Failed: " + stage.error;
+    card.appendChild(err);
+    if (stage.run_id) {
+      const link = el("a", "link", "Open failed run");
+      link.href = "#/tasks/" + encodeURIComponent(stage.run_id);
+      card.appendChild(link);
+    }
+  }
+
+  const evidence = stage.evidence || {};
+  if (stage.status === "completed" && evidence.verified) {
+    const box = el("div", "stage-evidence");
+    box.appendChild(el("h5", null, "Verified evidence"));
+    const changed = evidence.files_changed || [];
+    box.appendChild(el("div", "muted",
+      (evidence.summary || "Verified complete.")));
+    const rows = [
+      ["files changed", changed.length ? changed.slice(0, 8).join(", ") +
+        (changed.length > 8 ? " +" + (changed.length - 8) + " more" : "")
+        : "–"],
+      ["model", (evidence.model || "–") +
+        (evidence.provider ? " (" + evidence.provider + ")" : "")],
+      ["duration", fmtDur(evidence.duration_seconds || 0)],
+      ["checkpoint", evidence.checkpoint_id || "–"],
+    ];
+    box.appendChild(kvTable(rows));
+    if (stage.run_id) {
+      const link = el("a", "link", "Open verified run");
+      link.href = "#/tasks/" + encodeURIComponent(stage.run_id);
+      box.appendChild(link);
+    }
+    card.appendChild(box);
+  }
+
+  const row = el("div", "btnrow build-actions");
+  const actionable = stage.position === board.current_position &&
+    !buildRunning && stage.status !== "completed";
+  if (actionable) {
+    const runOne = el("button", "btn primary small",
+      stage.status === "failed" ? "Retry this stage" : "Run this stage");
+    runOne.type = "button";
+    runOne.addEventListener("click", async () => {
+      errBox.textContent = "";
+      try {
+        await api("/api/v1/builds/" + encodeURIComponent(buildId) +
+          "/stages/" + stage.position + "/run",
+          { method: "POST", body: {} });
+        await loadList();
+        await loadBoard(false);
+      } catch (err) {
+        errBox.textContent = err.message;
+      }
+    });
+    row.appendChild(runOne);
+  } else if (stage.status === "running" && stage.run_id) {
+    const live = el("a", "btn small", "Watch live run");
+    live.href = "#/tasks/" + encodeURIComponent(stage.run_id);
+    row.appendChild(live);
+  }
+  if (stage.status === "pending" || stage.status === "failed") {
+    const editBtn = el("button", "btn small", "Edit");
+    editBtn.type = "button";
+    editBtn.addEventListener("click", () => {
+      openStageEditor(card, stage, buildId, errBox, loadBoard);
+    });
+    row.appendChild(editBtn);
+  }
+  if (stage.status === "pending") {
+    const delOne = el("button", "btn small danger", "Delete");
+    delOne.type = "button";
+    delOne.addEventListener("click", async () => {
+      errBox.textContent = "";
+      try {
+        await api("/api/v1/builds/" + encodeURIComponent(buildId) +
+          "/stages/" + stage.position, { method: "DELETE" });
+        await loadList();
+        await loadBoard(false);
+      } catch (err) {
+        errBox.textContent = err.message;
+      }
+    });
+    row.appendChild(delOne);
+  }
+  card.appendChild(row);
+  return card;
+}
+
+function openStageEditor(card, stage, buildId, errBox, loadBoard) {
+  state.buildEditing = true;
+  card.querySelectorAll(".btnrow").forEach((node) => {
+    node.classList.add("hidden");
+  });
+  const editor = el("div", "stage-editor");
+  const titleLabel = el("label", null, "Stage title");
+  editor.appendChild(titleLabel);
+  const titleInput = el("input");
+  titleInput.type = "text";
+  titleInput.maxLength = 160;
+  titleInput.value = stage.title || "";
+  editor.appendChild(titleInput);
+  const promptLabel = el("label", null, "Stage prompt");
+  editor.appendChild(promptLabel);
+  const promptInput = el("textarea");
+  promptInput.rows = 5;
+  promptInput.maxLength = 4000;
+  promptInput.value = stage.prompt || "";
+  editor.appendChild(promptInput);
+  const row = el("div", "btnrow build-actions");
+  const save = el("button", "btn primary small", "Save");
+  save.type = "button";
+  save.addEventListener("click", async () => {
+    errBox.textContent = "";
+    try {
+      await api("/api/v1/builds/" + encodeURIComponent(buildId) +
+        "/stages/" + stage.position,
+        {
+          method: "PATCH",
+          body: { title: titleInput.value, prompt: promptInput.value },
+        });
+      await loadBoard(false);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+  row.appendChild(save);
+  const cancel = el("button", "btn small", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => {
+    loadBoard(false);
+  });
+  row.appendChild(cancel);
+  editor.appendChild(row);
+  card.appendChild(editor);
+  titleInput.focus();
+}
+
 /* ---------- models ---------- */
 
 function fmtContext(n) {
@@ -2236,6 +2935,7 @@ const PALETTE_COMMANDS = [
   ["Go to Overview", "view", () => { window.location.hash = "#/dashboard"; }],
   ["Go to Tasks", "view", () => { window.location.hash = "#/tasks"; }],
   ["Go to Projects", "view", () => { window.location.hash = "#/projects"; }],
+  ["Go to Staged Builds", "view", () => { window.location.hash = "#/builds"; }],
   ["Go to Models", "view", () => { window.location.hash = "#/models"; }],
   ["Go to Permissions", "view", () => { window.location.hash = "#/permissions"; }],
   ["Go to Git", "view", () => { window.location.hash = "#/git"; }],

@@ -656,6 +656,38 @@ forge server health                         # component health report
 See `docs/A81-FORGE-SERVER.md` for the architecture, lifecycle table,
 API reference, recovery protocol, configuration, and security model.
 
+## Staged Builds (A82)
+
+Project sections with ordered stages (`forge/staged/` + cockpit `Builds`
+view): each section keeps its own roadmap, blueprint, and stage prompts,
+supplied all at once but consumed strictly one at a time —
+
+```text
+roadmap + blueprint + stage-1 prompt → real Supervisor run → verified?
+  → yes: unlock stage 2 → … → no: record failure, stay locked
+```
+
+- **One stage at a time**: every run carries the roadmap + blueprint
+  plus exactly one stage prompt; later stages are never included and
+  the model cannot race ahead.
+- **Real completion only**: a stage verifies `completed` solely from a
+  linked run that is `SUCCEEDED` with `acceptance.accepted` and zero
+  failed gates. No API or button completes a stage by hand, and
+  completed stages are immutable.
+- **Strict order**: stage N+1 refuses to start until stage N verifies;
+  one active run per section; failures keep their reason and can be
+  edited and retried, with every attempt recorded.
+- **Evidence per stage**: acceptance, test/review/security/build
+  results, files changed, checkpoint, model, and duration — each
+  linking back to the accepted run.
+- **Live preview**: the rendered site in a sandboxed iframe
+  (auto-discovered entry page, auto-refresh on stage completion) plus
+  a per-stage *what was made* file view — safely scoped to the
+  project root with traversal/sensitive-file denials.
+
+See `docs/A82-STAGED-BUILDS.md` for the architecture, prompt assembly,
+API reference, and guarantees.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

@@ -44,6 +44,7 @@ from forge.api import (
     routes_plugins,
     routes_autonomy,
     routes_final,
+    routes_staged,
     routes_engine,
 )
 from forge.api.deps import RateLimiter
@@ -72,10 +73,13 @@ class _RequestContextMiddleware(BaseHTTPMiddleware):
         # No frame-ancestors/X-Frame-Options: the local-dev cockpit must
         # stay embeddable (e.g. proxied previews). Production deployments
         # should add framing controls at the edge.
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; img-src 'self' data:; "
-            "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
+        # Routes that set their own policy (e.g. the sandboxed staged-build
+        # preview) keep it; everything else gets the cockpit default.
+        if "Content-Security-Policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "connect-src 'self'; img-src 'self' data:; "
+                "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
         if not request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -186,6 +190,7 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_plugins.router, prefix="/api/v1")
     app.include_router(routes_autonomy.router, prefix="/api/v1")
     app.include_router(routes_final.router, prefix="/api/v1")
+    app.include_router(routes_staged.router, prefix="/api/v1")
     app.include_router(routes_compute.router, prefix="/api/v1")
     app.include_router(routes_engine.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
