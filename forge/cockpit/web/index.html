@@ -129,6 +129,28 @@
         <button id="logout" class="btn small hidden">Sign out</button>
       </div>
     </header>
+    <section class="voice-hub" aria-label="Hands-free command center">
+      <div class="voice-heading"><span class="voice-eyebrow">FORGE / AMBIENT WORKSPACE</span><a href="#/voice">Voice permissions ↗</a></div>
+      <div class="voice-grid">
+        <div class="voice-presence">
+          <div id="hf-orb" class="voice-orb" aria-hidden="true"><span>F</span></div>
+          <span class="voice-eyebrow">YOUR VOICE. YOUR WORKSPACE.</span>
+          <h2>Speak it. Forge it.</h2>
+          <p id="hf-status" role="status">Microphone off · You're in control</p>
+          <div class="voice-controls"><button id="hf-toggle" class="btn primary" aria-pressed="false">Enable hands-free</button><label><input id="hf-sound" type="checkbox" checked> Spoken replies</label></div>
+          <p class="voice-note">Listens while this page is open. Pauses to speak and process commands. Say “stop listening” to turn off. Your browser may send audio to its speech service. Tasks still require confirmation and policy approval.</p>
+        </div>
+        <div class="voice-workspace">
+          <div class="voice-heading"><h3>Conversation</h3><span class="voice-eyebrow">LIVE TRANSCRIPT</span></div>
+          <div id="hf-log" class="voice-log" role="log" aria-live="polite"><p class="muted">Try “summarize this project” or “review the code”. Forge will ask before creating a task.</p></div>
+          <p id="hf-interim" class="muted"></p>
+          <form id="hf-form" class="voice-input"><input id="hf-text" aria-label="Command" maxlength="2000" placeholder="Or type a command…" required><button class="btn" type="submit">Send ↗</button></form>
+          <div class="voice-links"><span id="hf-browser">Browser speech · checking</span><span id="hf-api">Control plane · not checked</span><span id="hf-project">Project · no session</span></div>
+          <div class="voice-heading"><h3>Agent activity</h3><a href="#/models">Model connections ↗</a></div>
+          <div id="hf-activity" class="voice-activity">No voice task yet. Agent stages and execution details appear here.</div>
+        </div>
+      </div>
+    </section>
     <main id="view" tabindex="-1"></main>
   </div>
 </div>
@@ -850,5 +872,6 @@
 </template>
 
 <script src="/app.js"></script>
+<script src="/handsfree.js"></script>
 </body>
 </html>
