@@ -74,6 +74,12 @@ class ForgeDesktopApp(tk.Tk):
         self._mode = tk.StringVar(value="assisted")
         self._readiness: dict[str, Any] = {}
         self._debug = False
+        # Agent Manager (A81) state. Initialised here rather than probed
+        # with getattr(): a Tk root answers for attributes it never had,
+        # so an absent-attribute check is not a reliable "not built yet".
+        self._agent_window = None
+        self._agent_names: list[str] = []
+        self._agent_state: dict[str, Any] = {}
 
         self._build_menu()
         self._build_toolbar()
@@ -109,6 +115,10 @@ class ForgeDesktopApp(tk.Tk):
         agents_menu = tk.Menu(menubar, tearoff=False)
         agents_menu.add_command(label="Agent Manager...",
                                 command=self._open_agent_manager)
+        # A82: the specification-driven engine has its own manager. Both are
+        # kept side by side rather than one silently replacing the other.
+        agents_menu.add_command(label="Creation Engine (A82)...",
+                                command=self._show_agent_manager_async)
         menubar.add_cascade(label="Agents", menu=agents_menu)
 
         help_menu = tk.Menu(menubar, tearoff=False)
@@ -293,6 +303,10 @@ class ForgeDesktopApp(tk.Tk):
                     self._show_doctor_window(payload)
                 elif kind == "models":
                     self._show_models_window(payload)
+                elif kind == "agents":
+                    self._show_agent_manager_window(payload)
+                elif kind == "agent_detail":
+                    self._show_agent_detail(payload)
                 elif kind == "notice":
                     self._set_status(str(payload))
                 elif kind == "error":
@@ -799,6 +813,316 @@ class ForgeDesktopApp(tk.Tk):
                 self._agent_manager = None
         self._agent_manager = AgentManagerWindow(self, self.backend,
                                                  project_id)
+
+    # -- agent manager (A82) -------------------------------------------------------
+
+    def _show_agent_manager_async(self) -> None:
+        """Open the Agent Manager for the selected project."""
+        if not self.backend.running:
+            messagebox.showinfo(
+                APP_TITLE, "Start the backend first (open a project folder).")
+            return
+
+        def work() -> None:
+            try:
+                state = self.backend.agent_summary(self._current_project.get())
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agents", state))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_agent_manager_window(self, state: dict[str, Any]) -> None:
+        """Build (or refresh) the Agent Manager window.
+
+        Widgets never touch the engine directly: every button calls a
+        backend method on a worker thread and the reply comes back through
+        the queue, exactly like the task panels.
+        """
+        window = getattr(self, "_agent_window", None)
+        if window is None or getattr(window, "_destroyed", False):
+            window = tk.Toplevel(self)
+            window.title("Agent Manager")
+            window.geometry("980x640")
+            self._agent_window = window
+
+            top = ttk.Frame(window, padding=6)
+            top.pack(fill=tk.X)
+            ttk.Label(top, text="Template:").pack(side=tk.LEFT)
+            self._agent_template = tk.StringVar(value="coding")
+            templates = [item["id"] for item in state.get("templates", [])] \
+                or ["coding"]
+            ttk.Combobox(top, textvariable=self._agent_template,
+                         values=templates, state="readonly",
+                         width=18).pack(side=tk.LEFT, padx=(4, 10))
+            ttk.Label(top, text="Name:").pack(side=tk.LEFT)
+            self._agent_name = ttk.Entry(top, width=18)
+            self._agent_name.pack(side=tk.LEFT, padx=(4, 10))
+            ttk.Label(top, text="Purpose:").pack(side=tk.LEFT)
+            self._agent_purpose = ttk.Entry(top, width=30)
+            self._agent_purpose.pack(side=tk.LEFT, padx=(4, 10))
+            ttk.Button(top, text="Create agent",
+                       command=self._create_agent).pack(side=tk.LEFT)
+
+            body = ttk.Frame(window, padding=6)
+            body.pack(fill=tk.BOTH, expand=True)
+            left = ttk.Frame(body)
+            left.pack(side=tk.LEFT, fill=tk.Y)
+            ttk.Label(left, text="Agents").pack(anchor=tk.W)
+            self._agent_list = tk.Listbox(left, width=30, activestyle="dotbox")
+            self._agent_list.pack(fill=tk.BOTH, expand=True)
+            self._agent_list.bind("<<ListboxSelect>>",
+                                  self._on_agent_selected)
+            buttons = ttk.Frame(left)
+            buttons.pack(fill=tk.X, pady=(4, 0))
+            for label, action in (
+                    ("Validate", lambda: self._agent_action("validate")),
+                    ("Test", lambda: self._agent_action("test")),
+                    ("Enable", lambda: self._agent_set_state("enabled")),
+                    ("Pause", lambda: self._agent_set_state("paused")),
+                    ("Disable", lambda: self._agent_set_state("disabled")),
+                    ("Retire", lambda: self._agent_set_state("retired"))):
+                ttk.Button(buttons, text=label,
+                           command=action).pack(side=tk.LEFT, padx=1)
+            ttk.Button(left, text="Grant spec permissions",
+                       command=self._grant_agent_spec).pack(fill=tk.X,
+                                                            pady=(4, 0))
+
+            right = ttk.Frame(body)
+            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
+            self._agent_text = tk.Text(right, wrap=tk.WORD,
+                                       state=tk.DISABLED, bg="#f6f8fa")
+            scroll = ttk.Scrollbar(right, command=self._agent_text.yview)
+            self._agent_text.configure(yscrollcommand=scroll.set)
+            self._agent_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._agent_state = state
+        self._agent_names = [agent["name"] for agent in state.get("agents", [])]
+        self._render_agent_list(state)
+
+    def _render_agent_list(self, state: dict[str, Any]) -> None:
+        agents = state.get("agents", [])
+        self._agent_list.delete(0, tk.END)
+        for agent in agents:
+            self._agent_list.insert(
+                tk.END, "%s  [%s]  v%s" % (agent["name"], agent["state"],
+                                           agent["version"]))
+        counts = state.get("counts", {})
+        by_state = counts.get("by_state", {})
+        summary = ", ".join("%s=%d" % (key, by_state[key])
+                            for key in sorted(by_state)) or "none"
+        self._render_agent_detail(
+            "AGENTS IN %s\n  total: %d (%s)\n"
+            % (state.get("root", ""), counts.get("total", 0), summary)
+            + "\nSelect an agent to inspect its specification, permissions,\n"
+              "lifecycle history, and benchmark report.\n"
+              "An agent can only be enabled after it has been validated\n"
+              "and passed its benchmark; permissions are granted by you,\n"
+              "never by the agent itself.")
+
+    def _render_agent_detail(self, text: str) -> None:
+        self._agent_text.configure(state=tk.NORMAL)
+        self._agent_text.delete("1.0", tk.END)
+        self._agent_text.insert(tk.END, text)
+        self._agent_text.configure(state=tk.DISABLED)
+
+    def _selected_agent(self) -> str:
+        selection = self._agent_list.curselection()
+        if not selection or not self._agent_names:
+            return ""
+        index = int(selection[0])
+        if index < 0 or index >= len(self._agent_names):
+            return ""
+        return self._agent_names[index]
+
+    def _on_agent_selected(self, _event=None) -> None:
+        name = self._selected_agent()
+        if not name:
+            return
+
+        def work() -> None:
+            try:
+                detail = self.backend.agent_detail(
+                    self._current_project.get(), name)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agent_detail", detail))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_agent_detail(self, detail: dict[str, Any]) -> None:
+        summary = detail.get("summary", {})
+        permissions = detail.get("permissions", {})
+        benchmark = detail.get("benchmark", {})
+        memory = detail.get("memory", {})
+        usage = detail.get("usage", {})
+        lines = [
+            "AGENT %s" % summary.get("name", ""),
+            "  state: %s      version: %s" % (summary.get("state", ""),
+                                              summary.get("version", "")),
+            "  role: %s   template: %s" % (summary.get("role", "") or "-",
+                                           summary.get("template", "") or "-"),
+            "  purpose: %s" % summary.get("purpose", ""),
+            "  capabilities: %s" % ", ".join(summary.get("capabilities", [])),
+            "  runs recorded: %s" % summary.get("run_count", 0),
+            "",
+            "SPECIFICATION",
+            "  tools: %s" % (", ".join(summary.get("tools", [])) or "none"),
+            "  mode ceiling: %s" % permissions.get("mode_ceiling", ""),
+            "  allowed paths: %s"
+            % (", ".join(permissions.get("allowed_paths", [])) or "any"),
+            "  denied paths: %s"
+            % (", ".join(permissions.get("denied_paths", [])) or "none"),
+            "  memory: scope=%s entries=%s/%s"
+            % (memory.get("scope", ""), memory.get("private_entries", 0),
+               memory.get("max_entries", 0)),
+            "",
+            "PERMISSIONS (granted by an operator, never by the agent)",
+            "  granted: %s"
+            % (", ".join(permissions.get("granted", [])) or "none"),
+            "  not granted: %s"
+            % (", ".join(permissions.get("not_granted", [])) or "none"),
+            "  always blocked: %s"
+            % ", ".join(permissions.get("blocked_always", [])),
+            "",
+            "LIFECYCLE",
+            "  allowed transitions: %s"
+            % (", ".join(detail.get("allowed_transitions", [])) or "none"),
+        ]
+        for entry in (detail.get("lifecycle", {}).get("history", []) or [])[-8:]:
+            lines.append("    %s -> %s by %s (%s)"
+                         % (entry.get("from", ""), entry.get("to", ""),
+                            entry.get("actor", ""), entry.get("reason", "")))
+        lines.extend([
+            "",
+            "BENCHMARK",
+        ])
+        if benchmark:
+            lines.append("  %s — %s" % (
+                "PASSED" if benchmark.get("passed") else "FAILED",
+                benchmark.get("reason", "")))
+            for scenario in benchmark.get("scenarios", []):
+                lines.append("    [%-7s] %s" % (
+                    scenario.get("status", "").upper(),
+                    scenario.get("name", "")))
+        else:
+            lines.append("  not benchmarked yet")
+        lines.extend([
+            "",
+            "QUOTA",
+            "  runs last hour: %s/%s   active: %s"
+            % (usage.get("runs_last_hour", 0),
+               usage.get("max_runs_per_hour", 0), usage.get("active_runs", 0)),
+            "",
+            "VERSIONS",
+        ])
+        for record in detail.get("versions", []):
+            lines.append("  v%-8s %s  %s" % (
+                record.get("version", ""),
+                str(record.get("fingerprint", ""))[:12],
+                record.get("notes", "")))
+        runs = detail.get("history", []) or []
+        lines.extend(["", "RECENT RUNS"])
+        if not runs:
+            lines.append("  none")
+        for run in runs[-8:]:
+            lines.append("  %s %-7s %s %s" % (
+                run.get("run_id", ""),
+                "OK" if run.get("success") else "FAIL",
+                run.get("stage", ""), str(run.get("error", ""))[:60]))
+        self._render_agent_detail("\n".join(lines))
+
+    def _create_agent(self) -> None:
+        name = self._agent_name.get().strip()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Enter an agent name first.")
+            return
+        template = self._agent_template.get()
+        purpose = self._agent_purpose.get().strip()
+        project = self._current_project.get()
+
+        def work() -> None:
+            try:
+                self.backend.create_agent(project, name, template=template,
+                                          purpose=purpose)
+                state = self.backend.agent_summary(project)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agents", state))
+            self._queue.put(("notice", "Created agent %s" % name))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _agent_action(self, action: str) -> None:
+        name = self._selected_agent()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+        project = self._current_project.get()
+
+        def work() -> None:
+            try:
+                if action == "validate":
+                    report = self.backend.validate_agent(project, name)
+                    detail = "validation %s" % (
+                        "passed" if report.get("passed") else "FAILED")
+                else:
+                    report = self.backend.test_agent(project, name)
+                    detail = "benchmark %s (%s)" % (
+                        "passed" if report.get("passed") else "FAILED",
+                        report.get("reason", ""))
+                state = self.backend.agent_summary(project)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agents", state))
+            self._queue.put(("notice", "%s: %s" % (name, detail)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _agent_set_state(self, state: str) -> None:
+        name = self._selected_agent()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+        project = self._current_project.get()
+
+        def work() -> None:
+            try:
+                result = self.backend.set_agent_state(project, name, state)
+                summary = self.backend.agent_summary(project)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agents", summary))
+            self._queue.put(("notice", "%s is now %s"
+                             % (name, result.get("state", state))))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _grant_agent_spec(self) -> None:
+        name = self._selected_agent()
+        if not name:
+            messagebox.showinfo(APP_TITLE, "Select an agent first.")
+            return
+        project = self._current_project.get()
+
+        def work() -> None:
+            try:
+                granted = self.backend.grant_agent_spec(project, name)
+                summary = self.backend.agent_summary(project)
+            except BackendError as exc:
+                self._queue.put(("error", str(exc)))
+                return
+            self._queue.put(("agents", summary))
+            self._queue.put(("notice", "Granted %d operation(s) to %s"
+                             % (len(granted), name)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # -- dialogs ----------------------------------------------------------------------
 

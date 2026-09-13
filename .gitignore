@@ -28,3 +28,7 @@ dist/
 .forge/audit.jsonl
 .forge/self/history/
 .forge/research_cache/
+
+# Agent Creation Engine runtime state (agent packages are project-local)
+.forge/agents/
+.forge/memory/
