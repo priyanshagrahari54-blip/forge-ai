@@ -292,6 +292,10 @@ class MultiAgentOrchestrator:
         #: its monotonically sequenced event log here (SQLite), so runs
         #: survive restart and are inspectable (`forge tasks`).
         self.store_path = store_path
+        # The scheduler running the current execute() (if any), so
+        # cancel() can reach the scheduler-level fence — not just the
+        # cooperative per-attempt checkpoint.
+        self._active_scheduler: Any = None
 
     # -- planning -----------------------------------------------------------
 
@@ -409,7 +413,11 @@ class MultiAgentOrchestrator:
             scheduler.add_task(
                 step.id, step.instructions, depends_on=step.depends_on,
                 timeout=self.step_timeout, max_attempts=self.max_attempts)
-        results = scheduler.run(executor)
+        self._active_scheduler = scheduler
+        try:
+            results = scheduler.run(executor)
+        finally:
+            self._active_scheduler = None
 
         outcomes: dict[str, StepOutcome] = {}
         for step in plan.steps:
@@ -449,12 +457,22 @@ class MultiAgentOrchestrator:
                   if outcome.status in (StepStatus.FAILED, StepStatus.DENIED)]
         succeeded = [outcome for outcome in ordered
                      if outcome.status == StepStatus.SUCCEEDED]
-        cancelled = bool(self.control is not None
-                         and self.control.cancel_requested)
-        if cancelled:
+        step_cancelled = any(outcome.status == StepStatus.CANCELLED
+                             for outcome in ordered)
+        host_cancel = bool(self.control is not None
+                           and self.control.cancel_requested)
+        # A cancelled run is never a success — not even a partial one.
+        # (A host-injected control may be absent, so the step outcomes
+        # are the authoritative signal.)
+        if host_cancel or step_cancelled:
             status = ReportStatus.CANCELLED
         elif failed:
             status = ReportStatus.FAILED
+        elif not succeeded:
+            # Nothing succeeded and nothing failed: every step ended
+            # skipped or cancelled. That is a cancellation, not a
+            # success — report it as one.
+            status = ReportStatus.CANCELLED
         else:
             status = ReportStatus.SUCCEEDED
         summary = (
@@ -539,12 +557,24 @@ class MultiAgentOrchestrator:
     def cancel(self) -> None:
         """Request cancellation of the in-flight orchestration.
 
-        Cooperative: running attempts stop at their next checkpoint and
-        queued steps never start. The watchdog timeout remains the hard
-        bound for an executor that ignores checkpoints.
+        Two complementary paths, both fail closed:
+
+        * The per-attempt control asks each running worker to stop at its
+          next checkpoint (cooperative).
+        * The scheduler-level ``cancel_all`` marks queued steps cancelled
+          and moves running steps to ``CANCELLING``. A worker that
+          ignores checkpoints is fenced after the cancel grace and its
+          late result is rejected as stale — so cancellation cannot be
+          defeated by a hung worker, and no retry ever starts afterwards.
         """
         if self.control is not None:
             self.control.request_cancel()
+        scheduler = self._active_scheduler
+        if scheduler is not None:
+            try:
+                scheduler.cancel_all()
+            except Exception:
+                pass
 
     def _dispatch_permission(self, step: OrchestrationStep) -> tuple[
             bool, str]:
