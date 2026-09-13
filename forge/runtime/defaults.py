@@ -110,7 +110,7 @@ def create_default_runtime(permission_manager, root: str = "."):
         )
     )
 
-    def run_tests_handler(command: list[str]):
+    def run_tests_handler(command: list[str], timeout: int = 30):
         from forge.runtime.runtime import ToolResult
 
         if not _is_pytest_command(command):
@@ -118,7 +118,10 @@ def create_default_runtime(permission_manager, root: str = "."):
                 "run_tests",
                 "Only the project pytest suite may run without write approval.",
             )
-        return terminal.run(command)
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            return ToolResult.fail("run_tests",
+                                   "timeout must be an integer")
+        return terminal.run(command, timeout=min(max(timeout, 1), 600))
 
     runtime.register(
         ToolDefinition(
