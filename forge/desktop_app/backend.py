@@ -31,7 +31,13 @@ class ProjectSession:
 
 @dataclass
 class DesktopBackend:
-    """In-process ControlPlane host for the desktop GUI."""
+    """In-process ControlPlane host for the desktop GUI.
+
+    When a link is configured (:meth:`link_configure`), task submission
+    and the *Server* tab route through :class:`forge.client.ForgeClient`
+    — LOCAL runs the bounded light operations on this machine, SERVER
+    and HYBRID delegate the heavy engineering to the Forge Server.
+    """
 
     actor: str = "desktop"
     db_path: str = ""
@@ -40,10 +46,15 @@ class DesktopBackend:
     #: Seconds one approval may wait before it fails closed. Interactive
     #: users get a generous window; tests pass a small value.
     approval_timeout: float = 600.0
+    #: A81 Forge link client (``forge.client.ForgeClient``) or ``None``.
+    link: Any = None
+    #: Directory for the client settings + secret (injectable in tests).
+    link_config_dir: str = ""
     _plane: Any = field(default=None, init=False, repr=False)
     _sessions: dict[str, ProjectSession] = field(default_factory=dict,
                                                  init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
+
 
     # -- lifecycle ------------------------------------------------------
 
@@ -109,6 +120,13 @@ class DesktopBackend:
         if plane is not None:
             try:
                 plane.stop()
+            except Exception:
+                pass
+        # Close the Forge link: server tasks are unaffected (requirement
+        # 8) — they continue server-side and are re-restored on reopen.
+        if self.link is not None:
+            try:
+                self.link.disconnect()
             except Exception:
                 pass
 
@@ -202,6 +220,12 @@ class DesktopBackend:
 
     def submit_task(self, project_id: str, requirement: str,
                     mode: str = "") -> dict[str, Any]:
+        """Submit a task. Routes through the Forge link when configured
+        (LOCAL = bounded light operations here, SERVER/HYBRID = decided
+        by :mod:`forge.client.router`); otherwise runs the embedded
+        local plane as before."""
+        if requirement.strip() and self.link is not None:
+            return self._submit_via_link(project_id, requirement)
         plane = self._require_plane()
         session = self._session_for(project_id)
         if not requirement.strip():
@@ -210,7 +234,178 @@ class DesktopBackend:
             run = plane.submit_task(session, requirement, mode=mode or "")
         except Exception as exc:
             raise BackendError(str(exc)) from exc
-        return self._run_to_dict(run)
+        result = self._run_to_dict(run)
+        result["execution"] = "LOCAL-PLANE"
+        return result
+
+    # -- Forge Server link (A81) -------------------------------------------
+
+    def _submit_via_link(self, project_id: str, requirement: str) \
+            -> dict[str, Any]:
+        if self.link is None:
+            raise BackendError("Forge link is not configured.")
+        root = ""
+        try:
+            plane = self._require_plane()
+            root = plane.get_project(project_id).root
+        except Exception:
+            root = ""
+        try:
+            return dict(self.link.submit(requirement, root=root))
+        except Exception as exc:
+            raise BackendError(f"Forge link: {exc}") from exc
+
+    def link_configure(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """Create/replace the link client from a settings dict.
+
+        Accepted keys: server_url, client_id, project_id, mode,
+        request_timeout, heartbeat_seconds, reconnect{initial_delay,
+        max_delay, multiplier, max_attempts}, local{allow_local,
+        allow_server, max_task_chars, min_free_ram_mb,
+        max_files_walked}, secret (stored 0600, never kept in memory
+        beyond this call), config_dir (override, mainly tests), and
+        ``_sender`` (test hook: replaces the HTTP transport callable).
+        """
+        from forge.client.config import ClientConfig, ConfigError
+
+        if not isinstance(settings, dict):
+            raise BackendError("Link settings must be a mapping.")
+        config_dir = str(settings.get("config_dir")
+                         or self.link_config_dir or "")
+        try:
+            config = ClientConfig.from_dict(settings, config_dir=config_dir)
+            secret = str(settings.get("secret", "") or "")
+            if secret:
+                config.store_secret(secret)
+            saved = config.save()
+        except ConfigError as exc:
+            raise BackendError(f"Invalid link settings: {exc}") from exc
+        self._link_sender = settings.get("_sender")
+        client = self._build_link_client(config)
+        self.link = client
+        status = client.status()
+        status["configured"] = True
+        status["settings_path"] = str(saved)
+        status["secret_path"] = str(config.secret_path())
+        return status
+
+    def _build_link_client(self, config) -> Any:
+        from forge.client.client import ForgeClient
+        from forge.client.transport import LinkTransport
+
+        sender = getattr(self, "_link_sender", None)
+        transport = (LinkTransport(config, sender=sender)
+                     if sender is not None else LinkTransport(config))
+        return ForgeClient(config, transport=transport)
+
+
+    def link_load(self) -> dict[str, Any]:
+        """Load a previously saved link configuration (if any)."""
+        from forge.client.config import ClientConfig, ConfigError
+        try:
+            config = ClientConfig.load(self.link_config_dir)
+        except ConfigError:
+            return {"configured": False}
+        self.link = self._build_link_client(config)
+        status = self.link.status()
+        status["configured"] = True
+        return status
+
+    def _require_link(self):
+        if self.link is None:
+            raise BackendError(
+                "Forge link is not configured. Open the Server tab and "
+                "enter the server URL, client id, and secret.")
+        return self.link
+
+    def link_status(self) -> dict[str, Any]:
+        if self.link is None:
+            return {"configured": False,
+                    "state": "DISCONNECTED", "mode": "hybrid"}
+        status = dict(self.link.status())
+        status["configured"] = True
+        return status
+
+    def link_connect(self, *, restore: bool = True) -> dict[str, Any]:
+        """Connect (and by default restore server task state)."""
+        link = self._require_link()
+        snapshot = link.restore() if restore else {}
+        status = dict(link.status())
+        status["configured"] = True
+        status["connected"] = link.connection.state_name == "CONNECTED"
+        snapshot["connection"] = status
+        return snapshot
+
+    def link_disconnect(self) -> dict[str, Any]:
+        link = self._require_link()
+        link.disconnect()
+        return self.link_status()
+
+    def link_set_mode(self, mode: str) -> dict[str, Any]:
+        """Switch execution mode (LOCAL/SERVER/HYBRID) and persist it."""
+        from forge.client.config import EXECUTION_MODES
+        link = self._require_link()
+        normalized = (mode or "").strip().lower()
+        if normalized not in EXECUTION_MODES:
+            raise BackendError(
+                f"mode must be one of {list(EXECUTION_MODES)}")
+        link.config.mode = normalized
+        try:
+            link.config.save()
+        except Exception as exc:  # settings must persist, but stay usable
+            raise BackendError(f"could not save settings: {exc}") from exc
+        return self.link_status()
+
+    def link_snapshot(self, selected_task: str = "", *,
+                      full: bool = False) -> dict[str, Any]:
+        """Everything the Server tab renders; never raises."""
+        if self.link is None:
+            return {"configured": False}
+        try:
+            snapshot = dict(self.link.snapshot(selected_task=selected_task,
+                                               full=full))
+        except Exception as exc:
+            snapshot = {"configured": True,
+                        "connection": self.link_status(),
+                        "error": str(exc)}
+        snapshot["configured"] = True
+        snapshot["decision_preview"] = self.link_decision_preview(
+            fallback=True) or {}
+        return snapshot
+
+    def link_decision_preview(self, requirement: str = "",
+                              *, fallback: bool = False) \
+            -> dict[str, Any] | None:
+        """What the router would do for ``requirement`` (or a neutral
+        placeholder when ``fallback``). For the Server tab hint line."""
+        if self.link is None:
+            return None
+        if not requirement:
+            if fallback:
+                return {"execution": "—",
+                        "reason": "type a task to see the routing decision"}
+            return None
+        try:
+            decision = self.link.decide(requirement)
+        except Exception:
+            return None
+        return {"execution": decision.execution, "reason": decision.reason}
+
+    def link_decide_approval(self, approval_id: str, approved: bool) \
+            -> dict[str, Any]:
+        link = self._require_link()
+        try:
+            return dict(link.decide_approval(approval_id, approved))
+        except Exception as exc:
+            raise BackendError(f"approval failed: {exc}") from exc
+
+    def link_mutate_task(self, task_id: str, operation: str) \
+            -> dict[str, Any]:
+        link = self._require_link()
+        try:
+            return dict(link.mutate_task(task_id, operation))
+        except Exception as exc:
+            raise BackendError(f"{operation} failed: {exc}") from exc
 
     def list_tasks(self, project_id: str, status: str = "",
                    limit: int = 50) -> list[dict[str, Any]]:

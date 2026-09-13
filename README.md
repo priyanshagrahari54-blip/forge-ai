@@ -607,6 +607,55 @@ plus a genuinely SUCCEEDED run on record). APIs under
 See `docs/A73-A80-FINAL-GATES.md`. Full suite after A73-A80: 1403
 passed, 2 skipped.
 
+## Forge Desktop ↔ Forge Server Link (A81)
+
+A modest machine (e.g. a Lenovo G560) runs **Forge Desktop as a
+lightweight client**; a stronger machine runs the **Forge Server** and
+does the heavy engineering work (models, pipeline, tests,
+verification). The client never loads a model.
+
+- **Connection settings** (`forge/client/config.py`): server URL,
+  client id, execution mode, request timeout, heartbeat, reconnect
+  policy — stored in `~/.forge/desktop_client.json`; the shared secret
+  lives in a separate `0600` file and never in the JSON.
+- **Three execution modes**: `LOCAL` (bounded read-only light
+  operations: repo summary, `git status --porcelain`, TODO scan —
+  nothing else), `SERVER` (signed submission to the Forge Server,
+  full A32 pipeline there), and `HYBRID` (deterministic automatic
+  selection by capability, resources, model availability, policy, and
+  task size — every decision records its reason).
+- **Authenticated link** (`forge/link/protocol.py`,
+  `forge/server/service.py`): HMAC challenge/response handshake; the
+  server stores only a salted verifier (no plaintext credential at
+  rest or on the wire); every request is signed over
+  method|path|body|timestamp|nonce with single-use nonces and a
+  bounded replay window. One active session per client.
+- **No arbitrary remote execution**: the client-visible surface is a
+  fixed vocabulary of typed endpoints; server authorization stays
+  authoritative (requested modes are clamped to the client's
+  registered `max_mode` ceiling).
+- **Disconnection-safe**: the server's worker pool is independent of
+  any client — a laptop that disconnects or closes mid-task never
+  interrupts server work; reopening the desktop restores the full
+  server task state (tasks, queue, approvals, events, verification).
+- **Desktop Server tab**: connection status pill, active tasks, queue
+  depth, current stage/model/worker, live link log, approval cards,
+  and per-task verification gates.
+
+Server side:
+
+```bash
+python -m forge.server serve --host 0.0.0.0 --port 8000 \
+    --project demo=/srv/forge/demo
+python -m forge.server add-client g560 --project demo=/srv/forge/demo \
+    --max-mode assisted      # prints the one-time secret, shown once
+```
+
+Client side: Forge Desktop → **Server** tab → URL + client id +
+secret + mode → *Save & connect*. Full configuration reference:
+`docs/A81-DESKTOP-SERVER-LINK.md`.
+
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.

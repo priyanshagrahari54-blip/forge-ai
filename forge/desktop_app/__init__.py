@@ -21,5 +21,5 @@ Launch with ``forge desktop``, ``python -m forge.desktop_app``, or
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["__version__"]

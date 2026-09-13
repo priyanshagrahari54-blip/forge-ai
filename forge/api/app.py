@@ -44,10 +44,12 @@ from forge.api import (
     routes_plugins,
     routes_autonomy,
     routes_final,
+    routes_link,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
 from forge.control.control_plane import ControlPlane
+from forge.server.service import LinkService
 
 
 @dataclass
@@ -119,8 +121,14 @@ class _BodyLimitMiddleware(BaseHTTPMiddleware):
 
 
 def create_app(plane: ControlPlane,
-               config: Optional[ApiConfig] = None) -> FastAPI:
-    """Build the cockpit API over an existing control plane."""
+               config: Optional[ApiConfig] = None,
+               link_service: Optional[LinkService] = None) -> FastAPI:
+    """Build the cockpit API over an existing control plane.
+
+    ``link_service`` optionally attaches the A81 desktop-client link
+    (Forge Desktop ↔ Forge Server). When omitted, a default service over
+    the same plane is created so the link endpoints exist.
+    """
     config = config or ApiConfig()
     if "*" in config.allowed_origins:
         raise ValueError(
@@ -187,6 +195,11 @@ def create_app(plane: ControlPlane,
     app.include_router(routes_final.router, prefix="/api/v1")
     app.include_router(routes_compute.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
+    # A81: authenticated Forge Desktop ↔ Forge Server link.
+    routes_link.install_link_handler(
+        app, link_service if link_service is not None
+        else LinkService(plane))
+    app.include_router(routes_link.router, prefix="/api/v1")
 
     web_dir = (Path(config.web_dir) if config.web_dir
                else Path(__file__).resolve().parent.parent

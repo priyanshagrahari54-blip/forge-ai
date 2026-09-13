@@ -52,6 +52,15 @@ forge doctor   # diagnose the model layer
   serve tasks, red `NO MODEL - tasks will fail` when not. `Models >
   Model readiness` runs Doctor; the Setup guide walks through Ollama.
 
+## Forge Server link (A81)
+
+Run the heavy engineering on a stronger machine while this desktop
+stays a lightweight client: open the **Server** tab, enter the server
+URL, client id, and the one-time secret, and pick LOCAL / SERVER /
+HYBRID. The client never loads a model; disconnection never interrupts
+server tasks, and reopening restores the server task view. Full setup:
+`docs/A81-DESKTOP-SERVER-LINK.md`.
+
 ## Connecting a model (required before tasks can succeed)
 
 Forge refuses to fake code: with no model, tasks fail honestly. Pick one:

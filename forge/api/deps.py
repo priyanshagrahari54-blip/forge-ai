@@ -113,6 +113,9 @@ class RateLimiter:
         "stream": (10.0, 10.0 / 60.0),
         "voice": (30.0, 30.0 / 60.0),
         "memory": (60.0, 60.0 / 60.0),
+        # A81 link: the unauthenticated handshake routes get their own
+        # tight bucket so a client id cannot be hammered with proofs.
+        "link": (30.0, 30.0 / 60.0),
     }
     MAX_KEYS = 10000
 
