@@ -102,6 +102,19 @@ from forge.models.fabric_bridge import (
     attach_inference,
     detach_inference,
 )
+#: Session 11.5 — the canonical inference path (legacy | session11 | hybrid).
+from forge.models.inference_path import (
+    PATH_HYBRID,
+    PATH_LEGACY,
+    PATH_SESSION11,
+    ExecutionIdentity,
+    IdentityBoundFabric,
+    InferencePathConfig,
+    PathDecision,
+    Session11Adapter,
+    decide_path,
+    provenance_from_response,
+)
 from forge.models.fallback import (
     DETERMINISTIC_MODEL_ID,
     FallbackLadder,
@@ -275,6 +288,16 @@ __all__ = [
     "InferenceFabricProvider",
     "attach_inference",
     "detach_inference",
+    "PATH_HYBRID",
+    "PATH_LEGACY",
+    "PATH_SESSION11",
+    "ExecutionIdentity",
+    "IdentityBoundFabric",
+    "InferencePathConfig",
+    "PathDecision",
+    "Session11Adapter",
+    "decide_path",
+    "provenance_from_response",
     "ROUTING_EVIDENCE_KINDS",
     "evidence_to_findings",
     "summarize_evidence",

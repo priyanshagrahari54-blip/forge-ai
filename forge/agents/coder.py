@@ -17,6 +17,7 @@ from forge.models.readiness import (
     fabric_has_real_model,
     is_fallback_response,
 )
+from forge.models.inference_path import provenance_from_response
 from forge.models.router import ModelRouter
 from forge.runtime.defaults import create_default_runtime
 from forge.runtime.runtime import ToolResult, ToolRuntime
@@ -552,7 +553,8 @@ class CoderAgent(AgentExecutor):
                         stage=request.stage,
                         metadata={"files": [], "fallback_refusal": True,
                                   "model": response.model,
-                                  "provider": response.provider})
+                                  "provider": response.provider,
+                                  "inference": provenance_from_response(response)})
                 raise ValueError("Model proposed no changes")
             approved = bool(request.metadata.get("approved", False))
             token_id = str(request.metadata.get("approval_token_id", "") or "")
@@ -567,6 +569,9 @@ class CoderAgent(AgentExecutor):
             return AgentResponse(True, output=response.text, agent=self.name, stage=request.stage,
                                  metadata={"files": applied, "model": response.model,
                                            "provider": response.provider, "routing": "fabric",
+                                           #: Session 11.5 (§24): which path/model/
+                                           #: backend answered, verified or not.
+                                           "inference": provenance_from_response(response),
                                            **extra})
         except TaskCancelled:
             raise

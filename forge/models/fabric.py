@@ -31,6 +31,14 @@ from forge.models.provider import (
     ProviderRegistry,
 )
 from forge.models.registry import Model, ModelRegistry
+from forge.models.inference_path import (
+    PATH_LEGACY,
+    PATH_SESSION11,
+    ExecutionIdentity,
+    IdentityBoundFabric,
+    InferencePathConfig,
+    Session11Adapter,
+)
 from forge.models.request import ModelRequest, ModelResponse
 from forge.models.router import FabricRouter, ModelInfo, ModelRouter, RouteDecision
 from forge.models.telemetry import Telemetry
@@ -96,6 +104,13 @@ class ModelFabric:
         #: (default) preserves exact legacy behavior.
         self.memory = None
         self.memory_project = ""
+        #: Session 11.5 — the canonical inference path. ``None`` means every
+        #: request is served by this fabric's own router (``legacy`` mode) and
+        #: behaviour is byte-for-byte what it was before. When attached, the
+        #: configured mode decides *before* any model work happens, and the
+        #: decision is recorded on every response.
+        self.inference_path: Any = None
+        self.inference_path_config = InferencePathConfig()
 
     def attach_memory(self, memory, *, project: str = "") -> "ModelFabric":
         """Record model-performance memory on each routed feedback event.
@@ -106,6 +121,122 @@ class ModelFabric:
         self.memory = memory
         self.memory_project = project or ""
         return self
+
+    # -- Session 11.5: one canonical inference path -----------------------
+
+    def attach_inference_path(self, inference: Any,
+                              config: "InferencePathConfig | None" = None, *,
+                              fences: Any = None,
+                              accessor: Any = None,
+                              register_models: bool = False) -> "ModelFabric":
+        """Make the Session-11 inference fabric this fabric's canonical path.
+
+        ``inference`` may be an :class:`~forge.models.engine.InferenceFabric`,
+        a :class:`~forge.server.inference.ServerInferenceService` (its fabric is
+        then obtained lazily, so attaching never touches a model directory or a
+        socket), or a zero-argument callable returning either.
+
+        ``register_models`` mirrors verified Session-11 identities into this
+        fabric's registry. It is **off by default on purpose**: a mirrored model
+        would give the legacy router a second way to select the same model, and
+        two selection paths that disagree is exactly what this seam exists to
+        prevent. Turn it on only for hybrid visibility, never for routing.
+        """
+        if inference is None and accessor is None:
+            raise ValueError("an inference fabric, service or accessor is "
+                             "required")
+        path_config = config or InferencePathConfig.from_env()
+        path_config.validate()
+        if accessor is None:
+            accessor = _inference_accessor(inference)
+        adapter = Session11Adapter(accessor, config=path_config, fences=fences)
+        self.inference_path = adapter
+        self.inference_path_config = path_config
+        if register_models:
+            from forge.models.fabric_bridge import attach_inference
+
+            try:
+                attach_inference(self, adapter.fabric(), verified_only=True)
+            except Exception:                         # noqa: BLE001
+                #: Mirroring is a convenience; the canonical path does not
+                #: depend on it, so a failure here must not break attaching.
+                pass
+        return self
+
+    def bind_identity(self, identity: ExecutionIdentity, *, fence: Any = None,
+                      fence_registry: Any = None,
+                      commit_guard: Any = None) -> Any:
+        """Return a view that stamps one execution identity on every request.
+
+        The identity and the attempt fence come from the caller that actually
+        holds the lease (the worker), so nothing is reconstructed from the
+        prompt or from a previous attempt. Agents keep calling
+        ``fabric.generate(request)`` unchanged and every request they make
+        carries who is asking, and whether that attempt may still publish.
+        """
+        return IdentityBoundFabric(self, identity, fence=fence,
+                                   fence_registry=fence_registry,
+                                   commit_guard=commit_guard)
+
+    def inference_path_snapshot(self) -> "dict[str, Any]":
+        """Observable state of the canonical path (bounded, content-free)."""
+        adapter = self.inference_path
+        if adapter is None:
+            return {"attached": False,
+                    "mode": self.inference_path_config.mode,
+                    "config": self.inference_path_config.to_dict()}
+        payload = adapter.snapshot()
+        payload["attached"] = True
+        #: ``mode`` is reported at the top level whether or not a path is
+        #: attached, so a caller can read one key and never guess.
+        payload["mode"] = (payload.get("config") or {}).get(
+            "mode", self.inference_path_config.mode)
+        return payload
+
+    def _delegate_to_inference_path(self, request: ModelRequest, *,
+                                    fence: Any = None,
+                                    fence_registry: Any = None,
+                                    commit_guard: Any = None) -> Any:
+        """Serve ``request`` through Session 11, or return ``None`` for legacy.
+
+        ``None`` means *this fabric's own router should serve it*. It never
+        means "Session 11 failed, try legacy": a failure inside the canonical
+        path is returned to the caller as a failure, with the reason recorded.
+        """
+        adapter = self.inference_path
+        if adapter is None:
+            return None
+        decision = adapter.decision(request)
+        if decision.path != PATH_SESSION11:
+            self.telemetry.record(
+                "inference_path", trace_id=request.trace_id,
+                capability=request.capability, path=decision.path,
+                mode=decision.mode, eligible=decision.eligible,
+                reason=decision.reason)
+            return None
+        response = adapter.generate(request, decision=decision, fence=fence,
+                                    fence_registry=fence_registry,
+                                    commit_guard=commit_guard)
+        metadata = getattr(response, "metadata", None) or {}
+        self.telemetry.record(
+            "inference_path", trace_id=request.trace_id,
+            capability=request.capability, path=decision.path,
+            mode=decision.mode, eligible=decision.eligible,
+            model=str(metadata.get("model", "") or ""),
+            backend_id=str(metadata.get("backend_id", "") or ""),
+            neural=bool(metadata.get("neural")),
+            deterministic=bool(metadata.get("deterministic")),
+            verification_state=str(
+                metadata.get("verification_state", "") or ""),
+            success=bool(getattr(response, "success", False)),
+            state=str(metadata.get("state", "") or ""),
+            error_code=str(metadata.get("error_code", "") or ""),
+            latency_ms=float(getattr(response, "latency_ms", 0.0) or 0.0),
+            task_id=str(metadata.get("task_id", "") or ""),
+            attempt_id=str(metadata.get("attempt_id", "") or ""),
+            generation_id=str(metadata.get("generation_id", "") or ""),
+            reason=decision.reason)
+        return response
 
     # -- construction ----------------------------------------------------
 
@@ -213,14 +344,18 @@ class ModelFabric:
         decision = self.router.route(request, policy=policy)
         return self._apply_preferences(decision, request)
 
-    def request(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> ModelResponse:
+    def request(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None,
+                fence: Any = None, fence_registry: Any = None,
+                commit_guard: Any = None) -> ModelResponse:
         """Main entry point: route and execute a model request.
 
         This is the canonical ``request()`` API agents use. It is an alias of
         :meth:`generate` (which already routes, fails over, records telemetry,
         and returns a structured ``ModelResponse``).
         """
-        return self.generate(request, policy=policy)
+        return self.generate(request, policy=policy, fence=fence,
+                             fence_registry=fence_registry,
+                             commit_guard=commit_guard)
 
     def select(self, request: ModelRequest | str | None = None, capability: str | None = None,
                **kwargs: Any) -> Model | None:
@@ -230,8 +365,23 @@ class ModelFabric:
         decision = self.route(request)
         return decision.model
 
-    def generate(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> ModelResponse:
+    def generate(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None,
+                 fence: Any = None, fence_registry: Any = None,
+                 commit_guard: Any = None) -> ModelResponse:
         """Route and call a provider, returning a structured ``ModelResponse``.
+
+        ``fence``/``fence_registry``/``commit_guard`` carry the *calling
+        attempt's* authority down to the canonical path (Session 11.5). They
+        are supplied by :meth:`bind_identity`, never invented here: a
+        generation with no fence attached is an interactive one, not a
+        background attempt. The legacy path ignores them, exactly as before.
+
+        Session 11.5 made this the single place where the inference path is
+        chosen. When a canonical path is attached and the configured mode
+        selects it, the legacy router below is never consulted — so the two
+        paths cannot produce contradictory selections. When the legacy router
+        does serve the request, that is recorded on the response too: which
+        path answered is never a mystery.
 
         Never raises for routing/provider failures: failures are recorded as
         feedback and telemetry, and deterministic failover moves down the
@@ -240,6 +390,38 @@ class ModelFabric:
         """
         if isinstance(request, str):
             request = ModelRequest(prompt=request, capability=self._default_capability())
+        delegated = self._delegate_to_inference_path(
+            request, fence=fence, fence_registry=fence_registry,
+            commit_guard=commit_guard)
+        if delegated is not None:
+            return delegated
+        response = self._generate_legacy(request, policy=policy)
+        return self._label_legacy_response(request, response)
+
+    def _label_legacy_response(self, request: ModelRequest,
+                               response: ModelResponse) -> ModelResponse:
+        """Stamp ``inference_path=legacy`` on a legacy-served response.
+
+        Only when a canonical path is attached: a fabric that was never given a
+        Session-11 path behaves (and reports) exactly as it always did.
+        """
+        adapter = self.inference_path
+        if adapter is None or response is None:
+            return response
+        decision = adapter.decision(request)
+        metadata = dict(getattr(response, "metadata", None) or {})
+        metadata.setdefault("inference_path", PATH_LEGACY)
+        metadata.setdefault("inference_mode", decision.mode)
+        metadata.setdefault("inference_path_reason", decision.reason)
+        metadata.setdefault("neural", bool(metadata.get("neural", True)))
+        metadata.setdefault("deterministic",
+                            not bool(metadata.get("neural", True)))
+        response.metadata = metadata
+        adapter.note_legacy(request, decision, response)
+        return response
+
+    def _generate_legacy(self, request: ModelRequest, *, policy: RoutingPolicy | None = None) -> ModelResponse:
+        """The pre-11.5 routing path, unchanged: route, fail over, record."""
         started = perf_counter()
         decision = self.route(request, policy=policy)
         if not decision.chosen:
@@ -341,7 +523,38 @@ class ModelFabric:
         self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
         return ModelResponse.failure(last_error or "no model available", request_id=request.trace_id)
 
-    def stream(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> Iterator[str]:
+    def stream(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None,
+               fence: Any = None, fence_registry: Any = None,
+               commit_guard: Any = None) -> Iterator[str]:
+        """Stream through whichever path the configured mode selects.
+
+        A text stream carries no metadata channel, so the path decision is
+        recorded in telemetry (``kind="inference_path", stream=True``) instead
+        of on the response. Bounded buffering, monotonic sequencing, cursor
+        replay and cancellation belong to the Session-11 fabric and are not
+        re-implemented here.
+        """
+        if isinstance(request, str):
+            request = ModelRequest(prompt=request, capability=self._default_capability())
+        adapter = self.inference_path
+        if adapter is not None:
+            decision = adapter.decision(request)
+            self.telemetry.record(
+                "inference_path", trace_id=request.trace_id,
+                capability=request.capability, path=decision.path,
+                mode=decision.mode, stream=True, eligible=decision.eligible,
+                reason=decision.reason)
+            if decision.path == PATH_SESSION11:
+                for chunk in adapter.stream(request, decision=decision,
+                                            fence=fence,
+                                            fence_registry=fence_registry,
+                                            commit_guard=commit_guard):
+                    yield chunk
+                return
+        for chunk in self._stream_legacy(request, policy=policy):
+            yield chunk
+
+    def _stream_legacy(self, request: ModelRequest, *, policy: RoutingPolicy | None = None) -> Iterator[str]:
         """Stream response text with the same guarantees as :meth:`generate`.
 
         Routing, capability validation, availability checking, and policy
@@ -355,8 +568,6 @@ class ModelFabric:
         health, reliability, latency, feedback, and telemetry are recorded for
         both success and failure.
         """
-        if isinstance(request, str):
-            request = ModelRequest(prompt=request, capability=self._default_capability())
         started = perf_counter()
         decision = self.route(request, policy=policy)
         if not decision.chosen:
@@ -708,10 +919,34 @@ class ModelFabric:
             "capabilities": self.registry.capabilities(),
             "telemetry_events": len(self.telemetry),
             "router_history": list(self.router.history[-50:]),
+            "inference_path": self.inference_path_snapshot(),
         }
 
     def to_dict(self) -> dict[str, Any]:
         return self.snapshot()
+
+
+def _inference_accessor(inference: Any) -> Any:
+    """A zero-argument callable that yields the live Session-11 fabric.
+
+    Lazy on purpose: constructing or attaching a fabric must never touch a model
+    directory, a provider or the network. A service whose inference is disabled
+    raises when asked, and the adapter turns that into an honest
+    ``INFERENCE_PATH_UNAVAILABLE`` refusal instead of a silent legacy call.
+    """
+    if hasattr(inference, "fabric") and not hasattr(inference, "generate"):
+        #: ServerInferenceService (and anything else that owns a lazy fabric).
+        def _from_service() -> Any:
+            return inference.fabric
+
+        return _from_service
+    if callable(inference):
+        return inference
+
+    def _constant() -> Any:
+        return inference
+
+    return _constant
 
 
 def _policy_from_config(config: FabricConfig | None) -> RoutingPolicy:

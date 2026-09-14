@@ -101,6 +101,15 @@ class ServerConfig:
     #: operator opts in. Nothing is discovered, loaded or contacted until
     #: then; the typed inference routes answer 503 INFERENCE_NOT_CONFIGURED.
     inference: Any = None
+    #: Session 11.5 — which inference path serves the *background* loop:
+    #: ``legacy`` (this fabric's own router), ``session11`` (the canonical
+    #: InferenceFabric) or ``hybrid`` (Session 11 for eligible calls, legacy
+    #: only where a caller is explicitly not migrated). ``None`` means "derive
+    #: it": ``FORGE_INFERENCE_PATH`` when the operator set it, otherwise
+    #: ``session11`` when server inference is enabled and ``legacy`` when it is
+    #: not. The choice is recorded on every response and in health, so a
+    #: degraded path is never silent.
+    inference_path: Any = None
     max_workers: int = 4
     #: Resource governor profile: "" (auto-detect) | default | g560.
     #: Distinct from ``profile`` above, which is the A33 *permission*
@@ -248,9 +257,43 @@ class ForgeServer:
             inference_config = InferenceServiceConfig.from_env()
         if not getattr(inference_config, "resource_profile", ""):
             inference_config.resource_profile = self.config.resource_profile
+
+        #: Session 11.5 (§5-§9) — the server's attempt-fence authority. It is
+        #: the *existing* :class:`~forge.core.fencing.FenceRegistry` (the same
+        #: class the DAG scheduler uses), not a second fencing system: a worker
+        #: begins one attempt fence per lease, hands it to the inference path,
+        #: and commits/cancels it at the terminal transition. A generation whose
+        #: fence cannot be established is refused, never admitted on a guess.
+        from forge.core.fencing import FenceRegistry
+        self.fences = FenceRegistry()
+
         self.inference = ServerInferenceService(
             config=inference_config, governor=self.governor,
-            audit=self.audit, emit=self.emit)
+            audit=self.audit, emit=self.emit, fences=self.fences)
+
+        # -- Session 11.5 (§2/§3): one canonical inference path --------------
+        # The background loop used to route through this fabric's own router
+        # while the Session-11 fabric served only the HTTP endpoints and the
+        # CLI: two selection paths that never met. The mode below is decided
+        # once, here, and every request records which path served it.
+        from forge.models.inference_path import (PATH_LEGACY, PATH_SESSION11,
+                                                 InferencePathConfig)
+        path_config = self.config.inference_path
+        if path_config is None:
+            path_config = InferencePathConfig.from_env()
+            if not os.environ.get("FORGE_INFERENCE_PATH", "").strip():
+                #: No explicit operator choice: the canonical path follows
+                #: server inference. Enabling inference means the background
+                #: loop runs through the Session-11 fabric; leaving it disabled
+                #: means legacy — and health says which one is in effect.
+                path_config.mode = (PATH_SESSION11
+                                    if inference_config.enabled
+                                    else PATH_LEGACY)
+        path_config.validate()
+        self.inference_path_config = path_config
+        if path_config.mode != PATH_LEGACY:
+            self.fabric.attach_inference_path(
+                self.inference, path_config, fences=self.fences)
 
         # -- in-memory, per-boot state ------------------------------------------------
         self._controls: Dict[str, Any] = {}

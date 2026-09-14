@@ -211,6 +211,11 @@ class Supervisor:
         task_grant_snapshot: dict[str, Any] | None = None
         files_read: list[str] = []
         commands_run: list[list[str]] = []
+        #: Session 11.5 (§24): bounded, content-free provenance of the model
+        #: call that produced this run — which inference path served it, which
+        #: model/backend answered, neural or deterministic, verified or not,
+        #: and the identity it was bound to. Recorded on both terminal paths.
+        inference_provenance: dict[str, Any] = {}
         result: dict[str, Any] = {
             "run_id": run_id,
             "requirement": requirement,
@@ -326,6 +331,12 @@ class Supervisor:
             if approval_token_id:
                 coder_metadata["approval_token_id"] = approval_token_id
             response = coder.execute(AgentRequest(task, TaskStatus.CODING, context=context, instructions=requirement, metadata=coder_metadata))
+            inference_provenance = dict((getattr(response, "metadata", None) or {}).get("inference") or {})
+            #: The repair loop's own model call is recorded too, so a task that
+            #: only succeeded after debugging still says what produced the fix.
+            repair_provenance = dict(getattr(coder, "last_inference", {}) or {})
+            if repair_provenance:
+                inference_provenance["repair"] = repair_provenance
             touched = list(response.metadata.get("files", []))
             task_grant_snapshot = coder.last_task_grant
             timed("code", code_started)
@@ -521,7 +532,8 @@ class Supervisor:
                           duration_seconds=perf_counter() - started,
                           timings=dict(timings),
                           model_latency_seconds=model_latency,
-                          token_usage=dict(token_usage))
+                          token_usage=dict(token_usage),
+                          inference=dict(inference_provenance))
             report.stages = list(result["stages"])
             report.agent = "coder"
             report.model = response.metadata.get("model", "")
@@ -592,6 +604,7 @@ class Supervisor:
                           timings=dict(timings),
                           model_latency_seconds=model_latency,
                           token_usage=dict(token_usage),
+                          inference=dict(inference_provenance),
                           report=report.to_dict())
             if approval_store is not None:
                 result["task_grant"] = task_grant_snapshot

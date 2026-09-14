@@ -37,8 +37,14 @@ from forge.server.errors import (InvalidRequest, NotFound, PermissionDenied,
                                  ServerError)
 
 __all__ = [
+    "FenceAuthorityDenied",
+    "FenceAuthorityError",
+    "CancelledAttempt",
     "InferenceNotConfigured",
     "InferenceServiceConfig",
+    "NoFenceAuthority",
+    "StaleAttempt",
+    "SupersededAttempt",
     "ServerInferenceService",
     "SERVER_INFERENCE_OPERATIONS",
 ]
@@ -77,6 +83,66 @@ class InferenceNotConfigured(ServerError):
 
     code = "INFERENCE_NOT_CONFIGURED"
     status = 503
+
+
+class FenceAuthorityDenied(ServerError):
+    """An attempt-bound generation could not be authorized by the fence.
+
+    Session 11.5 (§6). The rule is absolute: *uncertainty about authorization
+    is denial, never permission.* No model compute happens, no result is
+    published, and the caller gets an explicit infrastructure verdict instead
+    of a generation that nobody can prove was allowed.
+    """
+
+    code = "NO_FENCE_AUTHORITY"
+    status = 503
+
+
+class NoFenceAuthority(FenceAuthorityDenied):
+    """No fence authority is wired, or it has no attempt for this task."""
+
+    code = "NO_FENCE_AUTHORITY"
+    status = 503
+
+
+class FenceAuthorityError(FenceAuthorityDenied):
+    """The fence authority raised while being consulted."""
+
+    code = "FENCE_ERROR"
+    status = 503
+
+
+class StaleAttempt(FenceAuthorityDenied):
+    """The attempt is fenced, timed out or already terminal."""
+
+    code = "STALE_ATTEMPT"
+    status = 409
+
+
+class CancelledAttempt(FenceAuthorityDenied):
+    """The attempt is cancelling or cancelled."""
+
+    code = "CANCELLED_ATTEMPT"
+    status = 409
+
+
+class SupersededAttempt(FenceAuthorityDenied):
+    """A newer attempt owns this task; this one may not publish."""
+
+    code = "SUPERSEDED_ATTEMPT"
+    status = 409
+
+
+#: Fence state → the refusal that names it. A state this table does not know is
+#: treated as stale: an unrecognized fence state is not an authorization.
+_FENCE_REFUSALS = {
+    "cancelling": CancelledAttempt,
+    "cancelled": CancelledAttempt,
+    "timed_out": StaleAttempt,
+    "fenced": StaleAttempt,
+    "succeeded": StaleAttempt,
+    "failed": StaleAttempt,
+}
 
 
 @dataclass
@@ -676,16 +742,90 @@ class ServerInferenceService:
         )
 
     def _fence_for(self, task_id: str) -> Any:
-        """The task's current attempt fence, when an authority is wired."""
-        if self.fences is None or not task_id:
+        """The current attempt fence for a task-bound generation — or a refusal.
+
+        Session 11.5 (§6) replaced the old behaviour here, which caught every
+        exception and returned ``None``: a fence lookup that failed degraded
+        into "no fence, continue", i.e. an attempt whose authorization could
+        not be established was admitted anyway.
+
+        Now:
+
+        * no ``task_id`` → ``None``. An interactive generation (``forge infer``,
+          a direct API call) has no attempt to fence; that is a different
+          thing from a task attempt whose fence is missing.
+        * ``task_id`` and no authority wired → :class:`NoFenceAuthority`.
+        * ``task_id`` and the authority raised → :class:`FenceAuthorityError`.
+        * ``task_id`` and the authority knows no attempt → :class:`NoFenceAuthority`.
+        * a fence that is not authorized → the refusal that names its state
+          (``STALE_ATTEMPT`` / ``CANCELLED_ATTEMPT`` / ``SUPERSEDED_ATTEMPT``).
+
+        Nothing is logged that could carry a credential: the reason text is
+        bounded and redacted.
+        """
+        if not task_id:
             return None
+        if self.fences is None:
+            self._count("fence_authority_missing")
+            self._audit("inference.fence_denied", scope=task_id,
+                        allowed=False,
+                        reason="no attempt-fence authority is wired")
+            raise NoFenceAuthority(
+                "generation for task %s was refused: no attempt-fence "
+                "authority is wired, and uncertainty about authorization is "
+                "denial" % task_id[:128],
+                task_id=task_id[:128], code="NO_FENCE_AUTHORITY")
         try:
-            return self.fences.current(task_id)
-        except Exception:
-            #: An unreadable fence authority must not turn into a fabricated
-            #: authorization: no fence object means the fabric simply has no
-            #: generation to check, exactly as before.
-            return None
+            fence = self.fences.current(task_id)
+        except Exception as exc:                      # noqa: BLE001
+            self._count("fence_authority_error")
+            reason = _redact(str(exc))[:200]
+            self._audit("inference.fence_denied", scope=task_id,
+                        allowed=False,
+                        reason="fence authority raised: %s" % reason)
+            raise FenceAuthorityError(
+                "generation for task %s was refused: the attempt-fence "
+                "authority could not be consulted (%s)"
+                % (task_id[:128], reason),
+                task_id=task_id[:128], code="FENCE_ERROR") from exc
+        if fence is None:
+            self._count("fence_missing_for_task")
+            self._audit("inference.fence_denied", scope=task_id,
+                        allowed=False,
+                        reason="no attempt is registered for this task")
+            raise NoFenceAuthority(
+                "generation for task %s was refused: the fence authority has "
+                "no attempt for it, so nothing can prove this generation is "
+                "authorized" % task_id[:128],
+                task_id=task_id[:128], code="NO_FENCE_AUTHORITY")
+        state = str(getattr(fence, "state", "") or "").lower()
+        authorized = True
+        try:
+            authorized = bool(self.fences.is_authorized(fence))
+        except Exception:                             # noqa: BLE001
+            authorized = False
+            state = state or "unknown"
+        if not authorized:
+            reason = _redact(str(getattr(fence, "reason", "") or state))[:200]
+            refusal = _FENCE_REFUSALS.get(state, StaleAttempt)
+            if "superseded" in reason.lower():
+                #: A retry started elsewhere: name it, because "stale" and
+                #: "somebody else owns this task now" are different diagnoses.
+                refusal = SupersededAttempt
+            self._count("fence_denied")
+            self._audit("inference.fence_denied", scope=task_id,
+                        allowed=False,
+                        reason="attempt %s is %s (%s)"
+                               % (getattr(fence, "attempt_id", "?"),
+                                  state or "unauthorized", reason))
+            raise refusal(
+                "generation for task %s was refused: attempt %s is %s"
+                % (task_id[:128], getattr(fence, "attempt_id", "?"),
+                   reason or state or "not authorized"),
+                task_id=task_id[:128],
+                attempt_id=str(getattr(fence, "attempt_id", ""))[:128],
+                code=refusal.code)
+        return fence
 
     def _admit(self) -> None:
         """Bounded concurrency: refuse rather than queue without limit."""

@@ -50,13 +50,19 @@ from forge.server.authorization import (  # noqa: E402
     API_OPERATIONS,
     EXECUTION_VECTOR_FIELDS,
 )
+from forge.core.fencing import FenceRegistry  # noqa: E402
 from forge.server.inference import (  # noqa: E402
     MAX_OUTPUT_TOKENS,
     MAX_PROMPT_CHARS,
     MAX_TIMEOUT_SECONDS,
+    CancelledAttempt,
+    FenceAuthorityError,
     InferenceNotConfigured,
     InferenceServiceConfig,
+    NoFenceAuthority,
     ServerInferenceService,
+    StaleAttempt,
+    SupersededAttempt,
 )
 
 MODEL = reference_model_id()
@@ -259,14 +265,114 @@ def test_service_binds_a_generation_to_the_task_fence():
         "".join(chunks)
 
 
-def test_without_a_fence_authority_the_service_still_works():
-    """No registry means no fence check, and that is reported, not hidden."""
+def test_task_bound_generation_requires_a_fence_authority():
+    """INTEGRATION_TEST (§6): no authority → denial, never "no fence, continue".
+
+    This test replaced one that asserted the opposite. A task-bound generation
+    whose authorization cannot be established is refused: no model compute, no
+    published result, and an explicit infrastructure verdict for the caller.
+    """
     svc = service()
-    body = svc.inference_generate({"prompt": "hi", "capability": "coding",
-                                   "task_id": "task-1"})
+    with pytest.raises(NoFenceAuthority) as refused:
+        svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                "task_id": "task-1"})
+    assert refused.value.code == "NO_FENCE_AUTHORITY"
+    assert refused.value.status == 503
+    assert svc._counts.get("fence_authority_missing") == 1
+    #: An interactive generation has no attempt to fence — that is a different
+    #: thing from a task attempt whose fence is missing, and it still works.
+    body = svc.inference_generate({"prompt": "hi", "capability": "coding"})
     assert body["success"] is True
-    assert body["task_id"] == "task-1"
-    assert svc._fence_for("task-1") is None
+    assert svc._fence_for("") is None
+
+
+def test_a_broken_fence_authority_fails_closed():
+    """INTEGRATION_TEST (§6): an authority that raises is FENCE_ERROR."""
+
+    class BrokenFences:
+        def current(self, task_id: str) -> Any:
+            raise RuntimeError("fence store unavailable")
+
+    svc = service(fences=BrokenFences())
+    with pytest.raises(FenceAuthorityError) as refused:
+        svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                "task_id": "task-2"})
+    assert refused.value.code == "FENCE_ERROR"
+    assert svc._counts.get("fence_authority_error") == 1
+
+
+def test_an_unknown_attempt_is_not_an_authorization():
+    """INTEGRATION_TEST (§6): the authority knows no attempt for this task."""
+    fences = FenceRegistry()
+    svc = service(fences=fences)
+    with pytest.raises(NoFenceAuthority):
+        svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                "task_id": "task-nobody"})
+    assert svc._counts.get("fence_missing_for_task") == 1
+
+
+def test_the_current_attempt_is_admitted_and_refused_by_name_when_it_ends():
+    """INTEGRATION_TEST (§6/§7): admitted while authorized, refused by name after.
+
+    Every refusal below comes from a real :class:`FenceRegistry` transition —
+    no test seam stands in for the service's own verdict.
+    """
+    fences = FenceRegistry()
+    svc = service(fences=fences)
+    fence = fences.begin("task-9", owner="worker-1")
+    fences.mark_running("task-9", fence)
+    body = svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                   "task_id": "task-9"})
+    assert body["success"] is True
+    assert body["task_id"] == "task-9"
+
+    #: Cancellation reaches the fence, and the fence reaches admission.
+    fences.cancel("task-9")
+    with pytest.raises(CancelledAttempt) as cancelled:
+        svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                "task_id": "task-9"})
+    assert cancelled.value.code == "CANCELLED_ATTEMPT"
+    assert cancelled.value.status == 409
+
+    #: A crashed/fenced attempt is stale, and stale is not "authorized".
+    fences2 = FenceRegistry()
+    svc2 = service(fences=fences2)
+    other = fences2.begin("task-10", owner="worker-1")
+    fences2.mark_running("task-10", other)
+    fences2.fence("task-10", other, reason="worker vanished at restart")
+    with pytest.raises(StaleAttempt) as stale:
+        svc2.inference_generate({"prompt": "hi", "capability": "coding",
+                                 "task_id": "task-10"})
+    assert stale.value.code == "STALE_ATTEMPT"
+    assert svc2._counts.get("fence_denied") == 1
+
+
+def test_a_superseded_attempt_is_named_as_superseded():
+    """INTEGRATION_TEST (§6): SUPERSEDED_ATTEMPT, not a generic stale verdict."""
+
+    class SupersedingFences:
+        """A registry whose current attempt is fenced as superseded."""
+
+        def __init__(self) -> None:
+            self._inner = FenceRegistry()
+            self.first = self._inner.begin("task-11", owner="worker-1")
+            self._inner.mark_running("task-11", self.first)
+            self._inner.begin("task-11", owner="worker-2")
+
+        def current(self, task_id: str) -> Any:
+            #: Reports the *old* attempt as current: the situation a zombie
+            #: worker is in when it asks whether it may still publish.
+            return self._inner.get(task_id, self.first.generation)
+
+        def is_authorized(self, fence: Any) -> bool:
+            return self._inner.is_authorized(fence)
+
+    svc = service(fences=SupersedingFences())
+    with pytest.raises(SupersededAttempt) as refused:
+        svc.inference_generate({"prompt": "hi", "capability": "coding",
+                                "task_id": "task-11"})
+    assert refused.value.code == "SUPERSEDED_ATTEMPT"
+    assert svc._counts.get("fence_denied") == 1
 
 
 def test_service_stream_events_are_cursored_and_text_free():
@@ -713,8 +819,14 @@ def test_task_notifications_carry_metadata_only():
                          "payload": payload})
 
     fabric, _backend = scripted_fabric(response="SECRET-ANSWER-1f2e")
+    #: Session 11.5 (§6): a task-bound generation needs a fence authority, so
+    #: the test wires a real one and admits the attempt it is testing.
+    fences = FenceRegistry()
+    fence = fences.begin("task-77", owner="worker-1")
+    fences.mark_running("task-77", fence)
     svc = ServerInferenceService(
-        config=InferenceServiceConfig(enabled=True), fabric=fabric, emit=emit)
+        config=InferenceServiceConfig(enabled=True), fabric=fabric, emit=emit,
+        fences=fences)
     svc.inference_generate({"prompt": "SECRET-PROMPT-9d41",
                             "capability": "coding", "task_id": "task-77"})
     assert captured and captured[0]["type"] == "inference.completed"

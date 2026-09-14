@@ -108,6 +108,10 @@ class DebuggerAgent(AgentExecutor):
         self.repair_decisions: list = []
         self.last_model = ""
         self.last_latency = 0.0
+        #: Session 11.5 (§24): bounded, content-free provenance of the model
+        #: call that produced the last repair (which path, which model, neural
+        #: or deterministic, verified or not). Empty until a fabric call runs.
+        self.last_inference: dict = {}
 
     def describe(self) -> str:
         return "Diagnoses test failures and applies bounded model-generated fixes."
@@ -211,6 +215,7 @@ class DebuggerAgent(AgentExecutor):
         written only when the policy gate authorizes it. Model output never
         bypasses validation or write permissions.
         """
+        from forge.models.inference_path import provenance_from_response
         from forge.models.request import ModelRequest
 
         prompt = self._repair_prompt(task, failure, context, previous_attempts)
@@ -227,6 +232,7 @@ class DebuggerAgent(AgentExecutor):
         ))
         self.last_model = response.model
         self.last_latency = response.latency_ms
+        self.last_inference = provenance_from_response(response)
         if not response.success:
             raise RuntimeError(response.error or "No debugging model available; configure Ollama or another provider")
         return self._apply_repair(response.text, approved, task_id,
