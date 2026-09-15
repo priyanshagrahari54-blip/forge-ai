@@ -59,6 +59,7 @@ dev = [
 [project.scripts]
 forge = "forge.cli:main"
 forge-build = "forge.project_builder:main"
+forge-model = "forge.model_studio_cli:main"
 
 # Shipped data files. Without this the builtins below resolve from a source
 # checkout (editable installs, CI) but vanish from a wheel. The cockpit web
