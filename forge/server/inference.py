@@ -261,6 +261,12 @@ class _RetainedStream:
     request_id: str
     model_id: str = ""
     backend_id: str = ""
+    #: §15 — a stream knows whose work it is carrying. Live transport is not
+    #: durable state, but it must still be *correlatable* with the durable task
+    #: record, so a thin client (or an auditor) can tie a delta to an attempt.
+    task_id: str = ""
+    attempt_id: str = ""
+    generation_id: str = ""
     events: Deque[Any] = field(default_factory=lambda: deque(
         maxlen=MAX_EVENTS_PER_STREAM))
     done: bool = False
@@ -527,11 +533,11 @@ class ServerInferenceService:
         classification = str(payload.get("classification") or "")[:16]
         self._admit()
         try:
-            result = fabric.generate(request, task_id=task_id,
-                                     attempt_id=attempt_id,
-                                     classification=classification,
-                                     fence=self._fence_for(task_id),
-                                     fence_registry=self.fences)
+            result = fabric.generate(
+                request, task_id=task_id, attempt_id=attempt_id,
+                classification=classification,
+                fence=self._fence_for(task_id, attempt_id),
+                fence_registry=self.fences)
         finally:
             self._release()
         body = self._result_body(result)
@@ -561,11 +567,14 @@ class ServerInferenceService:
         handle = fabric.stream(request, task_id=task_id,
                                attempt_id=attempt_id,
                                classification=classification,
-                               fence=self._fence_for(task_id),
+                               fence=self._fence_for(task_id, attempt_id),
                                fence_registry=self.fences)
         stream_id = "str-" + handle.result.request_id[4:]
         retained = _RetainedStream(
-            stream_id=stream_id, request_id=handle.result.request_id)
+            stream_id=stream_id, request_id=handle.result.request_id,
+            task_id=task_id, attempt_id=attempt_id,
+            generation_id=str(getattr(handle.result, "generation_id", "")
+                              or "")[:128])
         with self._lock:
             self._gc_streams()
             self._streams[stream_id] = retained
@@ -616,6 +625,7 @@ class ServerInferenceService:
             "request_id": handle.result.request_id,
             "task_id": task_id,
             "attempt_id": attempt_id,
+            "generation_id": retained.generation_id,
             "model_id": handle.result.model_id,
             "backend_id": handle.result.backend_id,
             "events": events,
@@ -630,11 +640,22 @@ class ServerInferenceService:
         with self._lock:
             retained = self._streams.get(stream_id)
         if retained is None:
-            raise NotFound("unknown or expired stream %r" % stream_id[:64])
+            #: §15 — honest about what a stream is. Buffers are live transport:
+            #: they do not survive a restart and are not a durable record. The
+            #: task and its inference metadata do survive, and saying so here
+            #: stops a client from mistaking a lost buffer for lost work.
+            raise NotFound(
+                "unknown or expired stream %r: stream buffers are live "
+                "transport, not durable state — the task record and its "
+                "inference metadata survive a restart, this buffer does not"
+                % stream_id[:64])
         events, last, done = self._wait_events(retained, after, wait=wait)
         return {
             "stream_id": stream_id,
             "request_id": retained.request_id,
+            "task_id": retained.task_id,
+            "attempt_id": retained.attempt_id,
+            "generation_id": retained.generation_id,
             "model_id": retained.model_id,
             "backend_id": retained.backend_id,
             "events": events,
@@ -851,7 +872,7 @@ class ServerInferenceService:
             trace_id=str(payload.get("trace_id") or "")[:64],
         )
 
-    def _fence_for(self, task_id: str) -> Any:
+    def _fence_for(self, task_id: str, attempt_id: str = "") -> Any:
         """The current attempt fence for a task-bound generation — or a refusal.
 
         Session 11.5 (§6) replaced the old behaviour here, which caught every
@@ -869,6 +890,11 @@ class ServerInferenceService:
         * ``task_id`` and the authority knows no attempt → :class:`NoFenceAuthority`.
         * a fence that is not authorized → the refusal that names its state
           (``STALE_ATTEMPT`` / ``CANCELLED_ATTEMPT`` / ``SUPERSEDED_ATTEMPT``).
+        * a caller that claims an ``attempt_id`` which is not the current
+          attempt → :class:`SupersededAttempt`. The fence is resolved from the
+          task, so without this check a zombie that merely knows the task id
+          could generate — or stream — under its successor's authority: a valid
+          fence, but not *its* fence (§9/§12).
 
         Nothing is logged that could carry a credential: the reason text is
         bounded and redacted.
@@ -908,6 +934,21 @@ class ServerInferenceService:
                 "no attempt for it, so nothing can prove this generation is "
                 "authorized" % task_id[:128],
                 task_id=task_id[:128], code="NO_FENCE_AUTHORITY")
+        #: §9/§12 — the claimed attempt must be the authoritative one.
+        claimed = str(attempt_id or "")[:128]
+        current_id = str(getattr(fence, "attempt_id", "") or "")
+        if claimed and current_id and claimed != current_id:
+            self._count("fence_attempt_mismatch")
+            self._audit("inference.fence_denied", scope=task_id,
+                        allowed=False,
+                        reason="claimed attempt %s is not the current attempt "
+                               "%s" % (claimed, current_id))
+            raise SupersededAttempt(
+                "generation for task %s was refused: attempt %s is not the "
+                "current attempt (%s owns this task now)"
+                % (task_id[:128], claimed, current_id),
+                task_id=task_id[:128], attempt_id=claimed,
+                code=SupersededAttempt.code)
         state = str(getattr(fence, "state", "") or "").lower()
         authorized = True
         try:
