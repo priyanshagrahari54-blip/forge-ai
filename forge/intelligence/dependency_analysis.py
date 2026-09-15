@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 from forge.intelligence.dependencies import DependencyGraph
@@ -135,12 +136,14 @@ class DependencyAnalyzer:
         next_nodes,
     ) -> list[str]:
         visited: set[str] = set()
-        queue = list(next_nodes(start))
+        # Performance optimization (Bolt ⚡): Use deque for O(1) pops during BFS traversal
+        # instead of list.pop(0) which is O(N) due to memory shifting on large dependency trees.
+        queue: deque[str] = deque(next_nodes(start))
 
         result: list[str] = []
 
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
 
             if node == start or node in visited:
                 continue
