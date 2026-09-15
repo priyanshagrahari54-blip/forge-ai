@@ -49,6 +49,10 @@ from forge.server.errors import (
 )
 from forge.server.events import EventStore
 from forge.server.health import HealthMonitor
+from forge.server.inference import (
+    InferenceServiceConfig,
+    ServerInferenceService,
+)
 from forge.server.logs import LogStore
 from forge.server.models import (
     MAX_REQUIREMENT_CHARS,
@@ -92,6 +96,20 @@ class ServerConfig:
     fabric: Any = None
     #: Task executor; None uses the real SupervisorExecutor.
     executor: Any = None
+    #: Server inference service configuration (Session 11). ``None`` builds
+    #: one from ``FORGE_SERVER_INFERENCE_*`` — which is *disabled* unless an
+    #: operator opts in. Nothing is discovered, loaded or contacted until
+    #: then; the typed inference routes answer 503 INFERENCE_NOT_CONFIGURED.
+    inference: Any = None
+    #: Session 11.5 — which inference path serves the *background* loop:
+    #: ``legacy`` (this fabric's own router), ``session11`` (the canonical
+    #: InferenceFabric) or ``hybrid`` (Session 11 for eligible calls, legacy
+    #: only where a caller is explicitly not migrated). ``None`` means "derive
+    #: it": ``FORGE_INFERENCE_PATH`` when the operator set it, otherwise
+    #: ``session11`` when server inference is enabled and ``legacy`` when it is
+    #: not. The choice is recorded on every response and in health, so a
+    #: degraded path is never silent.
+    inference_path: Any = None
     max_workers: int = 4
     #: Resource governor profile: "" (auto-detect) | default | g560.
     #: Distinct from ``profile`` above, which is the A33 *permission*
@@ -154,6 +172,7 @@ class ServerConfig:
             session_ttl=env_float("FORGE_SERVER_SESSION_TTL", 12 * 3600),
             local_dev_mode=os.environ.get(
                 "FORGE_SERVER_AUTH_MODE", "local-dev") != "production",
+            inference=InferenceServiceConfig.from_env(),
         )
         for key, value in overrides.items():
             setattr(config, key, value)
@@ -227,6 +246,55 @@ class ForgeServer:
         self.health_monitor = HealthMonitor(self)
         self.recovery = RecoveryService(self)
 
+        # -- inference service (Session 11) -----------------------------------
+        # Shares the server's Resource Governor and A33 audit log, so a
+        # generation is subject to exactly the same resource verdicts (G560
+        # denies local model loading) and is recorded in the same audit trail
+        # as every other decision. Built lazily: constructing the server never
+        # touches a model directory or the network.
+        inference_config = self.config.inference
+        if inference_config is None:
+            inference_config = InferenceServiceConfig.from_env()
+        if not getattr(inference_config, "resource_profile", ""):
+            inference_config.resource_profile = self.config.resource_profile
+
+        #: Session 11.5 (§5-§9) — the server's attempt-fence authority. It is
+        #: the *existing* :class:`~forge.core.fencing.FenceRegistry` (the same
+        #: class the DAG scheduler uses), not a second fencing system: a worker
+        #: begins one attempt fence per lease, hands it to the inference path,
+        #: and commits/cancels it at the terminal transition. A generation whose
+        #: fence cannot be established is refused, never admitted on a guess.
+        from forge.core.fencing import FenceRegistry
+        self.fences = FenceRegistry()
+
+        self.inference = ServerInferenceService(
+            config=inference_config, governor=self.governor,
+            audit=self.audit, emit=self.emit, fences=self.fences)
+
+        # -- Session 11.5 (§2/§3): one canonical inference path --------------
+        # The background loop used to route through this fabric's own router
+        # while the Session-11 fabric served only the HTTP endpoints and the
+        # CLI: two selection paths that never met. The mode below is decided
+        # once, here, and every request records which path served it.
+        from forge.models.inference_path import (PATH_LEGACY, PATH_SESSION11,
+                                                 InferencePathConfig)
+        path_config = self.config.inference_path
+        if path_config is None:
+            path_config = InferencePathConfig.from_env()
+            if not os.environ.get("FORGE_INFERENCE_PATH", "").strip():
+                #: No explicit operator choice: the canonical path follows
+                #: server inference. Enabling inference means the background
+                #: loop runs through the Session-11 fabric; leaving it disabled
+                #: means legacy — and health says which one is in effect.
+                path_config.mode = (PATH_SESSION11
+                                    if inference_config.enabled
+                                    else PATH_LEGACY)
+        path_config.validate()
+        self.inference_path_config = path_config
+        if path_config.mode != PATH_LEGACY:
+            self.fabric.attach_inference_path(
+                self.inference, path_config, fences=self.fences)
+
         # -- in-memory, per-boot state ------------------------------------------------
         self._controls: Dict[str, Any] = {}
         self._controls_lock = threading.Lock()
@@ -289,6 +357,7 @@ class ForgeServer:
         self.started_at = time.time()
         self.pool.start()
         self.scheduler.start()
+        self.inference.start()
         self._started = True
         self.emit("", "", "server.started",
                   {"boot_id": self.boot_id,
@@ -304,6 +373,12 @@ class ForgeServer:
         """Stop the scheduler and worker pool. Durable state is untouched."""
         self._stopping.set()
         self.scheduler.stop()
+        try:
+            # Cancel in-flight generations and drop resident models before
+            # the worker pool goes away; never blocks shutdown on a backend.
+            self.inference.stop()
+        except Exception:
+            pass
         self.pool.shutdown(wait=wait)
         if self._started:
             self.emit("", "", "server.stopped",
@@ -499,6 +574,13 @@ class ForgeServer:
                 task_id, TaskStatus.CANCELLED, expected=(task.status,),
                 error="Cancelled before start.", stage="cancelled")
             self.queue.remove(task_id)
+            #: §8/§9 — a task cancelled before start may still have an attempt
+            #: fence (a worker that began and lost its lease, or a zombie from a
+            #: dead boot). Terminal for the task means terminal for the attempt:
+            #: it may not publish afterwards.
+            self._settle_cancelled_attempt(
+                task_id, project_id=task.project_id,
+                reason="cancelled before start", confirm=True)
             self.expire_task_approvals(task_id)
             self.emit(task_id, task.project_id, "task.cancelled",
                       {"actor": actor, "detail": "cancelled_before_start"})
@@ -512,6 +594,15 @@ class ForgeServer:
             return updated
         # Cooperative cancellation at the next stage boundary.
         self.tasks.update(task_id, cancel_requested=True)
+        #: §8 — the cancellation chain is unified: operator → task record →
+        #: running control → attempt fence → inference boundary. Moving the
+        #: fence to CANCELLING here revokes publish authority *now*, so an
+        #: attempt whose worker has not noticed the cancel yet cannot commit a
+        #: result the operator just forbade. The worker confirms the stop.
+        self._settle_cancelled_attempt(
+            task_id, project_id=task.project_id,
+            reason="cancellation requested by %s" % (actor or "unknown"),
+            confirm=False)
         if control is not None:
             control.request_cancel()
         self.emit(task_id, task.project_id, "task.cancelling",
@@ -753,6 +844,113 @@ class ForgeServer:
         return self.recovery.bundle(after=after, since=since,
                                     project_id=project_id)
 
+    def _settle_cancelled_attempt(self, task_id: str, *, project_id: str = "",
+                                  reason: str = "",
+                                  confirm: bool = False) -> Optional[Any]:
+        """Move the current attempt fence towards CANCELLED (§8).
+
+        ``confirm=False`` stops at CANCELLING and leaves the confirmation to the
+        worker that owns the attempt; ``confirm=True`` finishes the job for an
+        attempt that will never run again. Either way this is best-effort at the
+        *task* level and never raises: a fence that cannot be reached is logged,
+        because silently pretending the cancellation propagated would be worse
+        than admitting it did not.
+        """
+        fences = getattr(self, "fences", None)
+        if fences is None:
+            return None
+        try:
+            fence = fences.current(task_id)
+            if fence is None or not fences.is_authorized(fence):
+                return fence
+            fences.cancel(task_id)                     # RUNNING -> CANCELLING
+            if not confirm:
+                return fences.current(task_id)
+            current = fences.current(task_id)
+            if current is None:
+                return None
+            if current.state == "CANCELLING":
+                return fences.confirm_cancelled(task_id, current,
+                                                reason=reason or "cancelled")
+            #: QUEUED has no legal edge to CANCELLING's confirmation; commit is
+            #: the route the authority itself allows.
+            fences.commit(task_id, current, "CANCELLED",
+                          payload={"reason": str(reason or "cancelled")[:120]})
+            return fences.current(task_id)
+        except Exception as exc:                       # noqa: BLE001
+            try:
+                self.log(task_id, project_id,
+                         "Cancellation could not reach the attempt fence: %s"
+                         % type(exc).__name__, level="warning",
+                         source="server")
+            except Exception:                          # noqa: BLE001
+                pass
+            return None
+
+    def task_inference_state(self, task_id: str) -> Dict[str, Any]:
+        """§10 — the durable inference job state of one task.
+
+        Two sources, no invention:
+
+        * the ``inference`` block persisted with the attempt's result, which is
+          the authority after a restart (in-memory state is gone by then); and
+        * the live fence for that task, which is the authority right now.
+
+        Reading it changes nothing. Unknown facts stay absent rather than being
+        filled with a plausible guess, and every value was already bounded by
+        its writer, so this cannot smuggle a prompt or a full model output out
+        of the store.
+        """
+        record = self.tasks.get_or_raise(task_id)
+        payload: Dict[str, Any] = {
+            "task_id": str(task_id)[:128],
+            "mode": self.inference_path_config.mode,
+            "path_attached": self.inference_path_snapshot()["attached"],
+        }
+        try:
+            result = json.loads(record.result_json or "{}")
+        except ValueError:
+            result = {}
+        durable = result.get("inference") if isinstance(result, dict) else None
+        if isinstance(durable, dict):
+            #: persisted provenance wins for the facts it recorded
+            payload.update(durable)
+            payload["persisted"] = True
+        else:
+            payload["persisted"] = False
+        fence = self.fences.current(str(task_id))
+        if fence is not None:
+            payload["attempt_id"] = fence.attempt_id
+            payload["generation"] = int(fence.generation)
+            payload["fence_state"] = fence.state
+            payload["authorized_to_publish"] = bool(
+                self.fences.is_authorized(fence))
+        else:
+            #: no fence in memory: never started, or the server restarted and
+            #: the durable record above is all that is known.
+            payload["authorized_to_publish"] = False
+            payload.setdefault("fence_state", "unknown")
+        return payload
+
+    def inference_path_snapshot(self) -> Dict[str, Any]:
+        """§3/§33 — which path this server treats as canonical, right now.
+
+        Bounded and secret-free: the mode, whether the seam is attached to the
+        fabric, and the routing switches an operator can actually reason about.
+        """
+        config = self.inference_path_config
+        payload: Dict[str, Any] = {
+            "mode": config.mode,
+            "attached": bool(getattr(self.fabric, "inference_path", None)
+                             is not None),
+            "require_verified": bool(config.require_verified),
+            "allow_deterministic": bool(config.allow_deterministic),
+            "hybrid_capabilities": list(config.hybrid_capabilities),
+            "hybrid_legacy_callers": list(config.hybrid_legacy_callers),
+            "boot_id": self.boot_id,
+        }
+        return payload
+
     def status(self) -> Dict[str, Any]:
         counts = self.tasks.status_counts()
         return {
@@ -781,6 +979,10 @@ class ForgeServer:
             "active_sessions": self.sessions.count_active(),
             "pending_approvals": len(self.approvals.pending()),
             "unread_notifications": self.notifications.unread_count(),
+            "inference": self.inference.status(),
+            #: §3/§33 — the canonical path is part of the server's own status:
+            #: an operator must be able to see which path is authoritative.
+            "inference_path": self.inference_path_snapshot(),
         }
 
     def health(self) -> Dict[str, Any]:

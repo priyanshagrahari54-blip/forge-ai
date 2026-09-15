@@ -958,6 +958,762 @@ def _build_fabric(args) -> "object":
     return ModelFabric.from_defaults(config)
 
 
+# -- Session 11: the inference fabric on the command line -------------------
+#
+# These commands drive the *real* inference path: model identity states,
+# verification, residency, routing and generation. They never fabricate
+# output: a refusal prints the honest terminal state (NEEDS_MODEL,
+# RESOURCE_DENIED, POLICY_DENIED, ...) and exits non-zero.
+
+#: ``forge models`` subcommands served by the Session-11 inference fabric.
+INFERENCE_MODEL_SUBCOMMANDS = frozenset({
+    "discover", "verify", "status", "load", "unload", "backends",
+    "evidence", "create-reference"})
+
+
+def _add_inference_flags(parser, *, suppress: bool = True) -> None:
+    """Shared fabric-building flags (parent and subcommand level)."""
+    default = argparse.SUPPRESS if suppress else None
+
+    def add(*names, **kwargs):
+        if suppress and "default" not in kwargs:
+            kwargs["default"] = argparse.SUPPRESS
+        parser.add_argument(*names, **kwargs)
+
+    add("--reference-dir", action="append", default=default or [],
+        metavar="DIR",
+        help="Directory of local reference artifacts "
+             "(.forgeref). Repeatable.")
+    add("--model-dir", action="append", default=default or [], metavar="DIR",
+        help="Directory the native backend may scan for artifacts. "
+             "Repeatable. Nothing is ever downloaded.")
+    add("--remote", action="append", default=default or [], metavar="PROVIDER",
+        help="Remote provider id configured through FORGE_REMOTE_<ID>_* "
+             "environment variables. Repeatable. Requires --allow-network.")
+    add("--allow-network", action="store_true", default=bool(default) if not suppress else argparse.SUPPRESS,
+        help="Permit outbound provider traffic (off by default).")
+    add("--ollama-url", default=default or "", metavar="URL",
+        help="Ollama endpoint (loopback only unless --allow-network).")
+    add("--resource-profile", default=default or "", metavar="NAME",
+        help="Resource governor profile: default | g560 (auto-detected "
+             "when omitted).")
+    add("--max-resident-mb", type=float, default=default or 0.0,
+        metavar="MB", help="Resident model memory budget (0 = unbounded).")
+    add("--max-slots", type=int, default=default or 2, metavar="N",
+        help="Maximum simultaneously resident models.")
+    add("--idle-seconds", type=float, default=default or 0.0, metavar="S",
+        help="Unload models idle longer than this (0 = never).")
+    add("--auto-verify", action="store_true",
+        default=bool(default) if not suppress else argparse.SUPPRESS,
+        help="Verify a model on first use (real fingerprint + probe).")
+    add("--backend", default=default or "", metavar="ID",
+        help="Restrict an operation to one backend id.")
+
+
+def _build_inference(args):
+    """Build the Session-11 :class:`InferenceFabric` from CLI flags/env.
+
+    Discovery is lazy, no weight is downloaded, and no socket is opened
+    unless ``--allow-network`` (or the runtime config) says so.
+    """
+    from forge.core.resource_governor import ResourceGovernor, select_profile
+    from forge.models.engine import build_inference_fabric
+    from forge.models.remote import RemoteProviderConfig
+
+    reference_dirs = tuple(getattr(args, "reference_dir", None) or ())
+    model_dirs = tuple(getattr(args, "model_dir", None) or ())
+    allow_network = bool(getattr(args, "allow_network", False))
+    ollama_url = str(getattr(args, "ollama_url", "") or "")
+
+    runtime_config = None
+    if model_dirs or ollama_url:
+        from forge.runtime.model_runtime import RuntimeConfig
+
+        runtime_config = RuntimeConfig.load()
+        if model_dirs:
+            merged = list(runtime_config.model_dirs)
+            for item in model_dirs:
+                if item not in merged:
+                    merged.append(item)
+            runtime_config.model_dirs = tuple(merged)
+        if ollama_url:
+            runtime_config.ollama_url = ollama_url
+            if "ollama" not in runtime_config.backends:
+                runtime_config.backends = tuple(
+                    list(runtime_config.backends) + ["ollama"])
+        runtime_config.validate()
+
+    remotes = []
+    for provider_id in (getattr(args, "remote", None) or ()):
+        # A missing FORGE_REMOTE_<ID>_URL is a configuration error the
+        # operator must see, not something to swallow.
+        remotes.append(RemoteProviderConfig.from_env(str(provider_id)))
+
+    governor = ResourceGovernor(select_profile(
+        str(getattr(args, "resource_profile", "") or "")))
+    return build_inference_fabric(
+        governor=governor, runtime_config=runtime_config,
+        reference_dirs=reference_dirs, allow_network=allow_network,
+        remote_configs=tuple(remotes),
+        max_resident_bytes=int(float(getattr(args, "max_resident_mb", 0.0)
+                                     or 0.0) * 1024 * 1024),
+        max_slots=max(1, int(getattr(args, "max_slots", 2) or 2)),
+        idle_seconds=float(getattr(args, "idle_seconds", 0.0) or 0.0),
+        auto_verify=bool(getattr(args, "auto_verify", False)))
+
+
+def _print_identity(identity, *, indent: str = "  ") -> None:
+    """One model identity, with the states that decide whether it is usable."""
+    caps = ",".join(identity.get("capabilities") or ()) or "-"
+    memory = identity.get("memory_requirements") or {}
+    print("%s%s" % (indent, identity.get("model_id")))
+    print("%s  backend=%s provider=%s placement=%s free=%s"
+          % (indent, identity.get("backend_id"),
+             identity.get("provider_id") or "-",
+             identity.get("local_or_remote"), identity.get("free")))
+    print("%s  availability=%s verification=%s"
+          % (indent, identity.get("availability_state"),
+             identity.get("verification_state")))
+    print("%s  caps=%s context=%s params=%s bytes=%s format=%s"
+          % (indent, caps, identity.get("context_limit"),
+             identity.get("parameter_count")
+             or identity.get("parameter_label") or "-",
+             memory.get("weights_bytes") or identity.get("size_bytes") or "-",
+             identity.get("artifact_format") or "-"))
+    if identity.get("verification_method"):
+        print("%s  verified_by=%s fingerprint=%s"
+              % (indent, identity.get("verification_method"),
+                 str(identity.get("artifact_fingerprint") or "-")[:16]))
+
+
+def _run_models_inference(args) -> int:
+    """``forge models <discover|verify|status|load|unload|backends|...>``."""
+    from forge.models.backends import BackendError
+    from forge.models.catalog import CatalogError
+    from forge.models.reference_engine import (ReferenceArtifactWriter,
+                                               ReferenceModelConfig)
+
+    subcommand = getattr(args, "models_subcommand", "") or ""
+    as_json = bool(getattr(args, "json", False))
+    model_id = str(getattr(args, "model_id", "") or "")
+    backend_id = str(getattr(args, "backend", "") or "")
+
+    # Artifact creation is explicit and local: no download, no weights in the
+    # repository, and an existing file is never overwritten without --force.
+    if subcommand == "create-reference":
+        destination = str(getattr(args, "path", "") or "")
+        if not destination:
+            print("A destination path is required.", file=sys.stderr)
+            return 2
+        config = ReferenceModelConfig(
+            vocab_size=int(getattr(args, "vocab_size", 96) or 96),
+            hidden_size=int(getattr(args, "hidden_size", 24) or 24),
+            context_chars=int(getattr(args, "context_chars", 64) or 64),
+            seed=int(getattr(args, "seed", 20260913) or 20260913),
+            name=str(getattr(args, "name", "reference-clm")
+                     or "reference-clm"))
+        try:
+            report = ReferenceArtifactWriter.write(
+                destination, config, overwrite=bool(getattr(args, "force",
+                                                            False)))
+        except (BackendError, OSError) as exc:
+            #: An existing artifact, an unwritable directory or a bad shape is
+            #: a refusal with a reason -- never a traceback.
+            print("Could not write the reference artifact: %s" % exc,
+                  file=sys.stderr)
+            return 1
+        if as_json:
+            _emit_json(report)
+        else:
+            shape = report.get("config") or {}
+            print("Reference artifact written (deterministic, tiny, local)")
+            print("  path=%s" % report.get("path"))
+            print("  bytes=%s name=%s vocab=%s hidden=%s context_chars=%s "
+                  "seed=%s"
+                  % (report.get("size_bytes"), shape.get("name"),
+                     shape.get("vocab_size"), shape.get("hidden_size"),
+                     shape.get("context_chars"), shape.get("seed")))
+            print("  fingerprint=%s" % report.get("fingerprint"))
+            print("  trained=%s" % report.get("trained"))
+            print("  NOTE: this is a first-party reference network. It proves "
+                  "the inference path end to end; it has no agentic "
+                  "capability and produces character-level text.")
+        return 0
+
+    try:
+        fabric = _build_inference(args)
+    except (ValueError, BackendError) as exc:
+        print("Inference configuration error: %s" % exc, file=sys.stderr)
+        return 2
+
+    try:
+        # Every invocation is a fresh process, so the registry starts empty:
+        # an operation on a named model discovers first unless told not to.
+        if subcommand != "discover" and not bool(
+                getattr(args, "no_discover", False)):
+            fabric.catalog.discover(backend_id=backend_id)
+
+        if subcommand == "discover":
+            report = fabric.catalog.discover(backend_id=backend_id)
+            payload = fabric.models_list(backend_id=backend_id,
+                                         capability=str(getattr(
+                                             args, "capability", "") or ""),
+                                         usable_only=bool(getattr(
+                                             args, "usable_only", False)))
+            payload["discovery"] = report.to_dict()
+            if as_json:
+                _emit_json(payload)
+                return 0
+            print("Discovery: %s backend(s) probed, %s model(s) registered"
+                  % (len(report.per_backend), payload["count"]))
+            for identity in payload["models"]:
+                _print_identity(identity)
+            if not payload["models"]:
+                print("  (none) - point --reference-dir or --model-dir at a "
+                      "directory that holds artifacts, or configure a serving "
+                      "backend. Nothing is downloaded automatically.")
+            return 0
+
+        if subcommand == "verify":
+            payload = fabric.models_verify(model_id, backend_id=backend_id)
+            if as_json:
+                _emit_json(payload)
+                return 0 if payload.get("verified") else 1
+            print("Verification (%d/%d verified)"
+                  % (payload.get("verified", 0), payload.get("count", 0)))
+            for item in payload.get("results", []):
+                print("  %s: verified=%s state=%s method=%s"
+                      % (item.get("model_id"), item.get("verified"),
+                         item.get("state"), item.get("method") or "-"))
+                for check in item.get("checks", []):
+                    print("    %s: %s%s (%.1fms)%s"
+                          % (check.get("name"),
+                             "skipped" if check.get("skipped")
+                             else ("ok" if check.get("ok") else "FAILED"),
+                             (" - " + str(check.get("detail")))
+                             if check.get("detail") else "",
+                             float(check.get("duration_ms") or 0.0),
+                             "" if check.get("ok") or check.get("skipped")
+                             else "  <-- verification blocked"))
+                if item.get("error"):
+                    print("    error: %s" % item["error"])
+            if not payload.get("verified"):
+                print("NOT VERIFIED - the model stays unselectable. Forge "
+                      "never promotes CONFIGURED to READY without a real "
+                      "fingerprint, health check and probe generation.")
+                return 1
+            return 0
+
+        if subcommand == "status":
+            payload = fabric.models_status(model_id)
+            if as_json:
+                _emit_json(payload)
+                return 0
+            if model_id:
+                identity = payload.get("identity") or {}
+                _print_identity(identity)
+                resident = payload.get("resident")
+                if resident:
+                    print("  resident: state=%s refs=%s bytes=%s idle=%.3fs"
+                          % (resident.get("state"), resident.get("refs"),
+                             resident.get("size_bytes"),
+                             float(resident.get("idle_seconds") or 0.0)))
+                else:
+                    print("  resident: no (not loaded)")
+                    print("  note: CLI state is per-process. Discovery, "
+                          "verification and residency that persist live in a "
+                          "running Forge Server.")
+                history = payload.get("history") or []
+                if history:
+                    print("  history:")
+                    for item in history[-5:]:
+                        print("    %s" % json.dumps(item, default=str)[:160])
+            else:
+                print("Model registry: %s model(s), %s verified, %s usable "
+                      "(local=%s remote=%s)"
+                      % (payload.get("total"), payload.get("verified"),
+                         payload.get("usable"), payload.get("local"),
+                         payload.get("remote")))
+                residency = payload.get("resident") or {}
+                stats = residency.get("stats") or {}
+                print("Residency: %s/%s slots, %s/%s bytes, loads=%s "
+                      "evictions=%s unloads=%s duplicate_loads_avoided=%s "
+                      "in_use=%s"
+                      % (stats.get("slots"), stats.get("max_slots"),
+                         stats.get("resident_bytes"), stats.get("max_bytes"),
+                         stats.get("loads"), stats.get("evictions"),
+                         stats.get("unloads"),
+                         stats.get("duplicate_loads_avoided"),
+                         stats.get("in_use")))
+                for refusal in stats.get("refusals") or []:
+                    print("  refusal: %s %s" % (refusal.get("code"),
+                                                refusal.get("message")))
+                for identity in payload.get("models") or []:
+                    print("  %s availability=%s verification=%s backend=%s"
+                          % (identity.get("model_id"),
+                             identity.get("availability_state"),
+                             identity.get("verification_state"),
+                             identity.get("backend_id")))
+                unverified = [item.get("model_id")
+                              for item in payload.get("models") or []
+                              if item.get("verification_state") != "verified"]
+                if unverified:
+                    print("  note: %s unverified. Each CLI invocation builds a "
+                          "fresh registry, so verification is not carried over; "
+                          "run `forge models verify %s` (or ask a running "
+                          "Forge Server, whose registry is long-lived)."
+                          % (len(unverified), unverified[0]))
+            return 0
+
+        if subcommand == "load":
+            if not model_id:
+                print("A model id is required: forge models load MODEL_ID",
+                      file=sys.stderr)
+                return 2
+            payload = fabric.models_load(model_id, backend_id=backend_id)
+            if as_json:
+                _emit_json(payload)
+                return 0 if payload.get("loaded") else 1
+            if payload.get("loaded"):
+                print("Loaded %s on backend %s in %.1fms (%s bytes resident)"
+                      % (payload.get("model_id"), payload.get("backend_id"),
+                         float(payload.get("duration_ms") or 0.0),
+                         payload.get("size_bytes")))
+                decision = payload.get("resource_decision") or {}
+                print("  resource: allowed=%s profile=%s reason=%s"
+                      % (decision.get("allowed"), decision.get("profile"),
+                         decision.get("reason") or "-"))
+                return 0
+            print("REFUSED to load %s: %s (%s)"
+                  % (model_id, payload.get("error"),
+                     payload.get("error_code")), file=sys.stderr)
+            return 1
+
+        if subcommand == "unload":
+            if not model_id:
+                print("A model id is required: forge models unload MODEL_ID",
+                      file=sys.stderr)
+                return 2
+            payload = fabric.models_unload(model_id,
+                                           force=bool(getattr(args, "force",
+                                                              False)))
+            if as_json:
+                _emit_json(payload)
+                return 0 if payload.get("unloaded") else 1
+            if payload.get("unloaded"):
+                print("Unloaded %s%s"
+                      % (model_id,
+                         " (deferred: in use)" if payload.get("deferred")
+                         else ""))
+                return 0
+            print("Not unloaded: %s" % (payload.get("reason")
+                                        or payload.get("error")
+                                        or "not resident"), file=sys.stderr)
+            print("  note: each CLI invocation builds a fresh residency cache, "
+                  "so a model loaded by a previous command is already gone. "
+                  "Residency that outlives a command lives in a running Forge "
+                  "Server (POST /api/v1/models/load).", file=sys.stderr)
+            return 1
+
+        if subcommand == "backends":
+            probe = not bool(getattr(args, "offline", False))
+            statuses = fabric.backends(probe=probe)
+            if as_json:
+                _emit_json({"backends": statuses})
+                return 0
+            print("Backends (probed=%s)" % probe)
+            for status in statuses:
+                print("  %s: kind=%s configured=%s reachable=%s ready=%s "
+                      "local=%s network=%s"
+                      % (status.get("backend_id"), status.get("kind"),
+                         status.get("configured"), status.get("reachable"),
+                         status.get("ready"), status.get("local"),
+                         status.get("requires_network")))
+                if status.get("detail"):
+                    print("    %s" % str(status["detail"])[:200])
+                if status.get("error"):
+                    print("    error: %s" % str(status["error"])[:200])
+            return 0
+
+        if subcommand == "evidence":
+            payload = fabric.evidence(limit=int(getattr(args, "limit", 50)
+                                                or 50))
+            if as_json:
+                _emit_json(payload)
+                return 0
+            print("Inference evidence (self-improvement feed, proposal only)")
+            for key in ("requests", "success_rate", "neural_results",
+                        "deterministic_results", "stale_results",
+                        "cancelled_results", "proposals"):
+                if key in payload:
+                    print("  %s: %s" % (key, payload[key]))
+            for item in (payload.get("recent") or [])[:5]:
+                print("  - %s" % json.dumps(item, default=str)[:180])
+            if not payload.get("requests"):
+                print("  (empty) no inference has run in this process. The "
+                      "long-lived evidence feed belongs to a running Forge "
+                      "Server: GET /api/v1/inference/status.")
+            return 0
+
+        print("Unknown models subcommand: %r" % subcommand, file=sys.stderr)
+        return 2
+    except CatalogError as exc:
+        print("Model catalog error: %s (%s)" % (exc.message, exc.code),
+              file=sys.stderr)
+        return 1
+    except BackendError as exc:
+        print("Backend error: %s (%s)" % (exc.message, exc.code),
+              file=sys.stderr)
+        return 1
+    finally:
+        try:
+            fabric.cancel_all("cli-exit")
+        except Exception:
+            pass
+
+
+def _read_prompt(args) -> str:
+    """Prompt text from the argument, --prompt, --prompt-file or stdin."""
+    text = ""
+    positional = getattr(args, "prompt", None)
+    if isinstance(positional, (list, tuple)):
+        text = " ".join(str(item) for item in positional).strip()
+    elif positional:
+        text = str(positional).strip()
+    if not text:
+        text = str(getattr(args, "prompt_text", "") or "").strip()
+    path = str(getattr(args, "prompt_file", "") or "")
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read().strip()
+        except OSError as exc:
+            raise ValueError("cannot read --prompt-file %s: %s" % (path, exc))
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+    return text
+
+
+def _run_infer(args) -> int:
+    """``forge infer`` - one real generation, locally or via a Forge Server."""
+    from forge.models.request import ModelRequest
+
+    as_json = bool(getattr(args, "json", False))
+    strict_neural = bool(getattr(args, "strict_neural", False))
+    server_url = str(getattr(args, "server", "") or "").strip()
+
+    try:
+        prompt = _read_prompt(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not prompt:
+        print("A prompt is required: forge infer \"...\" "
+              "(or --prompt-file / stdin).", file=sys.stderr)
+        return 2
+
+    context = str(getattr(args, "context", "") or "")
+    context_file = str(getattr(args, "context_file", "") or "")
+    if context_file:
+        try:
+            with open(context_file, "r", encoding="utf-8", errors="replace") \
+                    as handle:
+                context = handle.read()
+        except OSError as exc:
+            print("cannot read --context-file: %s" % exc, file=sys.stderr)
+            return 2
+
+    kwargs = {
+        "context": context,
+        "capability": str(getattr(args, "capability", "") or ""),
+        "model": str(getattr(args, "model", "") or ""),
+        "backend": str(getattr(args, "backend", "") or ""),
+        "task": str(getattr(args, "task", "") or ""),
+        "task_id": str(getattr(args, "task_id", "") or ""),
+        "attempt_id": str(getattr(args, "attempt_id", "") or ""),
+        "classification": str(getattr(args, "classification", "") or ""),
+        "max_output_tokens": getattr(args, "max_tokens", None),
+        "temperature": getattr(args, "temperature", None),
+        "timeout": getattr(args, "timeout", None),
+        "allow_deterministic": not bool(getattr(args, "no_deterministic",
+                                                False)),
+    }
+
+    # -- remote: the G560 thin-client path (no local models at all) --------
+    if server_url:
+        from forge.server.client import (ForgeServerClient,
+                                         ForgeServerClientError)
+
+        token = str(getattr(args, "token", "") or os.environ.get(
+            "FORGE_SERVER_TOKEN", "") or "")
+        client = ForgeServerClient(server_url, token=token,
+                                   timeout=float(getattr(args, "timeout", None)
+                                                 or 60.0) + 10.0)
+        try:
+            if bool(getattr(args, "stream", False)):
+                chunks = []
+
+                def _delta(text, event):
+                    chunks.append(text)
+                    if not as_json:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+
+                outcome = client.stream(prompt, on_delta=_delta,
+                                        wait=float(getattr(args, "wait", 2.0)
+                                                   or 2.0), **kwargs)
+                if not as_json:
+                    print("")
+                body = dict(outcome)
+                body.pop("text", None)
+                body.update({
+                    "request_id": outcome.get("request_id"),
+                    "model_id": outcome.get("model_id"),
+                    "backend_id": outcome.get("backend_id"),
+                    "state": outcome.get("state"),
+                    "success": not bool(outcome.get("error_code")),
+                    "neural": bool(outcome.get("model_id"))
+                    and "deterministic" not in str(outcome.get("backend_id")),
+                    "complete": outcome.get("complete"),
+                    "events": outcome.get("events"),
+                    "chars": outcome.get("chars"),
+                    "error": outcome.get("error"),
+                    "error_code": outcome.get("error_code"),
+                    "text": outcome.get("text"),
+                    "via": "server",
+                    "server": client.base_url,
+                })
+                #: The server's own provenance wins over the client's guess.
+                for key in ("neural", "state", "success", "finish_reason",
+                            "latency_ms", "verification_state",
+                            "availability_state", "output_scan"):
+                    if outcome.get(key) is not None:
+                        body[key] = outcome[key]
+                body["_echoed"] = bool(outcome.get("echoed")) and not as_json
+            else:
+                body = client.generate(prompt, **kwargs)
+                body["via"] = "server"
+                body["server"] = client.base_url
+        except ForgeServerClientError as exc:
+            if as_json:
+                _emit_json({"success": False, "error": exc.message,
+                            "error_code": exc.code, "via": "server",
+                            "http_status": exc.http_status})
+            else:
+                print("Server refused the request: %s (%s)"
+                      % (exc.message, exc.code), file=sys.stderr)
+            return 1
+        return _report_inference(body, as_json=as_json,
+                                 explain=bool(getattr(args, "explain", False)),
+                                 strict_neural=strict_neural)
+
+    # -- local: the same fabric the agents and the server use ---------------
+    from forge.models.backends import BackendError
+    from forge.models.catalog import CatalogError
+
+    try:
+        fabric = _build_inference(args)
+    except (ValueError, BackendError) as exc:
+        print("Inference configuration error: %s" % exc, file=sys.stderr)
+        return 2
+
+    try:
+        if not bool(getattr(args, "no_discover", False)):
+            fabric.catalog.discover(backend_id=str(getattr(args, "backend", "")
+                                                   or ""))
+        if bool(getattr(args, "verify", False)):
+            target = str(getattr(args, "model", "") or "")
+            verifications = ([fabric.catalog.verify(target)] if target
+                             else fabric.catalog.verify_all())
+            if not verifications:
+                print("Nothing to verify: no model is registered. Discover "
+                      "one first (--reference-dir / --model-dir).",
+                      file=sys.stderr)
+                return 1
+            for verification in verifications:
+                if not as_json:
+                    print("verify: %s verified=%s method=%s%s"
+                          % (verification.model_id, verification.verified,
+                             verification.method or "-",
+                             (" error=%s" % verification.error)
+                             if verification.error else ""))
+                if (not verification.verified and strict_neural
+                        and (not target or verification.model_id == target)):
+                    print("Model %s is not verified; refusing to present its "
+                          "output as trustworthy." % verification.model_id,
+                          file=sys.stderr)
+                    return 1
+        request = ModelRequest(
+            prompt=prompt,
+            context=str(kwargs.get("context") or ""),
+            capability=str(kwargs.get("capability") or ""),
+            task=str(kwargs.get("task") or ""),
+            model=str(kwargs.get("model") or ""),
+            backend=str(kwargs.get("backend") or ""),
+            max_output_tokens=kwargs.get("max_output_tokens"),
+            temperature=kwargs.get("temperature"),
+            timeout=kwargs.get("timeout"),
+            classification=str(kwargs.get("classification") or ""),
+            require_verified=not bool(getattr(args, "allow_unverified", False)),
+            allow_deterministic=bool(kwargs.get("allow_deterministic", True)),
+            task_id=str(kwargs.get("task_id") or ""),
+            attempt_id=str(kwargs.get("attempt_id") or ""),
+        )
+        if bool(getattr(args, "stream", False)):
+            handle = fabric.stream(request,
+                                   task_id=str(kwargs.get("task_id") or ""),
+                                   attempt_id=str(kwargs.get("attempt_id") or ""))
+            echoed = 0
+            for event in handle.events():
+                delta = str(getattr(event, "delta", "") or "")
+                if delta and not as_json:
+                    sys.stdout.write(delta)
+                    sys.stdout.flush()
+                    echoed += len(delta)
+            result = handle.wait(float(getattr(args, "timeout", None) or 120.0))
+            if not as_json and echoed:
+                print("")
+            body = result.to_dict()
+            body["text"] = result.text
+            body["streamed"] = True
+            body["stream"] = handle.stream.snapshot()
+            #: The deltas were already written to stdout; printing the text
+            #: again would look like the model said it twice.
+            body["_echoed"] = bool(echoed)
+        else:
+            result = fabric.generate(request,
+                                     task_id=str(kwargs.get("task_id") or ""),
+                                     attempt_id=str(kwargs.get("attempt_id")
+                                                    or ""))
+            body = result.to_dict()
+            body["text"] = result.text
+        body["via"] = "local"
+        return _report_inference(body, as_json=as_json,
+                                 explain=bool(getattr(args, "explain", False)),
+                                 strict_neural=strict_neural)
+    except CatalogError as exc:
+        print("Model catalog error: %s (%s)" % (exc.message, exc.code),
+              file=sys.stderr)
+        return 1
+    except BackendError as exc:
+        print("Backend error: %s (%s)" % (exc.message, exc.code),
+              file=sys.stderr)
+        return 1
+    finally:
+        try:
+            fabric.cancel_all("cli-exit")
+        except Exception:
+            pass
+
+
+def _report_inference(body, *, as_json: bool, explain: bool,
+                      strict_neural: bool) -> int:
+    """Print one inference outcome honestly, and choose the exit code.
+
+    The provenance line is the point: which model, which backend, whether a
+    neural network actually produced the text, and why it ended the way it
+    did. A deterministic fallback is labelled as such, never as a model
+    answer.
+    """
+    success = bool(body.get("success"))
+    neural = bool(body.get("neural"))
+    if as_json:
+        _emit_json({key: value for key, value in body.items()
+                    if not key.startswith("_")})
+        if not success or (strict_neural and not neural):
+            return 1
+        return 0
+
+    text = str(body.get("text") or "")
+    if text and not body.get("_echoed"):
+        print(text)
+        print("")
+    print("provenance: model=%s backend=%s neural=%s state=%s finish=%s "
+          "latency=%.1fms"
+          % (body.get("model_id") or "-", body.get("backend_id") or "-",
+             neural, body.get("state") or "-", body.get("finish_reason") or "-",
+             float(body.get("latency_ms") or 0.0)))
+    if body.get("verification_state"):
+        print("            verification=%s availability=%s"
+              % (body.get("verification_state"),
+                 body.get("availability_state")))
+    if body.get("streamed"):
+        stream = body.get("stream") or {}
+        print("            stream: events=%s complete=%s chars=%s "
+              "dropped_chars=%s truncated=%s ttft=%sms"
+              % (stream.get("sequence"), stream.get("complete"),
+                 stream.get("chars"), stream.get("dropped_chars"),
+                 stream.get("truncated"),
+                 stream.get("time_to_first_token_ms")))
+    scan = body.get("output_scan") or {}
+    if scan.get("flags"):
+        print("            output scan flags: %s" % ", ".join(scan["flags"]))
+    if success and not neural:
+        print("NOTE: answered by the deterministic non-neural fallback. No "
+              "model produced this text; it is not model output.")
+    if not success:
+        print("REFUSED/FAILED: state=%s error_code=%s"
+              % (body.get("state"), body.get("error_code") or "-"),
+              file=sys.stderr)
+        if body.get("error"):
+            print("  %s" % str(body["error"])[:400], file=sys.stderr)
+    if explain:
+        routing = body.get("routing") or {}
+        print("routing: %s" % (routing.get("reason") or "-"))
+        print("         selected=%s backend=%s state=%s score=%s"
+              % (routing.get("selected_model") or "-",
+                 routing.get("selected_backend") or "-",
+                 routing.get("state") or "-", routing.get("score")))
+        for item in (routing.get("rejected") or [])[:6]:
+            print("         rejected: %s - %s"
+                  % (item.get("model_id"), item.get("reason")))
+        resource = body.get("resource_result") or {}
+        print("resource: allowed=%s profile=%s device=%s model_loading=%s"
+              % (resource.get("allowed"), resource.get("profile"),
+                 resource.get("device_class"),
+                 resource.get("model_loading_allowed")))
+        for check in (resource.get("checks") or [])[:8]:
+            print("          %s: ok=%s %s" % (check.get("name"),
+                                              check.get("ok"),
+                                              check.get("detail") or ""))
+        policy = body.get("policy_result") or {}
+        if policy:
+            print("policy: %s" % json.dumps(policy, default=str)[:240])
+        context = body.get("context") or {}
+        if context:
+            print("context: limit=%s budget=%s estimated=%s feasible=%s (%s)"
+                  % (context.get("context_limit"), context.get("budget_tokens"),
+                     context.get("estimated_tokens"), context.get("feasible"),
+                     context.get("reason") or "-"))
+        fallback = body.get("fallback") or {}
+        ladder = fallback.get("ladder") or {}
+        for step in (ladder.get("steps") or [])[:8]:
+            print("ladder: %s %s/%s attempted=%s outcome=%s%s"
+                  % (step.get("order"), step.get("tier"),
+                     "neural" if step.get("neural") else "deterministic",
+                     step.get("model_id"), step.get("outcome") or "-",
+                     (" error=%s" % step.get("error_code"))
+                     if step.get("error_code") else ""))
+        for observation in (body.get("observations") or [])[-8:]:
+            print("observed: %s -> %s%s"
+                  % (observation.get("phase"), observation.get("state"),
+                     (" (%s)" % observation.get("error_code"))
+                     if observation.get("error_code") else ""))
+    if not success:
+        return 1
+    if strict_neural and not neural:
+        #: --strict-neural is a demand for model output, so a deterministic
+        #: answer has to be refused out loud rather than exiting 1 silently.
+        print("REFUSED: --strict-neural was set, but this answer came from "
+              "the deterministic non-neural fallback (model=%s backend=%s). "
+              "No model produced it; verify a model with `forge models "
+              "verify` or point --reference-dir/--model-dir at one."
+              % (body.get("model_id") or "-", body.get("backend_id") or "-"),
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def _run_research(args) -> int:
     """CLI entry for the secure research engine (``forge research``)."""
     from forge.research.secure_engine import SecureResearchEngine
@@ -2138,6 +2894,134 @@ def main() -> None:
         _sub.add_argument("--json", action="store_true",
                           default=argparse.SUPPRESS,
                           help="Emit machine-readable JSON")
+
+    # -- Session 11: the real inference fabric -----------------------------
+    # Identity states, verification, residency and backend health. These
+    # subcommands never invent availability: a model is `discovered` until a
+    # real fingerprint + health + probe generation verifies it.
+    _inference_subs = {
+        "discover": "Discover models across backends (no downloads)",
+        "verify": "Verify a model for real (fingerprint + health + probe)",
+        "status": "Show registry/residency status (one model or all)",
+        "load": "Load a model into bounded residency",
+        "unload": "Unload a model (in-use models are protected)",
+        "backends": "Show backend health (native/ollama/llama.cpp/remote)",
+        "evidence": "Show the inference evidence feed (self-improvement)",
+        "create-reference": "Write a tiny local reference artifact "
+                            "(explicit, offline)",
+    }
+    for _sub_name, _sub_help in _inference_subs.items():
+        _sub = models_subparsers.add_parser(_sub_name, help=_sub_help)
+        _sub.add_argument("--json", action="store_true",
+                          default=argparse.SUPPRESS,
+                          help="Emit machine-readable JSON")
+        _add_inference_flags(_sub)
+        if _sub_name in ("verify", "status", "load", "unload", "evidence"):
+            if _sub_name != "evidence":
+                _sub.add_argument("model_id", nargs="?", default="",
+                                  help="Model id (e.g. reference:reference-clm)")
+            _sub.add_argument("--no-discover", action="store_true",
+                              default=False, dest="no_discover",
+                              help="Use only what is already registered")
+        if _sub_name in ("unload", "create-reference"):
+            _sub.add_argument("--force", action="store_true",
+                              default=argparse.SUPPRESS,
+                              help="Force the operation (override an "
+                                   "existing artifact / in-use protection)")
+        if _sub_name in ("discover", "verify"):
+            # SUPPRESS: `forge models --capability X discover` keeps X.
+            _sub.add_argument("--capability", "-c",
+                              default=argparse.SUPPRESS,
+                              help="Filter by capability")
+        if _sub_name == "discover":
+            _sub.add_argument("--usable-only", action="store_true",
+                              default=False,
+                              help="Only models that are ready and verified")
+        if _sub_name == "backends":
+            _sub.add_argument("--offline", action="store_true", default=False,
+                              help="Do not probe backend health over the "
+                                   "network")
+        if _sub_name == "evidence":
+            _sub.add_argument("--limit", type=int, default=50,
+                              help="Maximum evidence records to show")
+        if _sub_name == "create-reference":
+            _sub.add_argument("path", help="Destination file path "
+                                           "(.forgeref)")
+            _sub.add_argument("--name", default="reference-clm",
+                              help="Model name inside the artifact")
+            _sub.add_argument("--vocab-size", type=int, default=96)
+            _sub.add_argument("--hidden-size", type=int, default=24)
+            _sub.add_argument("--context-chars", type=int, default=64)
+            _sub.add_argument("--seed", type=int, default=20260913)
+    _add_inference_flags(models_parser, suppress=False)
+
+    # `forge infer` - one real generation (local fabric or a Forge Server).
+    infer_parser = subparsers.add_parser(
+        "infer",
+        help="Run one real inference request",
+        description="Generate text through the Session-11 inference fabric. "
+                    "Local by default; --server delegates to a Forge Server "
+                    "(the G560 thin-client path, no local models). Output "
+                    "always reports its provenance: which model and backend "
+                    "produced it, or that the deterministic non-neural "
+                    "fallback answered. A refusal is printed as a refusal.",
+    )
+    infer_parser.add_argument("prompt", nargs="*", default=[],
+                              help="Prompt text (or use --prompt-file/stdin)")
+    infer_parser.add_argument("--prompt-file", default="", metavar="PATH",
+                              help="Read the prompt from a file")
+    infer_parser.add_argument("--context", default="", help="Context text")
+    infer_parser.add_argument("--context-file", default="", metavar="PATH",
+                              help="Read context from a file")
+    infer_parser.add_argument("--capability", "-c", default="",
+                              help="Required capability (hard filter)")
+    infer_parser.add_argument("--model", "-m", default="",
+                              help="Require a specific model id")
+    infer_parser.add_argument("--task", default="", help="Task description")
+    infer_parser.add_argument("--task-id", default="", dest="task_id",
+                              help="Fencing task id")
+    infer_parser.add_argument("--attempt-id", default="", dest="attempt_id",
+                              help="Fencing attempt id")
+    infer_parser.add_argument("--classification", default="",
+                              help="Data classification (SECRET never leaves "
+                                   "the machine)")
+    infer_parser.add_argument("--max-tokens", type=int, default=None,
+                              dest="max_tokens", help="Output token bound")
+    infer_parser.add_argument("--temperature", type=float, default=None,
+                              help="Sampling temperature")
+    infer_parser.add_argument("--timeout", type=float, default=None,
+                              help="Per-request timeout in seconds")
+    infer_parser.add_argument("--stream", action="store_true", default=False,
+                              help="Stream deltas as they are produced")
+    infer_parser.add_argument("--wait", type=float, default=2.0,
+                              help="Long-poll wait per stream batch "
+                                   "(server mode)")
+    infer_parser.add_argument("--no-deterministic", action="store_true",
+                              default=False, dest="no_deterministic",
+                              help="Refuse the non-neural fallback rung")
+    infer_parser.add_argument("--allow-unverified", action="store_true",
+                              default=False, dest="allow_unverified",
+                              help="Let the router consider unverified models")
+    infer_parser.add_argument("--verify", action="store_true", default=False,
+                              help="Verify --model before generating")
+    infer_parser.add_argument("--no-discover", action="store_true",
+                              default=False, dest="no_discover",
+                              help="Skip backend discovery")
+    infer_parser.add_argument("--strict-neural", action="store_true",
+                              default=False, dest="strict_neural",
+                              help="Exit non-zero unless a real model "
+                                   "answered")
+    infer_parser.add_argument("--explain", action="store_true", default=False,
+                              help="Print routing, resource, context, ladder "
+                                   "and observation detail")
+    infer_parser.add_argument("--server", default="", metavar="URL",
+                              help="Delegate to a Forge Server (thin client)")
+    infer_parser.add_argument("--token", default="",
+                              help="Server API key/session token (or "
+                                   "FORGE_SERVER_TOKEN)")
+    infer_parser.add_argument("--json", action="store_true", default=False,
+                              help="Emit machine-readable JSON")
+    _add_inference_flags(infer_parser, suppress=False)
     models_parser.add_argument(
         "--capability",
         "-c",
@@ -2747,7 +3631,13 @@ def main() -> None:
         print(generate_report(analysis))
 
     elif args.command == "models":
+        if (getattr(args, "models_subcommand", "") or "") \
+                in INFERENCE_MODEL_SUBCOMMANDS:
+            raise SystemExit(_run_models_inference(args))
         _run_models(args)
+
+    elif args.command == "infer":
+        raise SystemExit(_run_infer(args))
 
     elif args.command == "runtime":
         raise SystemExit(_run_runtime(args))

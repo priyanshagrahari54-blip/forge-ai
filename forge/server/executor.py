@@ -91,12 +91,47 @@ class ExecutionContext:
     """
 
     def __init__(self, server: Any, task: Any, project: Any,
-                 control: SupervisorControl, checkpoint_id: str = "") -> None:
+                 control: SupervisorControl, checkpoint_id: str = "",
+                 identity: Any = None, fence: Any = None) -> None:
         self.server = server
         self.task = task
         self.project = project
         self.control = control
         self.checkpoint_id = checkpoint_id
+        #: Session 11.5 (§5): who is executing — task, attempt, trace, lease and
+        #: boot. Minted by the worker that holds the lease, never reconstructed
+        #: downstream from a prompt or a timestamp.
+        self.identity = identity
+        #: Session 11.5 (§6/§7): this attempt's fence. A generation bound to it
+        #: is refused the moment the attempt stops being authoritative.
+        self.fence = fence
+
+    # -- execution identity ----------------------------------------------------
+
+    @property
+    def attempt_id(self) -> str:
+        """The authoritative attempt id (the fence's, when there is one)."""
+        if self.fence is not None:
+            return str(getattr(self.fence, "attempt_id", "") or "")
+        if self.identity is not None:
+            return str(getattr(self.identity, "attempt_id", "") or "")
+        return ""
+
+    @property
+    def commit_guard(self) -> Any:
+        """The write-refusal guard for this attempt, or ``None``.
+
+        Built from the *existing* fencing helper: it returns ``""`` while the
+        attempt is authorized and a reason once it is fenced, stale or
+        terminal. The Supervisor already threads it into its write choke
+        points; Session 11.5 also hands it to the inference path, so a
+        superseded attempt cannot publish a generation either.
+        """
+        if self.fence is None:
+            return None
+        from forge.core.fencing import commit_guard
+
+        return commit_guard(self.fence, getattr(self.server, "fences", None))
 
     # -- observability ---------------------------------------------------------
 
@@ -225,6 +260,23 @@ class SupervisorExecutor(TaskExecutor):
 
         server = ctx.server
         fabric = self.fabric if self.fabric is not None else server.fabric
+
+        #: Session 11.5 (§5): the execution identity travels with the fabric, so
+        #: every model call an agent makes carries task/attempt/trace ids and
+        #: this attempt's fence — without a single agent knowing about leases.
+        identity = ctx.identity
+        if identity is None:
+            from forge.models.inference_path import ExecutionIdentity
+
+            identity = ExecutionIdentity.new(
+                str(getattr(ctx.task, "task_id", "") or ""),
+                attempt=int(getattr(ctx.task, "retry_count", 0) or 0) + 1,
+                boot_id=str(getattr(server, "boot_id", "") or ""))
+        binder = getattr(fabric, "bind_identity", None)
+        if callable(binder):
+            fabric = binder(identity, fence=ctx.fence,
+                            fence_registry=getattr(server, "fences", None),
+                            commit_guard=ctx.commit_guard)
         try:
             mode = OperationMode(ctx.task.mode)
         except ValueError:
@@ -251,6 +303,27 @@ class SupervisorExecutor(TaskExecutor):
         ctx.log("Starting Supervisor transaction (mode=%s, profile=%s)"
                 % (mode.value, server.authorizer.profile),
                 source="supervisor")
+        #: §3: which inference path is in effect is stated before the run, not
+        #: inferred afterwards from a model name.
+        path_snapshot = {}
+        try:
+            snapshot = getattr(fabric, "inference_path_snapshot", None)
+            path_snapshot = snapshot() if callable(snapshot) else {}
+        except Exception:                              # noqa: BLE001
+            path_snapshot = {}
+        ctx.log("Inference path: mode=%s attached=%s (attempt=%s)"
+                % (path_snapshot.get("mode", "legacy"),
+                   path_snapshot.get("attached", False),
+                   ctx.attempt_id or "-"),
+                source="supervisor")
+        ctx.emit("inference.path", {
+            "mode": path_snapshot.get("mode", "legacy"),
+            "attached": bool(path_snapshot.get("attached", False)),
+            "task_id": str(getattr(ctx.task, "task_id", "") or ""),
+            "attempt_id": ctx.attempt_id,
+            "trace_id": str(getattr(identity, "trace_id", "") or ""),
+            "boot_id": str(getattr(identity, "boot_id", "") or ""),
+        })
         supervisor = Supervisor(ctx.project.project_id, ctx.project.root)
         outcome = supervisor.run(
             ctx.task.requirement,
@@ -264,11 +337,15 @@ class SupervisorExecutor(TaskExecutor):
             approval_callback=approval_callback,
             on_event=on_event,
             control=ctx.control,
+            #: §7: the attempt fence guards the write choke points inside the
+            #: run, exactly as the inference path guards publication.
+            commit_guard=ctx.commit_guard,
         )
-        return self._finalize(ctx, outcome)
+        return self._finalize(ctx, outcome, identity=identity)
 
     def _finalize(self, ctx: ExecutionContext,
-                  outcome: Dict[str, Any]) -> Dict[str, Any]:
+                  outcome: Dict[str, Any],
+                  identity: Any = None) -> Dict[str, Any]:
         """Attach post-run Git + Verification evidence to the outcome."""
         files = [str(path) for path in outcome.get("files", [])
                  if isinstance(path, str)][:500]
@@ -292,6 +369,11 @@ class SupervisorExecutor(TaskExecutor):
                          or outcome.get("selected_provider")
                          or report.get("provider") or ""),
             "timings": outcome.get("timings", {}),
+            #: §24 — the truth about this task's inference source, durable and
+            #: content-free: which path, which model/backend, neural or
+            #: deterministic, verified or not, and the identity it ran under.
+            "inference": _inference_provenance(outcome, ctx, identity),
+            "attempt_id": ctx.attempt_id,
         }
         if outcome.get("error"):
             result["error"] = str(outcome["error"])[:2000]
@@ -323,5 +405,45 @@ class SupervisorExecutor(TaskExecutor):
             "files": files,
             "model": str(outcome.get("model", "") or ""),
             "provider": str(outcome.get("provider", "") or ""),
+            #: Session 11.5 (§10/§24): the attempt that produced this outcome
+            #: and the bounded provenance of its inference, at the top level so
+            #: events and the durable result agree on both.
+            "attempt_id": ctx.attempt_id,
+            "inference": result.get("inference", {}),
             "result": result,
         }
+
+
+def _inference_provenance(outcome: Dict[str, Any], ctx: ExecutionContext,
+                          identity: Any = None) -> Dict[str, Any]:
+    """Bounded, content-free provenance for a finished task (§10/§24).
+
+    Merges what the run recorded about its model call with the identity the
+    worker minted. Nothing here is invented: a key is present only when
+    something real produced it, and no prompt, context or completion text is
+    ever copied in.
+    """
+    provenance: Dict[str, Any] = {}
+    recorded = outcome.get("inference")
+    if isinstance(recorded, dict):
+        provenance.update(recorded)
+    if identity is not None:
+        for key, value in (("task_id", getattr(identity, "task_id", "")),
+                           ("attempt_id", getattr(identity, "attempt_id", "")),
+                           ("trace_id", getattr(identity, "trace_id", "")),
+                           ("boot_id", getattr(identity, "boot_id", "")),
+                           ("lease_owner",
+                            getattr(identity, "lease_owner", ""))):
+            if value:
+                provenance.setdefault(key, str(value))
+    if ctx.fence is not None:
+        provenance["fence_state"] = str(getattr(ctx.fence, "state", "") or "")
+        provenance["fence_generation"] = int(
+            getattr(ctx.fence, "generation", 0) or 0)
+    snapshot = getattr(ctx.server.fabric, "inference_path_snapshot", None)
+    if callable(snapshot):
+        try:
+            provenance.setdefault("mode", (snapshot() or {}).get("mode", ""))
+        except Exception:                              # noqa: BLE001
+            pass
+    return provenance

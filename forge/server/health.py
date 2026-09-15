@@ -38,6 +38,7 @@ class HealthMonitor:
         components["queue"] = self._check_queue(warnings)
         components["disk"] = self._check_disk(warnings)
         components["approvals"] = self._check_approvals(warnings)
+        components["inference"] = self._check_inference(warnings)
 
         counts = server.tasks.status_counts()
         interrupted = (counts.get("started", 0) + counts.get("running", 0))
@@ -82,6 +83,88 @@ class HealthMonitor:
         return report
 
     # -- component checks ------------------------------------------------------
+
+    def _check_inference(self, warnings: List[str]) -> Dict[str, Any]:
+        """The canonical inference path, without building anything (§15/§33).
+
+        Reading health must not have side effects: the fabric is only described
+        when it already exists, so a health check never discovers, loads or
+        contacts a model. Configuration failures are surfaced as warnings
+        because an operator who cannot see them cannot fix them.
+        """
+        service = getattr(self.server, "inference", None)
+        path_config = getattr(self.server, "inference_path_config", None)
+        mode = str(getattr(path_config, "mode", "legacy") or "legacy")
+        if service is None:
+            return {"ok": True, "enabled": False, "mode": mode}
+        try:
+            payload = service.status()
+        except Exception as exc:                       # noqa: BLE001
+            warnings.append("Inference status unavailable: %s"
+                            % type(exc).__name__)
+            return {"ok": False, "enabled": False, "mode": mode,
+                    "error": type(exc).__name__}
+        enabled = bool(payload.get("enabled"))
+        report: Dict[str, Any] = {
+            "ok": True,
+            "enabled": enabled,
+            "started": bool(payload.get("started")),
+            "mode": mode,
+            "running_requests": payload.get("running_requests"),
+            "max_concurrent_requests": payload.get("max_concurrent_requests"),
+            "invalid_providers": list(payload.get("invalid_providers") or []),
+        }
+        if payload.get("start_error"):
+            warnings.append("Inference could not start: %s"
+                            % str(payload["start_error"])[:200])
+            report["ok"] = False
+            report["start_error"] = str(payload["start_error"])[:200]
+        for item in payload.get("providers") or []:
+            if item.get("state") == "configured":
+                continue
+            #: §15: CONFIGURED → INVALID_CONFIGURATION → UNAVAILABLE, with the
+            #: bounded redacted reason an operator needs.
+            warnings.append(
+                "Remote provider '%s' is %s and cannot serve: %s"
+                % (item.get("provider_id", "?"), item.get("state", "?"),
+                   str(item.get("reason") or "no reason recorded")[:160]))
+            report["ok"] = False
+        fabric_built = getattr(service, "_fabric", None)
+        if fabric_built is not None:
+            try:
+                fabric_state = fabric_built.status()
+                models = fabric_state.get("models") or {}
+                report["models"] = {
+                    "total": models.get("total"),
+                    "verified": models.get("verified"),
+                    "usable": models.get("usable"),
+                    "local": models.get("local"),
+                    "remote": models.get("remote"),
+                }
+                #: Bounded backend summary: kinds and reachability only, never
+                #: endpoints, credentials or model output.
+                backends = fabric_state.get("backends") or []
+                report["backends"] = {
+                    "count": len(backends),
+                    "configured": sum(1 for item in backends
+                                      if item.get("configured")),
+                    "reachable": sum(1 for item in backends
+                                     if item.get("reachable")),
+                    "verified": sum(1 for item in backends
+                                    if item.get("verified")),
+                }
+                counters = fabric_state.get("counters") or {}
+                if counters:
+                    report["counters"] = dict(counters)
+            except Exception as exc:                   # noqa: BLE001
+                report["fabric_error"] = type(exc).__name__
+        fences = getattr(self.server, "fences", None)
+        if fences is not None:
+            try:
+                report["fences"] = fences.snapshot(limit=20)
+            except Exception as exc:                   # noqa: BLE001
+                report["fences_error"] = type(exc).__name__
+        return report
 
     def _check_database(self, warnings: List[str]) -> Dict[str, Any]:
         try:

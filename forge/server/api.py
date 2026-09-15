@@ -49,6 +49,12 @@ from forge.server.errors import (
     RateLimited,
     ServerError,
 )
+from forge.server.inference import (
+    MAX_CONTEXT_CHARS,
+    MAX_OUTPUT_TOKENS,
+    MAX_PROMPT_CHARS,
+    MAX_TIMEOUT_SECONDS,
+)
 from forge.server.models import TaskStatus
 
 #: API version prefix.
@@ -105,6 +111,66 @@ class KeyCreateRequest(_Strict):
 
 class NotificationsReadAllRequest(_Strict):
     project_id: str = Field(default="", max_length=128)
+
+
+# -- inference schemas (Session 11) ---------------------------------------------
+#
+# These are *data* schemas: a prompt plus typed generation parameters and
+# fence/trace identifiers. There is no field for a command, script, argv or
+# code payload, and unknown fields are rejected — the inference surface is no
+# more a remote shell than the task surface is. Bounds come from
+# :mod:`forge.server.inference` so the API and the service agree.
+
+class InferenceGenerateRequest(_Strict):
+    prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
+    context: str = Field(default="", max_length=MAX_CONTEXT_CHARS)
+    #: Empty means "no capability requirement": the router then selects on
+    #: identity, verification, resources and policy alone. Naming a capability
+    #: is a hard filter that is never relaxed, so a model that does not
+    #: advertise it is honestly refused rather than silently substituted.
+    capability: str = Field(default="", max_length=32)
+    required_capabilities: List[str] = Field(default_factory=list)
+    task: str = Field(default="", max_length=512)
+    model: str = Field(default="", max_length=200)
+    backend: str = Field(default="", max_length=64)
+    min_context_window: int = Field(default=0, ge=0, le=10 ** 7)
+    max_output_tokens: Optional[int] = Field(default=None, ge=1,
+                                             le=MAX_OUTPUT_TOKENS)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    complexity: float = Field(default=1.0, ge=0.0, le=100.0)
+    timeout: Optional[float] = Field(default=None, ge=0.5,
+                                     le=MAX_TIMEOUT_SECONDS)
+    #: Fencing identifiers: a stale attempt is rejected, not answered.
+    task_id: str = Field(default="", max_length=128)
+    attempt_id: str = Field(default="", max_length=128)
+    trace_id: str = Field(default="", max_length=64)
+    #: Data classification and placement hints (policy decides, not us).
+    classification: str = Field(default="", max_length=16)
+    hardware_profile: str = Field(default="", max_length=32)
+    network_policy: str = Field(default="", max_length=16)
+    allow_deterministic: bool = True
+
+
+class ModelVerifyRequest(_Strict):
+    model_id: str = Field(default="", max_length=200)
+    backend_id: str = Field(default="", max_length=64)
+
+
+class ModelLoadRequest(_Strict):
+    model_id: str = Field(min_length=1, max_length=200)
+    timeout: Optional[float] = Field(default=None, ge=0.5,
+                                     le=MAX_TIMEOUT_SECONDS)
+
+
+class ModelUnloadRequest(_Strict):
+    model_id: str = Field(min_length=1, max_length=200)
+    #: Force drops refcount protection. In-use models are otherwise kept.
+    force: bool = False
+
+
+class InferenceCancelRequest(_Strict):
+    request_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="operator", max_length=64)
 
 
 # -- error rendering -------------------------------------------------------------
@@ -560,7 +626,23 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - flat route table
         task = backend.tasks.get_or_raise(task_id)
         payload = task.to_dict(include_result=task.terminal)
         payload["queue_position"] = backend.queue.position(task_id)
+        #: §10 — durable inference state travels with the task read: which path
+        #: handled it, which attempt/generation, and whether that attempt is
+        #: still authorized to publish.
+        try:
+            payload["inference"] = backend.task_inference_state(task_id)
+        except Exception:                              # noqa: BLE001
+            #: a task read must not fail because inference state is missing
+            payload["inference"] = {"task_id": task_id, "available": False}
         return {"task": payload}
+
+    @app.get(prefix + "/tasks/{task_id}/inference")
+    def get_task_inference(request: Request, task_id: str) -> Dict[str, Any]:
+        """§10 — the inference job state of one task, on its own typed route."""
+        _require(request, "task.read")
+        backend = _server(request)
+        return {"task_id": task_id,
+                "inference": backend.task_inference_state(task_id)}
 
     @app.post(prefix + "/tasks/{task_id}/pause")
     def pause_task(payload: TaskActionRequest, request: Request,
@@ -707,6 +789,109 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - flat route table
         backend = _server(request)
         return {"marked": backend.notifications.mark_all_read(
             payload.project_id)}
+
+    # -- models & inference (Session 11) -------------------------------------------------
+    #
+    # The server is the authoritative inference surface: policy, resource
+    # limits, model selection, execution and audit all happen here. A G560
+    # thin client submits these typed requests and displays the results.
+    # Inference is disabled unless the operator enabled it; a disabled
+    # service answers 503 INFERENCE_NOT_CONFIGURED rather than inventing an
+    # answer.
+
+    def _inference(request: Request) -> Any:
+        return _server(request).inference
+
+    @app.get(prefix + "/models")
+    def list_models(request: Request) -> Dict[str, Any]:
+        _require(request, "models.list")
+        backend_id = _query_str(request, "backend")[:64]
+        capability = _query_str(request, "capability")[:32]
+        usable_only = _query_str(request, "usable_only", "0") not in (
+            "0", "false", "")
+        # Discovery touches backends; it stays opt-in and rate-limited.
+        discover = _query_str(request, "discover", "0") not in ("0", "false",
+                                                                "")
+        if discover:
+            _limit(request, _principal(request), "models-discover")
+        return _inference(request).models_list(
+            backend_id=backend_id, capability=capability,
+            usable_only=usable_only, discover=discover)
+
+    @app.get(prefix + "/models/status")
+    def models_status(request: Request) -> Dict[str, Any]:
+        _require(request, "models.status")
+        model_id = _query_str(request, "model_id")[:200]
+        return _inference(request).models_status(model_id)
+
+    @app.post(prefix + "/models/verify")
+    def models_verify(payload: ModelVerifyRequest,
+                      request: Request) -> Dict[str, Any]:
+        principal = _require(request, "models.verify")
+        _limit(request, principal, "models-verify")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).models_verify(
+            payload.model_id, backend_id=payload.backend_id)
+
+    @app.post(prefix + "/models/load")
+    def models_load(payload: ModelLoadRequest,
+                    request: Request) -> Dict[str, Any]:
+        principal = _require(request, "models.load")
+        _limit(request, principal, "models-load")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).models_load(payload.model_id,
+                                               timeout=payload.timeout)
+
+    @app.post(prefix + "/models/unload")
+    def models_unload(payload: ModelUnloadRequest,
+                      request: Request) -> Dict[str, Any]:
+        principal = _require(request, "models.unload")
+        _limit(request, principal, "models-load")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).models_unload(payload.model_id,
+                                                 force=bool(payload.force))
+
+    @app.post(prefix + "/inference/generate")
+    def inference_generate(payload: InferenceGenerateRequest,
+                           request: Request) -> Dict[str, Any]:
+        principal = _require(request, "inference.generate")
+        _limit(request, principal, "inference")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).inference_generate(
+            payload.model_dump(), actor=principal.name)
+
+    @app.post(prefix + "/inference/stream")
+    def inference_stream(payload: InferenceGenerateRequest,
+                         request: Request) -> Dict[str, Any]:
+        principal = _require(request, "inference.stream")
+        _limit(request, principal, "inference")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).inference_stream(
+            payload.model_dump(), actor=principal.name)
+
+    @app.get(prefix + "/inference/streams/{stream_id}/events")
+    def inference_stream_events(request: Request,
+                                stream_id: str) -> Dict[str, Any]:
+        _require(request, "inference.stream_events")
+        after = _query_int(request, "after", 0, low=0)
+        wait = _query_float(request, "wait", 0.0, low=0.0,
+                            high=MAX_WAIT_SECONDS)
+        return _inference(request).inference_stream_events(
+            stream_id[:64], after=after, wait=wait)
+
+    @app.post(prefix + "/inference/cancel")
+    def inference_cancel(payload: InferenceCancelRequest,
+                         request: Request) -> Dict[str, Any]:
+        principal = _require(request, "inference.cancel")
+        _limit(request, principal, "inference")
+        reject_execution_vectors(payload.model_dump())
+        return _inference(request).inference_cancel(
+            payload.request_id, reason=payload.reason)
+
+    @app.get(prefix + "/inference/status")
+    def inference_status(request: Request) -> Dict[str, Any]:
+        _require(request, "inference.status")
+        return _inference(request).inference_status()
 
     # -- operations: recovery, health, status, policy ---------------------------------------------
 

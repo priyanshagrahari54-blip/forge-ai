@@ -27,8 +27,16 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional, Set
 
+from forge.core.fencing import (
+    CANCELLED as FENCE_CANCELLED,
+    FAILED as FENCE_FAILED,
+    FENCED as FENCE_FENCED,
+    SUCCEEDED as FENCE_SUCCEEDED,
+    StaleAttemptError,
+)
 from forge.core.report import redact
 from forge.core.run_control import SupervisorControl, TaskCancelled
+from forge.models.inference_path import ExecutionIdentity
 from forge.server.errors import ServerError, VersionConflict
 from forge.server.executor import ExecutionContext
 from forge.server.models import TaskStatus
@@ -155,36 +163,76 @@ def run_task(server: Any, task_id: str, owner: str,
         server.emit(task_id, project_id, "task.running",
                     {"checkpoint_id": checkpoint_id})
 
-        ctx = ExecutionContext(server, task, 
+        #: Session 11.5 (§5-§9): one attempt fence per lease, minted here where
+        #: the truth is known. Every generation this attempt starts is bound to
+        #: it, and every terminal transition below settles it — so a zombie
+        #: worker, a superseded retry or a cancelled run cannot publish.
+        fence, identity = _begin_attempt(server, task_id, task, owner)
+        ctx = ExecutionContext(server, task,
                                server.projects.get_or_raise(project_id),
-                               control, checkpoint_id)
+                               control, checkpoint_id,
+                               identity=identity, fence=fence)
         try:
             outcome = server.executor.execute(ctx)
         except TaskCancelled as exc:
+            _settle_attempt(server, task_id, project_id, fence, "cancelled",
+                            reason=str(exc)[:200])
             _finish_cancelled(server, task_id, project_id, owner, str(exc))
             return
         except Exception as exc:  # infrastructure failure → bounded retry
+            _settle_attempt(server, task_id, project_id, fence, "failed",
+                            reason="worker error")
             _finish_failed(server, task_id, project_id, owner,
                            "Worker error: %s" % exc, retry=True)
             return
 
         if not server.queue.lease_held_by(task_id, owner):
             # A restart happened mid-run: our lease is gone and the task
-            # has been re-queued (or failed) by recovery. Discard.
+            # has been re-queued (or failed) by recovery. Discard — and fence
+            # the attempt, so anything it produced (including a generation
+            # still in flight) is refused publication rather than ignored.
+            _settle_attempt(server, task_id, project_id, fence, "fenced",
+                            reason="lease lost after restart")
             server.log(task_id, project_id,
                        "Lease lost after server restart; discarding "
-                       "stale worker outcome.", level="warning",
-                       source="worker")
+                       "stale worker outcome and fencing attempt %s."
+                       % (getattr(fence, "attempt_id", "-") or "-"),
+                       level="warning", source="worker")
             return
         if control.cancel_requested or outcome.get("cancelled"):
+            #: §7 — even the cancellation write needs authority: a superseded
+            #: attempt must not stamp CANCELLED over its successor's record.
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "cancelled outcome")
+                return
+            _settle_attempt(server, task_id, project_id, fence, "cancelled",
+                            reason="cancelled by operator")
             _finish_cancelled(server, task_id, project_id, owner,
                               "Cancelled by operator.",
                               files=outcome.get("files"))
             return
         task = server.tasks.get_or_raise(task_id)
         if outcome.get("accepted"):
+            #: §7/§9 — checked *before* the commit, because committing
+            #: SUCCEEDED is itself a terminal transition: an attempt that lost
+            #: authority mid-run must discard its result, not publish it.
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "completed outcome")
+                return
+            _settle_attempt(server, task_id, project_id, fence, "succeeded",
+                            reason="task accepted",
+                            payload={"attempt_id": ctx.attempt_id,
+                                     "files": len(outcome.get("files") or [])})
             _finish_completed(server, task, owner, outcome)
         else:
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "failed outcome")
+                return
+            _settle_attempt(server, task_id, project_id, fence, "failed",
+                            reason="task rejected by the pipeline")
             _finish_failed(server, task_id, project_id, owner,
                            str(outcome.get("error") or
                                "Task rejected by the pipeline."),
@@ -244,6 +292,162 @@ def _fenced(server: Any, task_id: str, owner: str) -> bool:
     return server.queue.lease_held_by(task_id, owner)
 
 
+def _may_publish(server: Any, task_id: str, owner: str,
+                 fence: Any = None) -> bool:
+    """One answer to "may this attempt publish?" (§7/§8/§9).
+
+    Two independent authorities must agree, and uncertainty is denial:
+
+    * the queue lease — this process still owns the task; and
+    * the attempt fence — this attempt is still the authorized generation and
+      is still in a state that may commit.
+
+    A lease without a fence is not permission, and a fence without a lease is
+    not either. The registry's view of the fence wins over the copy the worker
+    holds, so a superseded attempt cannot talk itself into publishing.
+    """
+    try:
+        if not server.queue.lease_held_by(task_id, owner):
+            return False
+    except Exception:                                  # noqa: BLE001
+        return False
+    fences = getattr(server, "fences", None)
+    if fences is None or fence is None:
+        #: No authority exists to consult (legacy wiring): the lease is all
+        #: there is, and refusing here would break tasks that never had fences.
+        return True
+    try:
+        return bool(fences.is_authorized(fence))
+    except Exception:                                  # noqa: BLE001
+        return False
+
+
+def _discard_unauthorized(server: Any, task_id: str, project_id: str,
+                          owner: str, fence: Any, kind: str) -> None:
+    """Throw away an outcome this attempt may no longer publish (§9).
+
+    The task record belongs to whoever holds authority now — a successor
+    attempt, or the operator who cancelled. Writing to it from here is exactly
+    the overwrite §9 forbids, so the attempt is fenced, the discard is logged
+    and emitted as bounded metadata, and the record is left untouched.
+    """
+    attempt_id = str(getattr(fence, "attempt_id", "") or "")
+    _settle_attempt(server, task_id, project_id, fence, "fenced",
+                    reason="publish refused: %s" % kind)
+    try:
+        server.log(
+            task_id, project_id,
+            "Discarded %s from attempt %s: the attempt is no longer authorized "
+            "to publish (lease held: %s)."
+            % (kind, attempt_id or "-",
+               bool(server.queue.lease_held_by(task_id, owner))),
+            level="warning", source="worker")
+    except Exception:                                  # noqa: BLE001
+        pass
+    try:
+        server.emit(task_id, project_id, "attempt.fenced",
+                    {"attempt_id": attempt_id[:128],
+                     "reason": "unauthorized_publish",
+                     "kind": str(kind)[:64]})
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
+def _begin_attempt(server: Any, task_id: str, task: Any,
+                   owner: str) -> "tuple":
+    """Begin this lease's attempt fence and mint its execution identity.
+
+    Uses the server's existing :class:`~forge.core.fencing.FenceRegistry` — the
+    same authority the DAG scheduler uses — so there is one source of truth for
+    "may this attempt still publish?". The generation high-water mark is seeded
+    from the durable retry count, which is what stops a restarted process from
+    reusing a generation number a dead boot already owned (§12).
+
+    A fence that cannot be established is reported, not papered over: with no
+    fence the inference path refuses task-bound generations (§6), which is the
+    intended failure direction.
+    """
+    attempt_no = int(getattr(task, "retry_count", 0) or 0) + 1
+    identity = ExecutionIdentity.new(
+        task_id, attempt=attempt_no,
+        boot_id=str(getattr(server, "boot_id", "") or ""),
+        lease_owner=str(owner or ""))
+    fences = getattr(server, "fences", None)
+    if fences is None:
+        return None, identity
+    fence = None
+    try:
+        fences.seed_generation(task_id, attempt_no - 1)
+        fence = fences.begin(task_id, owner=str(owner or ""))
+        fence = fences.mark_running(task_id, fence)
+        #: One authoritative attempt id: the fence's. The inference path, the
+        #: audit trail and the durable result all quote the same string.
+        identity.attempt_id = str(getattr(fence, "attempt_id", "")
+                                  or identity.attempt_id)
+    except Exception as exc:                          # noqa: BLE001
+        try:
+            server.log(task_id, getattr(task, "project_id", "") or "",
+                       "Attempt fence could not be established (%s); "
+                       "task-bound inference will be refused until it is."
+                       % type(exc).__name__,
+                       level="error", source="worker")
+        except Exception:                             # noqa: BLE001
+            pass
+        fence = None
+    return fence, identity
+
+
+def _settle_attempt(server: Any, task_id: str, project_id: str, fence: Any,
+                    terminal: str, *, reason: str = "",
+                    payload: Any = None) -> str:
+    """Record the attempt's terminal fence state. Returns what was recorded.
+
+    ``succeeded``/``failed`` commit; ``cancelled`` runs the two-phase
+    cancel → confirm; ``fenced`` invalidates (crash, restart, lease loss). A
+    refusal here is the fence doing its job — a stale attempt is told so and
+    the current attempt keeps authority (§9).
+    """
+    fences = getattr(server, "fences", None)
+    if fences is None or fence is None:
+        return "no-fence"
+    #: The registry's own vocabulary (uppercase states). A worker that guesses the
+    #: spelling gets a StateConflictError, which would look like a fence bug.
+    wanted = str(terminal or "").lower()
+    try:
+        if wanted == "cancelled":
+            fences.cancel(task_id)
+            fences.confirm_cancelled(task_id, fence, reason=reason or "cancelled")
+            return str(FENCE_CANCELLED)
+        if wanted == "fenced":
+            fences.fence(task_id, fence, reason=reason or "fenced")
+            return str(FENCE_FENCED)
+        state = {"succeeded": FENCE_SUCCEEDED, "completed": FENCE_SUCCEEDED,
+                 "failed": FENCE_FAILED, "error": FENCE_FAILED}.get(wanted)
+        if state is None:
+            raise ValueError("unknown terminal state %r" % terminal)
+        record = fences.commit(task_id, fence, state, payload=payload)
+        return str(record.get("state", state))
+    except StaleAttemptError as exc:
+        try:
+            server.log(task_id, project_id,
+                       "Attempt %s is no longer authoritative; its result was "
+                       "not published (%s)."
+                       % (getattr(fence, "attempt_id", "?"), str(exc)[:200]),
+                       level="warning", source="worker")
+        except Exception:                             # noqa: BLE001
+            pass
+        return "stale"
+    except Exception as exc:                          # noqa: BLE001
+        try:
+            server.log(task_id, project_id,
+                       "Attempt fence could not record %s: %s"
+                       % (terminal, type(exc).__name__),
+                       level="error", source="worker")
+        except Exception:                             # noqa: BLE001
+            pass
+        return "error"
+
+
 def _finish_completed(server: Any, task: Any, owner: str,
                       outcome: Dict[str, Any]) -> None:
     task_id = task.task_id
@@ -259,10 +463,34 @@ def _finish_completed(server: Any, task: Any, owner: str,
         expected=(TaskStatus.RUNNING, TaskStatus.STARTED,
                   TaskStatus.WAITING_FOR_APPROVAL, TaskStatus.PAUSED),
         result_json=payload, error="", stage="completed", progress=1.0)
+    inference = outcome.get("inference")
+    if not isinstance(inference, dict):
+        inference = {}
     server.emit(task_id, project_id, "task.completed",
                 {"files": outcome.get("files", []),
                  "model": outcome.get("model", ""),
-                 "provider": outcome.get("provider", "")})
+                 "provider": outcome.get("provider", ""),
+                 #: §24 — the event says which path answered, whether it was
+                 #: neural and whether the model was verified. Identifiers and
+                 #: verdicts only: no prompt, no completion, no credentials.
+                 "attempt_id": outcome.get("attempt_id", ""),
+                 "inference": {
+                     "path": inference.get("path", ""),
+                     "mode": inference.get("inference_mode",
+                                           inference.get("mode", "")),
+                     "model_id": inference.get("model", ""),
+                     "backend_id": inference.get("backend_id", ""),
+                     "neural": bool(inference.get("neural", False)),
+                     "deterministic": bool(inference.get("deterministic",
+                                                         False)),
+                     "verified": inference.get("verification_state", "")
+                     == "verified",
+                     "verification_state":
+                         inference.get("verification_state", ""),
+                     "generation_id": inference.get("generation_id", ""),
+                     "request_id": inference.get("request_id", ""),
+                     "error_code": inference.get("error_code", ""),
+                 }})
     server.log(task_id, project_id, "Task completed successfully.",
                source="worker")
     server.notify(project_id, "task.completed",

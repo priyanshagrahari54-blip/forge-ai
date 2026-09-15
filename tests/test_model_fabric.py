@@ -148,9 +148,14 @@ def test_structured_request_response_roundtrip():
 def test_snapshot_contains_all_parts():
     fabric = ModelFabric.from_defaults()
     snap = fabric.snapshot()
+    #: Session 11.5 added ``inference_path``: which path would serve a request
+    #: is part of the fabric's observable state, not an implementation detail.
     assert set(snap) == {"models", "providers", "policy", "capabilities",
-                         "telemetry_events", "router_history"}
+                         "telemetry_events", "router_history",
+                         "inference_path"}
     assert isinstance(snap["policy"], dict)
+    assert snap["inference_path"]["attached"] is False
+    assert snap["inference_path"]["mode"] == "legacy"
 
 
 def test_telemetry_never_contains_prompt_content():

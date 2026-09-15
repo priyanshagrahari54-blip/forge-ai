@@ -18,6 +18,10 @@ class ModelResult:
     input_tokens: int = 0
     output_tokens: int = 0
     latency: float = 0.0
+    #: Session 11: provenance a routed caller may need (backend id, terminal
+    #: state, whether a real model produced the text). Metadata only — never
+    #: prompt or credential material.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def compose_provider_prompt(

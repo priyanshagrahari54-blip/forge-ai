@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import urllib.parse
@@ -392,11 +393,39 @@ class FetchOutcome:
         }
 
 
+#: An audit record is a log, and a log must not carry a secret. A URL may
+#: embed credentials in its userinfo (``https://user:pass@host/``), and a
+#: reason may echo an ``Authorization`` value or a redirect ``Location``, so
+#: both are scrubbed here — in one place, for every caller (Session 11).
+_USERINFO_RE = re.compile(r"//[^/\s@]+@")
+#: ``Authorization: Bearer <token>`` — the scheme and its value go together.
+_CREDENTIAL_VALUE_RE = re.compile(
+    r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*")
+#: ``api_key=<value>``-shaped pairs, whatever separates the name and value.
+_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(token|api[-_]?key|authorization|password)\b"
+    r"[\s:=]+[^\s,;\"']+")
+
+
+def _redact_audit_text(text: Any, *, limit: int = 400) -> str:
+    """Strip URL userinfo and credential-shaped values from audited text."""
+    value = str(text or "")
+    value = _USERINFO_RE.sub("//", value)
+    value = _CREDENTIAL_VALUE_RE.sub("[redacted]", value)
+    value = _CREDENTIAL_RE.sub(
+        lambda match: "%s=[redacted]" % match.group(1), value)
+    return value[:limit]
+
+
 def _audit(audit: Any, agent: str, operation: str, scope: str,
            allowed: bool, reason: str) -> None:
     """Best-effort audit logging through the Forge AuditLog interface."""
     if audit is None:
         return
+    #: Redaction happens before the sink sees anything, so no callback can
+    #: persist a credential even by accident.
+    scope = _redact_audit_text(scope)
+    reason = _redact_audit_text(reason)
     try:
         record = getattr(audit, "record_decision", None)
         if record is None:
@@ -642,6 +671,177 @@ def fetch(url: str, *, policy: FetchPolicy | None = None,
             outcome.redirects = redirects
             outcome.error_state = f"connection error: {exc}"
             return outcome
+
+
+#: Methods the hardened requester will send. Closed set: an inference or API
+#: call never needs anything else, and a caller cannot smuggle an exotic verb.
+ALLOWED_METHODS: tuple[str, ...] = ("GET", "POST")
+
+#: Default bound for a JSON API response body (a completion, not a download).
+DEFAULT_JSON_MAX_BYTES = 4 * 1024 * 1024
+
+
+def request(method: str, url: str, *, payload: bytes | None = None,
+            headers: dict[str, str] | None = None,
+            policy: FetchPolicy | None = None, audit: Any = None,
+            allow_redirects: bool = False,
+            max_bytes: int = DEFAULT_JSON_MAX_BYTES) -> FetchOutcome:
+    """One bounded, SSRF-hardened API request (``GET``/``POST``).
+
+    This is :func:`fetch` for *API* calls rather than page retrieval, and it
+    is stricter in the ways an inference endpoint needs:
+
+    * **Redirects are refused by default.** A 3xx is returned as a blocked
+      outcome instead of being followed, so no response can silently retarget
+      a request (or its credentials) to another host.
+    * The body is bounded by ``max_bytes`` and the content type must be JSON
+      (or text) — an oversized or binary answer is refused before it is read.
+    * The same scheme → hostname → DNS → IP → port chain runs as for
+      :func:`fetch`, the connection is pinned to the validated address, and
+      TLS is validated against the real hostname (no DNS-rebinding window).
+    * Only identity transfer encoding is accepted.
+
+    Caller-supplied headers are forwarded, but ``Host``, ``Connection``,
+    ``Accept-Encoding`` and ``Content-Length`` are always set here so a header
+    cannot defeat pinning or the size bound.
+    """
+    policy = policy or FetchPolicy()
+    verb = (method or "GET").strip().upper()
+    outcome = FetchOutcome(ok=False, final_url=url)
+    if verb not in ALLOWED_METHODS:
+        outcome.blocked = True
+        outcome.blocked_reason = (
+            f"method {method!r} is not permitted (allowed: "
+            f"{', '.join(ALLOWED_METHODS)})")
+        return outcome
+
+    try:
+        scheme, host, port, path = parse_and_validate(url, policy)
+    except SSRFError as exc:
+        outcome.blocked = True
+        outcome.blocked_reason = exc.reason
+        _audit(audit, policy.audit_agent, policy.audit_operation,
+               scope=url[:200], allowed=False, reason=exc.reason)
+        return outcome
+
+    try:
+        ip_text, _family = resolve_public_ips(host, policy)
+    except SSRFError as exc:
+        outcome.blocked = True
+        outcome.blocked_reason = exc.reason
+        _audit(audit, policy.audit_agent, policy.audit_operation,
+               scope=url[:200], allowed=False, reason=exc.reason)
+        return outcome
+
+    _audit(audit, policy.audit_agent, policy.audit_operation,
+           scope=f"{url[:200]} -> {ip_text}", allowed=True,
+           reason="ssrf chain passed")
+
+    body = payload or b""
+    sent_headers = {
+        "Host": host if port in (80, 443) else f"{host}:{port}",
+        "User-Agent": policy.user_agent,
+        "Accept": "application/json",
+        "Accept-Encoding": "identity",   # no decompression bombs
+        "Connection": "close",
+    }
+    for key, value in (headers or {}).items():
+        if key.lower() in ("host", "connection", "accept-encoding",
+                           "content-length", "transfer-encoding"):
+            continue    # never let a caller override the hardening headers
+        sent_headers[key] = value
+    if body:
+        sent_headers["Content-Length"] = str(len(body))
+
+    secure = scheme == "https"
+    context = ssl.create_default_context() if secure else None
+    conn = _PinnedConnection(ip_text, host, port, secure=secure,
+                             timeout=policy.timeout, context=context)
+    try:
+        conn.request(verb, path, body=body or None, headers=sent_headers)
+        response = conn.getresponse()
+        status = response.status
+        content_type = (response.headers.get("Content-Type", "") or "")
+        content_type = content_type.split(";")[0].strip().lower()
+        outcome.status = status
+        outcome.content_type = content_type
+        outcome.final_url = url
+
+        if status in (301, 302, 303, 307, 308):
+            location = _redact_audit_text(
+                response.headers.get("Location", "") or "", limit=200)
+            if not allow_redirects:
+                outcome.blocked = True
+                outcome.blocked_reason = (
+                    "redirects are refused for API requests: the endpoint "
+                    f"answered {status} with Location {location!r}")
+                _audit(audit, policy.audit_agent, policy.audit_operation,
+                       scope=url[:200], allowed=False,
+                       reason=outcome.blocked_reason)
+                return outcome
+            outcome.error_state = "redirect following is not supported here"
+            return outcome
+
+        encoding = (response.headers.get("Content-Encoding", "") or "").lower()
+        if encoding and encoding != "identity":
+            outcome.error_state = (
+                f"compressed transfer ({encoding}) is refused; re-request "
+                "with identity encoding only")
+            return outcome
+
+        length_header = response.headers.get("Content-Length")
+        if length_header is not None:
+            try:
+                if int(length_header) > max_bytes:
+                    outcome.error_state = (
+                        f"response body exceeds the {max_bytes}-byte limit")
+                    return outcome
+            except ValueError:
+                pass
+
+        if content_type and not content_type.startswith(
+                ("application/json", "text/", "application/x-ndjson")):
+            outcome.error_state = (
+                f"content-type {content_type!r} is not a JSON/text answer")
+            return outcome
+
+        data = b""
+        while True:
+            chunk = response.read(min(65536, max_bytes - len(data) + 1))
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > max_bytes:
+                outcome.error_state = (
+                    f"response body exceeds the {max_bytes}-byte limit")
+                return outcome
+        outcome.body = data
+        outcome.bytes_read = len(data)
+        outcome.ok = status < 400
+        if not outcome.ok:
+            outcome.error_state = outcome.error_state or (
+                f"endpoint answered HTTP {status}")
+        _audit(audit, policy.audit_agent, policy.audit_operation,
+               scope=url[:200], allowed=outcome.ok,
+               reason=f"http {status}, {len(data)} bytes")
+        return outcome
+    except socket.timeout:
+        outcome.error_state = f"request timed out after {policy.timeout}s"
+        return outcome
+    except ssl.SSLError as exc:
+        outcome.error_state = f"TLS error: {exc}"
+        return outcome
+    except http.client.HTTPException as exc:
+        outcome.error_state = f"HTTP error: {exc}"
+        return outcome
+    except OSError as exc:
+        outcome.error_state = f"connection error: {exc}"
+        return outcome
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 #: Convenience policy used by the research engine for page extraction.
