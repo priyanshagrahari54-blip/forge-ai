@@ -965,6 +965,106 @@ class ForgeServer:
             payload.setdefault("fence_state", "unknown")
         return payload
 
+    def resource_hierarchy(self) -> Dict[str, Any]:
+        """§17 — the resource layers, what each owns, and the effective limit.
+
+        One hierarchy, top down::
+
+            GLOBAL SERVER → PROJECT → TASK → ATTEMPT → INFERENCE
+                          → MODEL RESIDENCY → BACKEND
+
+        Each layer declares what it owns and the limit it enforces; a child's
+        *effective* capacity is ``min(parent effective, own limit)``, so no
+        layer can widen the layer above it — configuring a bigger number downstream
+        is recorded as the parent's limit, not honoured as a raise. Reading this
+        reserves nothing and changes nothing.
+        """
+        budget = self.governor.profile.budget
+        inference = self.inference.config
+        device_workers = max(1, int(budget.max_workers))
+        pool_workers = max(1, int(self.pool.max_workers))
+        per_project = max(1, int(self.config.max_tasks_per_project))
+        inference_slots = max(1, int(inference.max_concurrent_requests))
+        memory_bytes = int(budget.model_memory_mb or 0) * 1024 * 1024
+        resident_bytes = int(inference.max_resident_bytes or 0)
+
+        #: effective concurrency, narrowed at every layer it passes through
+        task_level = min(device_workers, pool_workers)
+        project_level = min(task_level, per_project)
+        inference_level = min(project_level, inference_slots)
+        #: residency bytes: a thin client (0 MB) loads nothing, whatever the
+        #: inference service was configured to cache.
+        effective_resident_bytes = (min(memory_bytes, resident_bytes)
+                                    if memory_bytes > 0 else 0)
+
+        layers = [
+            {"layer": "server", "scope": "global",
+             "owns": ["cpu", "ram", "gpu", "network", "cost", "wall_clock"],
+             "limits": {"max_workers": device_workers,
+                        "model_memory_mb": int(budget.model_memory_mb or 0),
+                        "network_policy": str(budget.network_policy or ""),
+                        "max_cost_usd": float(budget.max_cost_usd or 0.0),
+                        "max_task_wall_seconds":
+                            float(budget.max_task_wall_seconds or 0.0)},
+             "effective_concurrency": device_workers,
+             "source": "resource profile %r"
+                       % self.governor.profile.name},
+            {"layer": "worker_pool", "scope": "server",
+             "owns": ["concurrent_tasks"],
+             "limits": {"max_workers": pool_workers},
+             "effective_concurrency": task_level,
+             "source": "ServerConfig.max_workers"},
+            {"layer": "project", "scope": "per project",
+             "owns": ["task_admission"],
+             "limits": {"max_tasks_per_project": per_project},
+             "effective_concurrency": project_level,
+             "source": "ServerConfig.max_tasks_per_project"},
+            {"layer": "task", "scope": "per task",
+             "owns": ["worker_slot", "wall_clock", "checkpoint"],
+             "limits": {"attempts_in_flight": 1,
+                        "max_task_wall_seconds":
+                            float(budget.max_task_wall_seconds or 0.0)},
+             "effective_concurrency": 1,
+             "source": "TaskQueue lease"},
+            {"layer": "attempt", "scope": "per lease",
+             "owns": ["lease", "fence", "generation", "publish_authority"],
+             "limits": {"authoritative_attempts": 1},
+             "effective_concurrency": 1,
+             "source": "FenceRegistry + ExecutionAuthority"},
+            {"layer": "inference", "scope": "per server",
+             "owns": ["concurrent_generations", "concurrent_streams"],
+             "limits": {"max_concurrent_requests": inference_slots},
+             "effective_concurrency": inference_level,
+             "source": "InferenceServiceConfig.max_concurrent_requests"},
+            {"layer": "model_residency", "scope": "per fabric",
+             "owns": ["model_slots", "resident_bytes", "idle_unload"],
+             "limits": {"max_model_slots": int(inference.max_model_slots),
+                        "max_resident_bytes": resident_bytes,
+                        "idle_unload_seconds":
+                            float(inference.idle_unload_seconds or 0.0)},
+             "effective_resident_bytes": effective_resident_bytes,
+             "source": "ModelResidencyCache"},
+            {"layer": "backend", "scope": "per backend",
+             "owns": ["provider_limits", "network_access", "request_timeout"],
+             "limits": {"requires_network": bool(inference.allow_network),
+                        "auto_verify": bool(inference.auto_verify)},
+             "source": "backend protocol"},
+        ]
+        return {
+            "profile": self.governor.profile.to_dict(),
+            "layers": layers,
+            "effective": {
+                "concurrent_tasks": task_level,
+                "concurrent_tasks_per_project": project_level,
+                "concurrent_inference_requests": inference_level,
+                "resident_bytes": effective_resident_bytes,
+                "model_slots": int(inference.max_model_slots),
+            },
+            #: the rule, stated where an operator will see it
+            "rule": "effective capacity = min(parent limit, child limit); a "
+                    "child layer can never widen its parent",
+        }
+
     def inference_path_snapshot(self) -> Dict[str, Any]:
         """§3/§33 — which path this server treats as canonical, right now.
 
@@ -1013,6 +1113,8 @@ class ForgeServer:
             "pending_approvals": len(self.approvals.pending()),
             "unread_notifications": self.notifications.unread_count(),
             "inference": self.inference.status(),
+            #: §17 — one declared hierarchy, so a denial can name its owner
+            "resource_hierarchy": self.resource_hierarchy(),
             #: §3/§33 — the canonical path is part of the server's own status:
             #: an operator must be able to see which path is authoritative.
             "inference_path": self.inference_path_snapshot(),

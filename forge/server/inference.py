@@ -564,11 +564,20 @@ class ServerInferenceService:
         attempt_id = str(payload.get("attempt_id") or "")[:128]
         classification = str(payload.get("classification") or "")[:16]
         self._admit()
-        handle = fabric.stream(request, task_id=task_id,
-                               attempt_id=attempt_id,
-                               classification=classification,
-                               fence=self._fence_for(task_id, attempt_id),
-                               fence_registry=self.fences)
+        try:
+            handle = fabric.stream(request, task_id=task_id,
+                                   attempt_id=attempt_id,
+                                   classification=classification,
+                                   fence=self._fence_for(task_id, attempt_id),
+                                   fence_registry=self.fences)
+        except Exception:
+            #: §18 — reserve and release are paired on *every* path, including
+            #: the ones that end before a producer thread exists to release
+            #: them. A refused stream (fence denial, invalid request, policy)
+            #: used to keep its slot forever, so enough refusals would wedge
+            #: the service for everyone.
+            self._release()
+            raise
         stream_id = "str-" + handle.result.request_id[4:]
         retained = _RetainedStream(
             stream_id=stream_id, request_id=handle.result.request_id,
