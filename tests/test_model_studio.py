@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from forge.models.model_studio import (
-    BenchmarkCase,
     BenchmarkResult,
     ModelArtifact,
     ModelProvenance,
@@ -56,8 +55,8 @@ def test_training_plan_defaults_to_qlora_for_large_context(tmp_path: Path):
     assert plan.expected_train_examples == 5000
 
 
-def test_promotion_rejects_regression():
-    studio = ModelStudio(".")
+def test_promotion_rejects_regression(tmp_path: Path):
+    studio = ModelStudio(tmp_path)
     profile = SpecializationProfile("code", "coding", ("software",))
     provenance = ModelProvenance(
         artifact_id="candidate-1",
@@ -70,13 +69,13 @@ def test_promotion_rejects_regression():
         trained=True,
     )
     artifact = ModelArtifact("candidate-1", "candidate", provenance)
-    cases = [
+    results = [
         BenchmarkResult("coding", "coding", 0.95, True),
         BenchmarkResult("debug", "debugging", 0.60, False),
     ]
     promoted = studio.promote(
         artifact,
-        cases,
+        results,
         gate=PromotionGate(minimum_average=0.70, minimum_category=0.70, maximum_regression=0.05),
         baseline_by_category={"coding": 0.90, "debugging": 0.90},
     )
