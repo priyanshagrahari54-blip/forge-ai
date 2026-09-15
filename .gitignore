@@ -20,7 +20,7 @@ dist/
 .vscode/
 .idea/
 
-# Forge runtime state (sessions, tasks, events, audit)
+# Forge runtime/generated state (never committed)
 .forge/*.db
 .forge/*.db-shm
 .forge/*.db-wal
@@ -28,8 +28,6 @@ dist/
 .forge/audit.jsonl
 .forge/self/history/
 .forge/research_cache/
-
-# Derived/generated indexes and model-studio workspaces: rebuilt/generated on demand,
-# never committed to the source repository.
 .forge/index/
 .forge/models/
+.forge/autobuild/
