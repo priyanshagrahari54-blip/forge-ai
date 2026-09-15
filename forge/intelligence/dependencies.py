@@ -114,8 +114,16 @@ class DependencyIndexer:
         self._module_cache: dict[str, str | None] = {}
         self._from_import_cache: dict[tuple[str, tuple[str, ...]], str | None] = {}
 
-    def build(self) -> DependencyGraph:
+    def build(
+        self, parsed_files: dict[str, PythonFileInfo] | None = None
+    ) -> DependencyGraph:
+        """Build dependency graph. Reuses pre-parsed AST result objects if provided."""
         graph = DependencyGraph()
+
+        if parsed_files is not None:
+            for relative, parsed in parsed_files.items():
+                self._index_parsed_file(relative, parsed, graph)
+            return graph
 
         for path in self.root.rglob("*.py"):
             if self._should_ignore(path):
@@ -125,26 +133,12 @@ class DependencyIndexer:
 
         return graph
 
-    def _should_ignore(self, path: Path) -> bool:
-        try:
-            relative = path.relative_to(self.root)
-        except ValueError:
-            return True
-
-        return self.gitignore.is_ignored(relative.as_posix())
-
-    def _index_python_file(
+    def _index_parsed_file(
         self,
-        path: Path,
+        relative: str,
+        parsed: PythonFileInfo,
         graph: DependencyGraph,
     ) -> None:
-        try:
-            relative = path.relative_to(self.root).as_posix()
-            source = path.read_text(encoding="utf-8")
-            parsed = self.parser.parse(relative, source)
-        except (OSError, UnicodeDecodeError, SyntaxError):
-            return
-
         for import_detail in parsed.import_details:
             module = import_detail.module
 
@@ -173,6 +167,28 @@ class DependencyIndexer:
                 kind=kind,
                 resolved_path=resolved_path,
             )
+
+    def _should_ignore(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError:
+            return True
+
+        return self.gitignore.is_ignored(relative.as_posix())
+
+    def _index_python_file(
+        self,
+        path: Path,
+        graph: DependencyGraph,
+    ) -> None:
+        try:
+            relative = path.relative_to(self.root).as_posix()
+            source = path.read_text(encoding="utf-8")
+            parsed = self.parser.parse(relative, source)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            return
+
+        self._index_parsed_file(relative, parsed, graph)
 
     def _resolve_from_import_target(
         self,
