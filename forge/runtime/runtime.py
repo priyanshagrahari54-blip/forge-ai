@@ -76,11 +76,15 @@ class ToolRuntime:
     #: denials use different reasons and stay absolute.
     APPROVAL_DENIAL = "Approval required before executing this operation."
 
-    #: Tool permission classes whose execution mutates state. These are
-    #: the ones an execution fence must stop; read-only tools keep
-    #: working for a fenced attempt's graceful shutdown.
-    MUTATING_PERMISSIONS = frozenset({"write_file", "delete_file",
-                                      "run_command"})
+    #: Operations that can mutate externally visible state. A task-bound
+    #: mutation without an execution fence is now a hard refusal: a lease,
+    #: approval token, or caller convention cannot substitute for attempt
+    #: authority. Read-only tools remain available while a fenced worker winds
+    #: down and collects diagnostics.
+    MUTATING_PERMISSIONS = frozenset({
+        "write_file", "delete_file", "run_command",
+        "git_commit", "git_push", "deploy", "release",
+    })
 
     def execute(
         self,
@@ -104,14 +108,27 @@ class ToolRuntime:
             )
 
         tool = self.tools[tool_name]
+        is_mutating = tool.permission in self.MUTATING_PERMISSIONS
+
+        # Session 11.5: once execution is task-bound, every mutation must have
+        # an attempt fence. Missing authority is denial, not legacy permission.
+        # Interactive (unbound) calls retain the existing behavior.
+        if is_mutating and task_id and commit_guard is None:
+            reason = "NO_FENCE_AUTHORITY: task-bound mutation requires an execution fence."
+            self._audit_tool(tool, allowed=False, reason=reason,
+                             actor=actor, task_id=task_id,
+                             approval_token_id=approval_token_id,
+                             call=kwargs, decision=PolicyDecision.DENY)
+            return ToolResult.fail(
+                tool_name,
+                reason,
+                metadata={"fenced": True, "error_code": "NO_FENCE_AUTHORITY"},
+            )
 
         # Execution fence (Session 10): a mutating call from an attempt
         # that has been fenced (timeout, cancel, superseded retry,
-        # restart) is refused before the handler runs. Read-only tools
-        # are exempt so a fenced attempt can still observe state while
-        # it winds down.
-        if commit_guard is not None \
-                and tool.permission in self.MUTATING_PERMISSIONS:
+        # restart) is refused before the handler runs.
+        if commit_guard is not None and is_mutating:
             try:
                 fenced_reason = commit_guard()
             except Exception as exc:
