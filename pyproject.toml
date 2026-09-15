@@ -59,6 +59,13 @@ dev = [
 [project.scripts]
 forge = "forge.cli:main"
 
+# Shipped data files. Without this the builtins below resolve from a source
+# checkout (editable installs, CI) but vanish from a wheel. The cockpit web
+# assets are declared in MANIFEST.in for the sdist as well.
+[tool.setuptools.package-data]
+"forge.profiles" = ["builtin/*.yaml", "builtin/*.yml", "builtin/*.json"]
+"forge.cockpit" = ["web/*.html", "web/*.js", "web/*.css"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
