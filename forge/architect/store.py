@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -199,6 +199,61 @@ class PlanStore:
         self.root = Path(root).resolve()
         self.directory = self.root / directory
         self.approvals: Dict[str, Approval] = {}
+        self._approvals_loaded = False
+
+    # -- approvals -------------------------------------------------------
+
+    def _approvals_path(self) -> Path:
+        # Dot-prefixed so the plans directory's "*.json" glob never picks
+        # this up and reports it as a phantom plan.
+        return self.directory / ".approvals.json"
+
+    def _load_approvals(self) -> None:
+        """Approvals outlive the process that granted them.
+
+        Without this, approving a plan and then executing it were two separate
+        invocations that could never agree, and the execution gate refused
+        work that had genuinely been approved.
+        """
+        if self._approvals_loaded:
+            return
+        self._approvals_loaded = True
+        try:
+            payload = json.loads(
+                self._approvals_path().read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, OSError):
+            return
+        if not isinstance(payload, dict):
+            return
+        for plan_id, item in (payload.get("approvals") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            self.approvals[str(plan_id)] = Approval(
+                plan_id=str(plan_id),
+                fingerprint=str(item.get("fingerprint", "") or ""),
+                revision=int(item.get("revision", 0) or 0),
+                actor=str(item.get("actor", "") or ""),
+                at=float(item.get("at", 0.0) or 0.0),
+                note=str(item.get("note", "") or ""))
+
+    def _save_approvals(self) -> None:
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            payload = {"version": 1, "approvals": {
+                plan_id: asdict(approval)
+                for plan_id, approval in self.approvals.items()}}
+            self._approvals_path().write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+        except OSError:
+            # A plan that cannot record its approval simply stays unapproved,
+            # which is the safe direction to fail.
+            pass
+
+    def _forget_approval(self, plan_id: str) -> None:
+        self._load_approvals()
+        if self.approvals.pop(plan_id, None) is not None:
+            self._save_approvals()
 
     # -- storage ---------------------------------------------------------
 
@@ -245,7 +300,7 @@ class PlanStore:
 
     def delete(self, plan_id: str) -> bool:
         path = self._path(plan_id)
-        self.approvals.pop(plan_id, None)
+        self._forget_approval(plan_id)
         try:
             path.unlink()
             return True
@@ -281,7 +336,7 @@ class PlanStore:
                          summary or "edited %s" % ", ".join(sorted(changes)))
         self.save(plan)
         # An approval covered the previous content; it no longer applies.
-        self.approvals.pop(plan_id, None)
+        self._forget_approval(plan_id)
         return plan
 
     @staticmethod
@@ -393,14 +448,17 @@ class PlanStore:
         approval = Approval(plan_id=plan.id, fingerprint=plan.fingerprint(),
                             revision=plan.revision, actor=who, note=note)
         self.approvals[plan.id] = approval
+        self._save_approvals()
         return approval
 
     def approval(self, plan_id: str) -> Optional[Approval]:
+        self._load_approvals()
         return self.approvals.get(plan_id)
 
     def checkout_for_execution(self, plan_id: str) -> ProjectPlan:
         """Return the plan for execution, or explain why it may not run."""
         plan = self.load(plan_id)
+        self._load_approvals()
         approval = self.approvals.get(plan_id)
         if approval is None:
             raise NotApproved(
@@ -431,7 +489,7 @@ class PlanStore:
         plan = self.load(plan_id)
         plan.status = PlanStatus.ABANDONED.value
         plan.record_edit("forge", "abandoned: %s" % (reason or "no reason given"))
-        self.approvals.pop(plan_id, None)
+        self._forget_approval(plan_id)
         self.save(plan)
         return plan
 
