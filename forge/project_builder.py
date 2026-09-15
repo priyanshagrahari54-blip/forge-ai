@@ -7,10 +7,11 @@ stable API for the product promise:
     requirement -> real-model preflight -> plan -> code -> test/debug ->
     review -> security -> acceptance -> git commit
 
-No model is invented here. A caller must provide a real-capable ``ModelFabric``
-(or the builder will construct the configured default fabric) and the Supervisor
-will fail fast when the fabric is fallback-only. This makes ``build_project``
-a product API rather than another inference implementation.
+No model is invented here. A caller must provide a configured capable
+``ModelFabric`` (or the builder will construct the configured default fabric).
+Before work starts, the builder performs the same bounded provider-readiness
+check used by Forge diagnostics. The deterministic/reference engine can prove
+inference infrastructure but is never counted as project-builder readiness.
 
 Python floor: 3.8.
 """
@@ -84,30 +85,31 @@ class ProjectBuilder:
         return ModelFabric.from_defaults()
 
     def preflight(self) -> Dict[str, Any]:
-        """Check whether a configured fabric can actually produce project code.
+        """Check whether a configured fabric can actually serve a build.
 
-        The check is intentionally conservative. Forge's deterministic fallback
-        is useful for infrastructure tests, but it is not a coding model and is
-        therefore never reported as project-builder readiness.
+        This is a bounded live readiness check, not merely a registry check.
+        A model that is registered but unreachable is not considered ready.
+        The returned payload is content-free and safe to expose to operators.
         """
         fabric = self._fabric_or_default()
         try:
-            from forge.models.readiness import (
-                describe_no_model_error,
-                fabric_has_real_model,
-            )
+            from forge.models.readiness import check_fabric_readiness
 
-            ready = bool(fabric_has_real_model(fabric))
-            return {
-                "ready": ready,
-                "reason": "real coding-capable model is available"
-                if ready else describe_no_model_error(fabric=fabric),
-                "fallback_only": not ready,
-            }
+            report = check_fabric_readiness(
+                fabric, probe_network=True, timeout=5.0)
+            payload = report.to_dict()
+            payload["reason"] = (
+                "real coding-capable model is reachable and usable"
+                if report.ready
+                else "no working code model is reachable"
+            )
+            return payload
         except Exception as exc:
             return {
                 "ready": False,
                 "fallback_only": True,
+                "usable_models": [],
+                "checks": [],
                 "reason": "project-builder preflight failed: %s"
                 % str(exc)[:500],
             }
@@ -133,6 +135,18 @@ class ProjectBuilder:
             )
 
         fabric = self._fabric_or_default()
+        readiness = self.preflight()
+        if not bool(readiness.get("ready")):
+            return ProjectBuildResult(
+                accepted=False,
+                project_id=self.project_id,
+                root=self.root,
+                requirement=text,
+                error=str(readiness.get("reason") or
+                            "No working code model is available."),
+                result={"preflight": readiness},
+            )
+
         supervisor = Supervisor(self.project_id, root=self.root)
         try:
             report = supervisor.run(
@@ -157,6 +171,7 @@ class ProjectBuilder:
                 root=self.root,
                 requirement=text,
                 error=str(exc)[:2000],
+                result={"preflight": readiness},
             )
 
         report = report if isinstance(report, dict) else {}
@@ -164,6 +179,7 @@ class ProjectBuilder:
             str(path) for path in (report.get("files") or [])
             if isinstance(path, str)
         )[:500]
+        report.setdefault("preflight", readiness)
         return ProjectBuildResult(
             accepted=bool(report.get("accepted")),
             project_id=self.project_id,
