@@ -29,5 +29,7 @@ dist/
 .forge/self/history/
 .forge/research_cache/
 
-# Derived repository index (A83): rebuilt on demand, never committed.
+# Derived/generated indexes and model-studio workspaces: rebuilt/generated on demand,
+# never committed to the source repository.
 .forge/index/
+.forge/models/
