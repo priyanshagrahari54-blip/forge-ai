@@ -383,7 +383,10 @@ class DAGScheduler:
             priority=int(priority),
             metadata=dict(metadata or {}))
         self._tasks[task_id] = task
-        self._detect_cycle()
+        # Optimization: Full graph cycle detection is deferred to run() or manual check.
+        # Since add_task requires all dependencies to already exist in self._tasks and new
+        # tasks have no dependents yet, adding a node to an acyclic graph cannot introduce a cycle.
+        # Removing _detect_cycle() here turns O(N^2) task insertion into O(1).
         self._persist_task(task)
         self._record_event(task_id, "-", 0, QUEUED, "task added")
         return task
@@ -539,6 +542,7 @@ class DAGScheduler:
         pure Python; it is fenced (its writes and its commit are refused)
         and outlives the call — documented, never silently trusted.
         """
+        self._detect_cycle()
         self._recover()
         pool = ThreadPoolExecutor(
             max_workers=self.max_workers, thread_name_prefix="forge-dag")
