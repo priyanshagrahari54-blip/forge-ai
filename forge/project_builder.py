@@ -16,9 +16,11 @@ Python floor: 3.8.
 """
 from __future__ import annotations
 
+import argparse
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from forge.core.supervisor import Supervisor
 from forge.security.permissions import OperationMode
@@ -43,7 +45,7 @@ class ProjectBuildResult:
         return self.accepted
 
     def to_dict(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+        return {
             "accepted": bool(self.accepted),
             "project_id": self.project_id,
             "root": self.root,
@@ -52,11 +54,8 @@ class ProjectBuildResult:
             "model": self.model,
             "provider": self.provider,
             "error": self.error,
+            "result": self.result,
         }
-        # Keep the detailed supervisor report available to programmatic callers
-        # while avoiding accidental duplication of large text fields.
-        payload["result"] = self.result
-        return payload
 
 
 class ProjectBuilder:
@@ -194,4 +193,59 @@ def build_project(requirement: str, project_id: str,
     return builder.build(requirement, approved=approved, **kwargs)
 
 
-__all__ = ["ProjectBuildResult", "ProjectBuilder", "build_project"]
+def main(argv=None) -> int:
+    """Small executable entry point: ``forge-build <requirement>``."""
+    parser = argparse.ArgumentParser(
+        prog="forge-build",
+        description="Build a real software project through Forge's guarded loop.",
+    )
+    parser.add_argument("requirement", help="Natural-language project requirement")
+    parser.add_argument("--project", default="project", help="Stable project id")
+    parser.add_argument("--root", default=".", help="Project root/worktree")
+    parser.add_argument(
+        "--mode", choices=[item.value for item in OperationMode],
+        default=OperationMode.AUTONOMOUS.value,
+    )
+    parser.add_argument("--max-debug-retries", type=int, default=3)
+    parser.add_argument("--approve", action="store_true",
+                        help="Pre-approve writes subject to the policy gate")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Only report whether a real coding model is ready")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    builder = ProjectBuilder(
+        args.project,
+        root=args.root,
+        mode=OperationMode(args.mode),
+        max_debug_retries=args.max_debug_retries,
+    )
+    if args.preflight:
+        payload = builder.preflight()
+        if args.json:
+            print(json.dumps(payload, indent=2, default=str))
+        else:
+            print("READY" if payload["ready"] else "NOT READY")
+            print(payload["reason"])
+        return 0 if payload["ready"] else 1
+
+    outcome = builder.build(args.requirement, approved=args.approve)
+    if args.json:
+        print(json.dumps(outcome.to_dict(), indent=2, default=str))
+    else:
+        print("Project build: %s" % ("ACCEPTED" if outcome.accepted else "FAILED"))
+        print("  project=%s" % outcome.project_id)
+        if outcome.model:
+            print("  model=%s provider=%s" % (outcome.model, outcome.provider or "-"))
+        if outcome.files:
+            print("  files=%s" % ", ".join(outcome.files))
+        if outcome.error:
+            print("  error=%s" % outcome.error)
+    return 0 if outcome.accepted else 1
+
+
+__all__ = ["ProjectBuildResult", "ProjectBuilder", "build_project", "main"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
