@@ -92,7 +92,8 @@ class ExecutionContext:
 
     def __init__(self, server: Any, task: Any, project: Any,
                  control: SupervisorControl, checkpoint_id: str = "",
-                 identity: Any = None, fence: Any = None) -> None:
+                 identity: Any = None, fence: Any = None,
+                 authority: Any = None) -> None:
         self.server = server
         self.task = task
         self.project = project
@@ -105,6 +106,10 @@ class ExecutionContext:
         #: Session 11.5 (§6/§7): this attempt's fence. A generation bound to it
         #: is refused the moment the attempt stops being authoritative.
         self.fence = fence
+        #: Session 11.5 (§8): the composed authority — lease + fence + this
+        #: control. Write choke points consult it through :attr:`commit_guard`,
+        #: so a tool cannot find a gap between the three.
+        self.authority = authority
 
     # -- execution identity ----------------------------------------------------
 
@@ -127,11 +132,28 @@ class ExecutionContext:
         points; Session 11.5 also hands it to the inference path, so a
         superseded attempt cannot publish a generation either.
         """
+        if self.authority is not None:
+            #: §8 — the authority's guard is the fence guard *widened* with the
+            #: lease and the cancellation flag: one answer for writes, commits
+            #: and publication alike.
+            return self.authority.commit_guard()
         if self.fence is None:
             return None
         from forge.core.fencing import commit_guard
 
         return commit_guard(self.fence, getattr(self.server, "fences", None))
+
+    def publish_authorized(self) -> bool:
+        """§8/§16 — may this attempt still mutate state or publish a result?"""
+        if self.authority is not None:
+            return bool(self.authority.publish_authorized())
+        return True
+
+    def denial_reason(self) -> str:
+        """Why this attempt may not act ("" while it may)."""
+        if self.authority is not None:
+            return str(self.authority.denial_reason() or "")
+        return ""
 
     # -- observability ---------------------------------------------------------
 

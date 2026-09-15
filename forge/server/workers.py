@@ -27,6 +27,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Optional, Set
 
+from forge.core.authority import authority_for
 from forge.core.fencing import (
     CANCELLED as FENCE_CANCELLED,
     FAILED as FENCE_FAILED,
@@ -168,10 +169,35 @@ def run_task(server: Any, task_id: str, owner: str,
         #: it, and every terminal transition below settles it — so a zombie
         #: worker, a superseded retry or a cancelled run cannot publish.
         fence, identity = _begin_attempt(server, task_id, task, owner)
+        #: §8 — one authority composes the lease, the fence and this control, so
+        #: every later decision (write, commit, publish, stream) asks one object
+        #: instead of three that could disagree.
+        authority = authority_for(server, task_id, fence=fence,
+                                  lease_owner=owner, control=control,
+                                  project_id=project_id,
+                                  boot_id=getattr(identity, "boot_id", ""))
+        if fence is None and getattr(server, "fences", None) is not None:
+            #: §9 — the registry is deployed but this attempt holds no fence, so
+            #: it cannot prove it is authoritative. Running anyway would spend
+            #: model compute on work that could never be published; the honest
+            #: move is to fail (and retry) before generating anything.
+            server.log(task_id, project_id,
+                       "Attempt authority could not be established; refusing "
+                       "to execute without one (%s)."
+                       % authority.denial_reason(),
+                       level="error", source="worker")
+            server.emit(task_id, project_id, "attempt.fenced",
+                        {"reason": authority.denial_reason(),
+                         "detail": "no attempt authority"})
+            _finish_failed(server, task_id, project_id, owner,
+                           "Attempt authority could not be established: %s"
+                           % authority.denial_reason(), retry=True)
+            return
         ctx = ExecutionContext(server, task,
                                server.projects.get_or_raise(project_id),
                                control, checkpoint_id,
-                               identity=identity, fence=fence)
+                               identity=identity, fence=fence,
+                               authority=authority)
         try:
             outcome = server.executor.execute(ctx)
         except TaskCancelled as exc:
@@ -296,30 +322,19 @@ def _may_publish(server: Any, task_id: str, owner: str,
                  fence: Any = None) -> bool:
     """One answer to "may this attempt publish?" (§7/§8/§9).
 
-    Two independent authorities must agree, and uncertainty is denial:
-
-    * the queue lease — this process still owns the task; and
-    * the attempt fence — this attempt is still the authorized generation and
-      is still in a state that may commit.
-
-    A lease without a fence is not permission, and a fence without a lease is
-    not either. The registry's view of the fence wins over the copy the worker
-    holds, so a superseded attempt cannot talk itself into publishing.
+    Delegates to :class:`~forge.core.authority.ExecutionAuthority`, which
+    composes the queue lease, the fence generation and the cancellation flag
+    behind a single fail-closed question. Kept as a function because the worker
+    body reads as a sequence of decisions, and because a stale attempt must be
+    refused by the same rule whichever terminal branch it reaches.
     """
     try:
-        if not server.queue.lease_held_by(task_id, owner):
-            return False
+        authority = authority_for(server, task_id, fence=fence,
+                                  lease_owner=owner)
     except Exception:                                  # noqa: BLE001
+        #: Uncertainty about the authority is denial, never permission.
         return False
-    fences = getattr(server, "fences", None)
-    if fences is None or fence is None:
-        #: No authority exists to consult (legacy wiring): the lease is all
-        #: there is, and refusing here would break tasks that never had fences.
-        return True
-    try:
-        return bool(fences.is_authorized(fence))
-    except Exception:                                  # noqa: BLE001
-        return False
+    return authority.publish_authorized()
 
 
 def _discard_unauthorized(server: Any, task_id: str, project_id: str,
@@ -332,8 +347,14 @@ def _discard_unauthorized(server: Any, task_id: str, project_id: str,
     and emitted as bounded metadata, and the record is left untouched.
     """
     attempt_id = str(getattr(fence, "attempt_id", "") or "")
+    try:
+        reason = authority_for(server, task_id, fence=fence,
+                               lease_owner=owner).denial_reason()
+    except Exception:                                  # noqa: BLE001
+        reason = "unknown"
     _settle_attempt(server, task_id, project_id, fence, "fenced",
-                    reason="publish refused: %s" % kind)
+                    reason="publish refused (%s): %s" % (reason or "denied",
+                                                         kind))
     try:
         server.log(
             task_id, project_id,
@@ -348,6 +369,7 @@ def _discard_unauthorized(server: Any, task_id: str, project_id: str,
         server.emit(task_id, project_id, "attempt.fenced",
                     {"attempt_id": attempt_id[:128],
                      "reason": "unauthorized_publish",
+                     "denial": str(reason or "")[:64],
                      "kind": str(kind)[:64]})
     except Exception:                                  # noqa: BLE001
         pass

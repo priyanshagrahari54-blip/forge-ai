@@ -844,6 +844,24 @@ class ForgeServer:
         return self.recovery.bundle(after=after, since=since,
                                     project_id=project_id)
 
+    def authority_for(self, task_id: str, *, fence: Any = None,
+                      lease_owner: str = "", control: Any = None,
+                      project_id: str = "") -> Any:
+        """§8 — the one attempt authority for a task, composed from live state.
+
+        Workers, the executor, the inference surface and the cancellation path
+        all ask this object the same question, so there is exactly one answer to
+        "may this attempt still mutate state or publish?". Nothing is cached:
+        the authority reads the lease, the fence registry and the control on
+        every call, because a decision taken before a cancellation is a decision
+        about a different world.
+        """
+        from forge.core.authority import authority_for as _authority_for
+
+        return _authority_for(self, task_id, fence=fence,
+                              lease_owner=lease_owner, control=control,
+                              project_id=project_id, boot_id=self.boot_id)
+
     def _settle_cancelled_attempt(self, task_id: str, *, project_id: str = "",
                                   reason: str = "",
                                   confirm: bool = False) -> Optional[Any]:
@@ -863,9 +881,14 @@ class ForgeServer:
             fence = fences.current(task_id)
             if fence is None or not fences.is_authorized(fence):
                 return fence
-            fences.cancel(task_id)                     # RUNNING -> CANCELLING
             if not confirm:
+                #: §11 — one cancellation chain: the authority signals the
+                #: running control *and* moves the fence to CANCELLING, so
+                #: publish authority is revoked before the worker notices.
+                self.authority_for(task_id, fence=fence,
+                                   project_id=project_id).request_cancel(reason)
                 return fences.current(task_id)
+            fences.cancel(task_id)                     # RUNNING -> CANCELLING
             current = fences.current(task_id)
             if current is None:
                 return None
@@ -923,8 +946,18 @@ class ForgeServer:
             payload["attempt_id"] = fence.attempt_id
             payload["generation"] = int(fence.generation)
             payload["fence_state"] = fence.state
+            #: §8/§16 — the *authority's* answer, not the fence's alone: a task
+            #: whose lease is gone or whose cancellation was requested may not
+            #: publish even while its fence still reads RUNNING.
+            #: Evaluated for the attempt that really holds the lease: a reader
+            #: has no owner of its own to present (§8).
+            authority = self.authority_for(
+                str(task_id), fence=fence,
+                lease_owner=self.queue.lease_owner(str(task_id)))
             payload["authorized_to_publish"] = bool(
-                self.fences.is_authorized(fence))
+                authority.publish_authorized())
+            payload["denial_reason"] = authority.denial_reason()
+            payload["authority"] = authority.snapshot()
         else:
             #: no fence in memory: never started, or the server restarted and
             #: the durable record above is all that is known.

@@ -942,22 +942,43 @@ def test_unstarted_task_reports_no_inference_facts(tmp_path):
 
 
 def test_cancelled_attempt_state_is_readable_and_denies_publishing(tmp_path):
-    """[S11.5] MOCK — §8/§10: a cancelled attempt says so, and cannot publish."""
+    """[S11.5] MOCK — §8/§10: a cancelled attempt says so, and cannot publish.
+
+    The authority is composed, so a fence alone is not permission: with no lease
+    behind it, an attempt may not publish even while its fence reads RUNNING.
+    Taking a real lease makes the same attempt authoritative — and cancellation
+    then revokes it again.
+    """
     server, _legacy = server_on_path(tmp_path)
     try:
         task = server.tasks.create("demo", "will be cancelled")
         task_id = task.task_id
         fence = server.fences.begin(task_id, owner="worker-1")
         server.fences.mark_running(task_id, fence)
+
+        #: no lease → the fence is not enough (§8: one composed authority)
+        unleased = server.task_inference_state(task_id)
+        assert unleased["fence_state"] == "RUNNING"
+        assert unleased["authorized_to_publish"] is False
+        assert unleased["denial_reason"] == "LEASE_LOST"
+
+        #: a real lease for the same owner makes it authoritative
+        server.queue.enqueue(task_id, "demo")
+        assert server.queue.lease_next("demo", "worker-1") == task_id
+        assert server.queue.lease_owner(task_id) == "worker-1"
         running = server.task_inference_state(task_id)
         assert running["fence_state"] == "RUNNING"
         assert running["authorized_to_publish"] is True
+        assert running["denial_reason"] == ""
+        assert running["authority"]["lease_checked"] is True
         assert running["attempt_id"] == "%s#g1" % task_id
 
         server.cancel_task(task_id, actor="operator")
         cancelled = server.task_inference_state(task_id)
         assert cancelled["fence_state"] in ("CANCELLING", "CANCELLED")
         assert cancelled["authorized_to_publish"] is False
+        assert cancelled["denial_reason"] == "CANCELLED_ATTEMPT"
+        assert cancelled["authority"]["cancellation_epoch"] == 1
         assert cancelled["persisted"] is False
         #: a superseding attempt takes the authority away for good
         successor = server.fences.begin(task_id, owner="worker-2")

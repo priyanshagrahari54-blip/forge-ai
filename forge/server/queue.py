@@ -104,6 +104,22 @@ class TaskQueue:
         return (row is not None and row["leased_at"] is not None
                 and str(row["lease_owner"]) == owner)
 
+    def lease_owner(self, task_id: str) -> str:
+        """Who holds this task's lease right now (``""`` when nobody does).
+
+        Session 11.5 (§8): the attempt authority has to evaluate the lease for
+        the attempt that actually owns the task, and a *reader* (the task API,
+        the CLI, health) does not know that owner. Exposing it keeps the lease
+        check honest instead of degenerating into "no owner supplied, therefore
+        denied" for a task that is legitimately running.
+        """
+        row = self._db.query_one(
+            "SELECT lease_owner, leased_at FROM queue_items "
+            "WHERE task_id = ?", (task_id,))
+        if row is None or row["leased_at"] is None:
+            return ""
+        return str(row["lease_owner"] or "")
+
     # -- recovery / introspection --------------------------------------------------
 
     def recover(self) -> int:
