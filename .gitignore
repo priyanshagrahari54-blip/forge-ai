@@ -28,3 +28,6 @@ dist/
 .forge/audit.jsonl
 .forge/self/history/
 .forge/research_cache/
+
+# Derived repository index (A83): rebuilt on demand, never committed.
+.forge/index/

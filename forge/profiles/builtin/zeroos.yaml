@@ -1,0 +1,286 @@
+format: forge-project-profile
+format_version: 1
+name: zeroos
+version: 1.0.0
+display_name: ZEROOS
+description: >
+  Domain profile for ZEROOS: an x86-64 operating system with its own kernel,
+  memory manager, scheduler, drivers, filesystems, graphics, networking,
+  audio, security, recovery, and update architecture. This file is a plugin.
+  Nothing in Forge's core knows about ZEROOS; Forge learns it by loading this
+  profile, and any other project can ship its own the same way.
+
+project_types:
+  - operating-system
+  - kernel
+  - system-software
+  - assembly
+languages:
+  - c
+  - cpp
+  - assembly
+  - rust
+  - python
+
+capabilities:
+  - build
+  - test
+  - boot
+  - hardware
+  - driver-development
+  - vm-testing
+
+conventions:
+  - A driver is not supported until it has been probed on real or emulated hardware.
+  - Hardware capability claims carry a status of SUPPORTED, PARTIALLY_SUPPORTED, UNSUPPORTED, or UNKNOWN.
+  - Never infer hardware capability from a device name or a vendor string alone.
+  - Kernel changes are validated by booting, not by compiling.
+  - Every boot test records the console log it was judged from.
+
+constraints:
+  - Target architecture is x86-64 in long mode unless a recipe says otherwise.
+  - Kernel code is freestanding; no hosted libc unless the recipe links one.
+  - Boot images are built into build/ and never committed.
+  - A boot is only reported successful when the kernel prints its ready marker on the serial console.
+
+knowledge:
+  - topic: x86-64-architecture
+    summary: >
+      x86-64 execution proceeds through real mode, optional protected mode, and
+      long mode. Long mode requires paging to be enabled, an identity or
+      higher-half mapped kernel, a GDT with 64-bit code and data segments, and
+      the EFER.LME bit set before CR0.PG. Registers widen to 64 bits; the upper
+      32 bits of a 32-bit write are zeroed.
+    references: [arch/x86_64, docs/architecture.md]
+  - topic: boot-process
+    summary: >
+      Boot chain choices are BIOS/MBR, BIOS with a multiboot loader, or UEFI.
+      A multiboot2 kernel needs a valid header in the first 32 KiB, an entry
+      point that sets up a stack and page tables, and then a jump to the C
+      kernel main. UEFI boots a PE32+ image handed a memory map and GOP.
+    references: [boot/, arch/x86_64/boot.S]
+  - topic: kernel-development
+    summary: >
+      The kernel is freestanding C/C++ with -ffreestanding, -nostdlib,
+      -mno-red-zone, and an explicit linker script controlling section order.
+      Symbols such as _kernel_start and _kernel_end come from the linker
+      script, not from declarations in a header.
+    references: [kernel/, linker.ld, Makefile]
+  - topic: memory-management
+    summary: >
+      Physical memory management starts from the firmware memory map, reserves
+      kernel and firmware regions, and hands out frames through a bitmap or
+      buddy allocator. Every allocation must be traceable to a frame number so
+      leaks are detectable from a dump.
+    references: [kernel/mm/pmm.c]
+  - topic: virtual-memory
+    summary: >
+      x86-64 uses 4-level (or 5-level with LA57) paging: PML4, PDPT, PD, PT.
+      The kernel is normally mapped in the higher half and identity-mapped
+      temporarily during the paging switch. Address-space isolation means every
+      process gets its own PML4 and kernel mappings are shared by reference.
+    references: [kernel/mm/vmm.c, kernel/mm/paging.c]
+  - topic: interrupts
+    summary: >
+      The IDT holds 256 gate descriptors. Vectors 0-31 are CPU exceptions,
+      32-47 are conventionally remapped PIC IRQs, and the rest are for the
+      APIC or syscalls. Handlers must preserve caller state, acknowledge the
+      controller where required, and never block.
+    references: [kernel/interrupts/idt.c, kernel/interrupts/isr.S]
+  - topic: scheduling
+    summary: >
+      The scheduler owns the ready queue, context switch, and timer tick.
+      Context switching saves callee-saved registers and the stack pointer,
+      swaps page tables when the address space changes, and must be
+      preempt-safe: the tick can arrive inside any kernel path.
+    references: [kernel/sched/scheduler.c, kernel/sched/context.S]
+  - topic: drivers
+    summary: >
+      Drivers follow probe, initialise, register, operate, teardown. A probe
+      reads identification registers before trusting a device; a driver that
+      cannot identify its device must report UNKNOWN rather than bind.
+    references: [drivers/]
+  - topic: pci-and-pcie
+    summary: >
+      PCI configuration space is reachable through the legacy 0xCF8/0xCFC ports
+      or through ECAM memory-mapped configuration. Enumeration walks
+      bus/device/function, reads vendor and device IDs, decodes BARs, and walks
+      capability lists to find MSI/MSI-X, PCIe capability, and power management.
+    references: [drivers/bus/pci.c]
+  - topic: usb
+    summary: >
+      USB stacks in order of age are UHCI, OHCI, EHCI (USB 2), and xHCI (USB 3).
+      A modern kernel targets xHCI: ring buffers, event rings, transfer rings,
+      and a device context per port. Root-hub port status changes arrive as
+      events, not as interrupts per port.
+    references: [drivers/usb/xhci.c]
+  - topic: acpi
+    summary: >
+      ACPI tables arrive from the RSDP, through the RSDT/XSDT, and describe
+      fixed hardware in the FADT, interrupt routing in the MADT, and devices in
+      the DSDT. Power state transitions and shutdown are ACPI operations; a
+      kernel without ACPI cannot shut down cleanly on most hardware.
+    references: [drivers/acpi/, kernel/acpi/tables.c]
+  - topic: storage
+    summary: >
+      Storage paths are AHCI for SATA, NVMe for PCIe SSDs, and virtio-blk or
+      virtio-scsi under a hypervisor. Each exposes block devices with a sector
+      size and a queue depth; filesystems sit on top and must tolerate
+      write reordering unless they flush explicitly.
+    references: [drivers/storage/ahci.c, drivers/storage/nvme.c]
+  - topic: filesystems
+    summary: >
+      A filesystem layer needs a VFS: open, read, write, seek, stat, directory
+      iteration, mount, unmount. Implementations start read-only (a FAT or
+      ext2 reader) before any writer exists, because a wrong write destroys
+      data that a wrong read does not.
+    references: [kernel/fs/vfs.c, fs/]
+  - topic: graphics
+    summary: >
+      Early bring-up is text mode or a linear framebuffer handed over by the
+      bootloader or UEFI GOP. GPU acceleration means a real driver for the
+      device: virtio-gpu under a VM, or a vendor driver on hardware. Frame time
+      is the honest graphics metric; a claimed frame rate without measurement
+      is not a result.
+    references: [drivers/gpu/, kernel/gfx/framebuffer.c]
+  - topic: networking
+    summary: >
+      Bring-up order is device driver, then link state, then a DHCP client,
+      then IP, then ARP, then UDP/TCP. virtio-net is the practical first target
+      under QEMU. Everything above the driver must tolerate out-of-order and
+      duplicate packets.
+    references: [drivers/net/, kernel/net/]
+  - topic: audio
+    summary: >
+      Audio on real hardware is HDA (Intel High Definition Audio) with codecs
+      behind it; under a VM it is usually AC97 or HDA emulated. Playback needs
+      a ring of DMA buffers, a position register, and underrun handling.
+    references: [drivers/audio/hda.c]
+  - topic: security
+    summary: >
+      Kernel security starts with the basics: NX on data pages, SMAP/SMEP where
+      available, no writable-and-executable mappings, kernel/user separation
+      enforced by ring and page permissions, and a syscall entry path that
+      validates every argument before dereferencing it.
+    references: [kernel/security/, docs/security.md]
+  - topic: recovery
+    summary: >
+      Recovery needs an independent boot path: a known-good kernel image, a
+      fallback initramfs, and a boot counter that switches to the fallback
+      after repeated failures. Recovery code must not depend on the filesystem
+      it is recovering.
+    references: [recovery/, docs/recovery.md]
+  - topic: update-architecture
+    summary: >
+      Updates are A/B or staged: write the new image to the inactive slot,
+      verify it by checksum and by a boot attempt, then flip the boot order.
+      An update that cannot be rolled back automatically is not an update
+      strategy.
+    references: [update/, docs/update.md]
+  - topic: compatibility-layers
+    summary: >
+      Compatibility means running foreign binaries: a Linux ELF loader with
+      syscall translation, or an emulation layer. Each syscall needs an
+      explicit decision of supported, translated, or refused; silently
+      returning success for an unimplemented syscall corrupts the program.
+    references: [compat/]
+
+build_recipes:
+  - name: kernel-make
+    description: Build the ZEROOS kernel and boot image with make.
+    evidence: [Makefile]
+    argv: [make, -j, all]
+    parser: gcc
+    timeout_seconds: 3600
+  - name: kernel-cmake
+    description: Build the ZEROOS kernel with CMake.
+    evidence: [CMakeLists.txt]
+    argv: [cmake, --build, build, --parallel]
+    parser: gcc
+    timeout_seconds: 3600
+  - name: iso-image
+    description: Assemble the bootable ISO image.
+    evidence: [Makefile, iso]
+    argv: [make, iso]
+    parser: gcc
+    timeout_seconds: 1800
+
+test_recipes:
+  - name: host-tests
+    description: Host-side unit tests for kernel libraries that build on the host.
+    evidence: [tests]
+    argv: [make, test]
+    parser: generic
+    timeout_seconds: 1800
+  - name: python-tests
+    description: Python-side tooling and integration tests.
+    evidence: [pyproject.toml, tests]
+    argv: [python, -B, -m, pytest, -q, -p, no:cacheprovider]
+    parser: pytest
+    timeout_seconds: 1800
+
+boot_recipes:
+  - name: qemu-kernel
+    description: Boot the kernel directly in QEMU with a serial console.
+    evidence: [build/zeroos.bin, build/kernel.bin]
+    argv:
+      - qemu-system-x86_64
+      - -kernel
+      - build/zeroos.bin
+      - -append
+      - console=ttyS0
+      - -m
+      - 512M
+      - -nographic
+      - -no-reboot
+      - -serial
+      - stdio
+    parser: serial
+    timeout_seconds: 180
+    options:
+      ready_marker: ZEROOS READY
+      failure_marker: KERNEL PANIC
+  - name: qemu-iso
+    description: Boot the assembled ISO image in QEMU.
+    evidence: [build/zeroos.iso]
+    argv:
+      - qemu-system-x86_64
+      - -cdrom
+      - build/zeroos.iso
+      - -m
+      - 512M
+      - -nographic
+      - -no-reboot
+      - -serial
+      - stdio
+    parser: serial
+    timeout_seconds: 240
+    options:
+      ready_marker: ZEROOS READY
+      failure_marker: KERNEL PANIC
+  - name: qemu-disk
+    description: Boot from a raw disk image in QEMU.
+    evidence: [build/zeroos.img]
+    argv:
+      - qemu-system-x86_64
+      - -drive
+      - format=raw,file=build/zeroos.img
+      - -m
+      - 512M
+      - -nographic
+      - -no-reboot
+      - -serial
+      - stdio
+    parser: serial
+    timeout_seconds: 240
+    options:
+      ready_marker: ZEROOS READY
+      failure_marker: KERNEL PANIC
+
+analyze_recipes:
+  - name: objdump-disassembly
+    description: Disassemble the kernel binary to verify the entry point.
+    evidence: [build/zeroos.bin]
+    argv: [objdump, -d, -b, binary, -m, i386:x86-64, build/zeroos.bin]
+    parser: generic
+    timeout_seconds: 300

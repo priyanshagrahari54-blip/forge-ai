@@ -1,0 +1,130 @@
+format: forge-project-profile
+format_version: 1
+name: generic
+version: 1.0.0
+display_name: Generic software project
+description: >
+  Baseline profile for ordinary application and library work. Supplies the
+  conventional build/test recipes for the ecosystems Forge detects, plus the
+  conventions Forge follows when a project has not stated its own.
+
+project_types:
+  - python
+  - node
+  - rust
+  - jvm
+  - native
+languages:
+  - python
+  - javascript
+  - typescript
+  - rust
+  - java
+  - c
+  - cpp
+
+capabilities:
+  - build
+  - test
+  - static-analysis
+  - packaging
+
+conventions:
+  - Never claim a change works without executing the project's own tests.
+  - Prefer the project's declared runner over a command Forge invents.
+  - Keep generated artifacts out of version control.
+  - Report skipped and missing tests as skipped and missing, never as passing.
+
+constraints:
+  - Builds and tests run with a real timeout and a real exit code.
+  - No shell interpolation; every recipe is a plain argv list.
+
+knowledge:
+  - topic: build-system-selection
+    summary: >
+      Choose the build system from evidence in the repository, never from the
+      project name: Cargo.toml means cargo, CMakeLists.txt means cmake, a
+      Makefile means make, pyproject.toml means the Python build backend,
+      package.json means the package manager lockfile present beside it.
+    references:
+      - forge/build/detection.py
+  - topic: test-layering
+    summary: >
+      Unit tests exercise one component in isolation, integration tests cross a
+      component boundary, system tests drive the assembled artifact, and
+      regression tests re-run the cases that previously failed. Passing unit
+      tests is not evidence that the system works.
+    references:
+      - forge/testing/stages.py
+
+build_recipes:
+  - name: python-build
+    description: Build the Python distribution with the project's backend.
+    evidence: [pyproject.toml, setup.py]
+    argv: [python, -B, -m, build, --no-isolation, --outdir, dist]
+    parser: generic
+    timeout_seconds: 900
+  - name: python-compileall
+    description: Byte-compile the package as a fast syntax gate.
+    evidence: [pyproject.toml]
+    argv: [python, -B, -m, compileall, -q, .]
+    parser: generic
+    timeout_seconds: 300
+  - name: node-build
+    description: Build a Node/TypeScript package through npm.
+    evidence: [package.json]
+    argv: [npm, run, build]
+    parser: generic
+    timeout_seconds: 900
+  - name: cargo-build
+    description: Build a Rust crate.
+    evidence: [Cargo.toml]
+    argv: [cargo, build, --locked]
+    parser: rust
+    timeout_seconds: 1800
+  - name: cmake-build
+    description: Configure and build a CMake project.
+    evidence: [CMakeLists.txt]
+    argv: [cmake, --build, build, --parallel]
+    parser: gcc
+    timeout_seconds: 1800
+  - name: make-build
+    description: Build with make.
+    evidence: [Makefile, makefile, GNUmakefile]
+    argv: [make, -j]
+    parser: gcc
+    timeout_seconds: 1800
+
+test_recipes:
+  - name: pytest
+    description: Run the Python test suite.
+    evidence: [pyproject.toml, pytest.ini, tests]
+    argv: [python, -B, -m, pytest, -q, -p, no:cacheprovider]
+    parser: pytest
+    timeout_seconds: 1800
+  - name: cargo-test
+    description: Run the Rust test suite.
+    evidence: [Cargo.toml]
+    argv: [cargo, test, --locked]
+    parser: cargo
+    timeout_seconds: 1800
+  - name: npm-test
+    description: Run the Node test suite.
+    evidence: [package.json]
+    argv: [npm, test]
+    parser: generic
+    timeout_seconds: 1800
+
+analyze_recipes:
+  - name: compileall
+    description: Syntax-level static check over the tree.
+    evidence: [pyproject.toml]
+    argv: [python, -B, -m, compileall, -q, .]
+    parser: generic
+    timeout_seconds: 300
+  - name: cargo-clippy
+    description: Rust lints.
+    evidence: [Cargo.toml]
+    argv: [cargo, clippy, --locked, --all-targets]
+    parser: rust
+    timeout_seconds: 900
