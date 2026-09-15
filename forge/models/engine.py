@@ -388,6 +388,11 @@ class InferenceFabric:
                  auto_verify: bool = False,
                  clock: Callable[[], float] = time.perf_counter) -> None:
         self.catalog = catalog
+        #: §7/§14 — this fabric's own identity, minted once at construction and
+        #: stamped on every result, so a durable record can say *which* fabric
+        #: served it long after the process is gone. Not a secret, not derived
+        #: from a prompt, and never reused across processes.
+        self.fabric_id = "inf-" + uuid4().hex[:16]
         self.telemetry = telemetry
         self.planner = planner or ContextBudgetPlanner()
         self.verifier = verifier or catalog.verifier
@@ -569,6 +574,7 @@ class InferenceFabric:
             in_flight = len(self._tokens)
             recent = [dict(item) for item in self._history[-20:]]
         return {
+            "fabric_id": self.fabric_id,
             "counts": counts,
             "in_flight": in_flight,
             "models": self.catalog.status(),
@@ -1574,6 +1580,7 @@ class InferenceFabric:
 
         metadata = result.metadata
         metadata.setdefault("inference_path", PATH_SESSION11)
+        metadata.setdefault("fabric_id", self.fabric_id)
         metadata.setdefault("model", result.model_id)
         metadata.setdefault("provider", result.provider)
         metadata.setdefault("backend_id", result.backend_id)

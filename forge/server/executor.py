@@ -465,7 +465,24 @@ def _inference_provenance(outcome: Dict[str, Any], ctx: ExecutionContext,
     snapshot = getattr(ctx.server.fabric, "inference_path_snapshot", None)
     if callable(snapshot):
         try:
-            provenance.setdefault("mode", (snapshot() or {}).get("mode", ""))
+            path_snapshot = snapshot() or {}
         except Exception:                              # noqa: BLE001
-            pass
+            path_snapshot = {}
+        mode = str(path_snapshot.get("mode", "") or "")
+        provenance.setdefault("mode", mode)
+        provenance.setdefault("inference_mode", mode)
+        provenance.setdefault("path_attached",
+                              bool(path_snapshot.get("attached")))
+    #: §14 — the durable minimum, in the vocabulary an auditor searches for.
+    #: Aliases are written only when the underlying fact exists: a model nobody
+    #: selected gets no model_id, and a path nobody served gets no claim.
+    from forge.models.inference_path import PATH_SESSION11
+
+    path = str(provenance.get("path", "") or "")
+    provenance["canonical_inference"] = bool(path and path == PATH_SESSION11)
+    if provenance.get("model"):
+        provenance.setdefault("model_id", str(provenance["model"]))
+    if provenance.get("artifact_fingerprint"):
+        provenance.setdefault("model_fingerprint",
+                              str(provenance["artifact_fingerprint"]))
     return provenance

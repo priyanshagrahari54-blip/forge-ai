@@ -479,6 +479,22 @@ def _finish_completed(server: Any, task: Any, owner: str,
     result = outcome.get("result") or {}
     if not isinstance(result, dict):
         result = {"value": result}
+    #: §14 — the fence state captured during the run is stale by the time the
+    #: result is persisted: the attempt has just committed its terminal state.
+    #: Quote the authority as it stands at publication, which is the state an
+    #: auditor (and the task API) will find, rather than a mid-flight snapshot.
+    fences = getattr(server, "fences", None)
+    inference_block = result.get("inference") if isinstance(result, dict) else None
+    if fences is not None and isinstance(inference_block, dict):
+        try:
+            live = fences.current(task_id)
+            if live is not None:
+                inference_block["fence_state"] = str(live.state or "")
+                inference_block["fence_generation"] = int(live.generation or 0)
+                inference_block["published_authorized"] = bool(
+                    fences.is_authorized(live))
+        except Exception:                              # noqa: BLE001
+            pass
     payload = json.dumps(redact(result), default=str)
     server.tasks.transition(
         task_id, TaskStatus.COMPLETED,

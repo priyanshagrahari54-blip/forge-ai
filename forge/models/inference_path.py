@@ -626,6 +626,15 @@ class Session11Adapter:
             "truncated": bool(getattr(result, "truncated", False)),
             "streamed": bool(getattr(result, "streamed", False)),
             "require_verified": bool(self.config.require_verified),
+            #: §14 — the rest of the durable minimum: which fabric answered and
+            #: how the generation ended, in bounded scalars. Timings and token
+            #: counts are measurements, never content.
+            "fabric_id": str(getattr(result, "fabric_id", "")
+                             or result_metadata.get("fabric_id", "") or ""),
+            "finish_reason": str(getattr(result, "finish_reason", "") or ""),
+            "latency_ms": float(getattr(result, "latency_ms", 0.0) or 0.0),
+            "input_tokens": int(getattr(result, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(result, "output_tokens", 0) or 0),
         }
         return metadata
 
@@ -802,6 +811,10 @@ PROVENANCE_KEYS = (
     "verification_state", "availability_state", "artifact_fingerprint",
     "routing_reason", "routing_score", "policy_allowed", "resource_allowed",
     "fallback_used", "fallback_rung", "truncated", "streamed",
+    #: §14 durable minimum: which fabric answered, how it ended, and what it
+    #: cost in time and tokens. Bounded scalars — never prompt or completion.
+    "fabric_id", "finish_reason", "latency_ms", "input_tokens",
+    "output_tokens",
 )
 
 
