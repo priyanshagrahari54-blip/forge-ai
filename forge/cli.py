@@ -2796,6 +2796,210 @@ def _run_training(args) -> int:
     return 2
 
 
+def _engineer_profile(name: str):
+    """Resolve a profile by name, or None when none was asked for."""
+    if not name:
+        return None
+    from forge.profiles import default_registry
+    registry = default_registry()
+    if not registry.has(name):
+        raise SystemExit(
+            "unknown profile %r; available: %s"
+            % (name, ", ".join(sorted(registry.list()))))
+    return registry.get(name)
+
+
+def _run_engineer(args) -> int:
+    """Drive the A83 engineering platform from the command line."""
+    import json as _json
+    from pathlib import Path
+
+    root = Path(".")
+    command = getattr(args, "engineer_command", "") or ""
+
+    if command == "plan":
+        from forge.architect import ProjectArchitect, PlanStore
+        profile = _engineer_profile(args.profile)
+        architect = ProjectArchitect(root, profiles=[profile] if profile else ())
+        plan = architect.plan(args.requirement)
+        store = PlanStore(root)
+        store.save(plan)
+        if args.json:
+            print(_json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(plan.render())
+            print()
+            print("saved as plan %s (draft); review it, then:" % plan.id)
+            print("  forge engineer edit %s --field open_questions "
+                  "--value '[\"...\"]'" % plan.id)
+            print("  forge engineer approve %s --actor you" % plan.id)
+        return 0
+
+    if command == "list":
+        from forge.architect import PlanStore
+        entries = PlanStore(root).list()
+        if not entries:
+            print("no stored plans")
+            return 0
+        for entry in entries:
+            print("%-14s %-10s rev %-3s %s" % (
+                entry.get("id", "?"), entry.get("status", "?"),
+                entry.get("revision", "?"),
+                entry.get("requirement", "")[:60]))
+        return 0
+
+    if command == "show":
+        from forge.architect import PlanStore
+        plan = PlanStore(root).load(args.plan_id)
+        if args.json:
+            print(_json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(plan.render())
+        return 0
+
+    if command == "approve":
+        from forge.architect import PlanError, PlanStore
+        store = PlanStore(root)
+        try:
+            approval = store.approve(args.plan_id, actor=args.actor)
+        except PlanError as exc:
+            print("refused: %s" % exc)
+            return 1
+        print("approved %s rev %d fingerprint %s" % (
+            approval.plan_id, approval.revision, approval.fingerprint))
+        return 0
+
+    if command == "edit":
+        from forge.architect import PlanError, PlanStore
+        try:
+            value = _json.loads(args.value)
+        except ValueError as exc:
+            print("--value must be valid JSON: %s" % exc)
+            return 2
+        store = PlanStore(root)
+        try:
+            plan = store.update(args.plan_id, {args.field: value},
+                                actor=args.actor,
+                                summary=args.summary or "edited via CLI")
+        except PlanError as exc:
+            print("refused: %s" % exc)
+            return 1
+        print("plan %s now at revision %d, status %s" % (
+            plan.id, plan.revision, plan.status))
+        print("any previous approval is no longer valid; re-approve before "
+              "executing.")
+        return 0
+
+    if command == "execute":
+        from forge.architect import NotApproved, PlanStore
+        store = PlanStore(root)
+        try:
+            plan = store.checkout_for_execution(args.plan_id)
+        except NotApproved as exc:
+            print("refused: %s" % exc)
+            return 1
+        ready = plan.ready_tasks()
+        print("plan %s is executing (fingerprint %s)" % (
+            plan.id, plan.fingerprint()))
+        if not ready:
+            print("no tasks are ready yet")
+            return 0
+        print("execution frontier:")
+        for task in ready:
+            print("  %s  %s" % (task.id, task.title))
+        return 0
+
+    if command == "pipeline":
+        from forge.engineering import EngineeringPipeline
+        roles = tuple(item.strip() for item in args.roles.split(",")
+                      if item.strip())
+        profile = _engineer_profile(args.profile)
+        report = EngineeringPipeline(root, profile=profile).run(roles=roles)
+        print("pipeline: %s (%.0f ms, context revision %d)" % (
+            report.status, report.duration_ms, report.context_revision))
+        for stage in report.stages:
+            print("  %-14s %-10s %6.0f ms%s" % (
+                stage.role, stage.status, stage.duration_ms,
+                " — %s" % stage.error if stage.error else ""))
+        return 0 if report.status == "passed" else 1
+
+    if command == "hardware":
+        from forge.hardware import HardwareAgent, render
+        agent = HardwareAgent(root, profile=_engineer_profile(args.profile))
+        _report, matrix = agent.survey()
+        if args.json:
+            print(_json.dumps(matrix.to_dict(), indent=2, sort_keys=True,
+                              default=str))
+        else:
+            print(render(matrix))
+        return 0
+
+    if command == "boot":
+        from forge.vm import VmHarness, render
+        profile = _engineer_profile(args.profile)
+        harness = VmHarness(root, profile=profile)
+        wanted = ()
+        if args.scenario:
+            wanted = tuple(item for item in harness.scenarios()
+                           if item.name == args.scenario)
+            if not wanted:
+                print("no boot scenario named %r" % args.scenario)
+                return 2
+        report = harness.run(build=not args.no_build, scenarios=wanted)
+        print(render(report))
+        return 0 if report.ok else 1
+
+    if command == "memory":
+        from forge.knowledge import ProjectMemory, render
+        memory = ProjectMemory(root)
+        if args.add:
+            entry = memory.add(args.add_kind, args.add, args.detail,
+                               source=args.source)
+            print("recorded %s %s" % (entry.kind, entry.id))
+            return 0
+        if args.search:
+            hits = memory.search(args.search,
+                                 kinds=(args.kind,) if args.kind else ())
+            if not hits:
+                print("nothing matched %r" % args.search)
+                return 0
+            for entry, score in hits:
+                print("%.2f  [%s] %s" % (score, entry.kind, entry.title))
+            return 0
+        if args.path:
+            for entry in memory.for_path(args.path):
+                print("[%s] %s" % (entry.kind, entry.title))
+            return 0
+        print(render(memory))
+        return 0
+
+    if command == "tasks":
+        from forge.models.taskmap import routing_table
+        for item in routing_table():
+            print("%-16s %-14s capability=%-14s window>=%-7d %s" % (
+                item["kind"], item["model_class"], item["capability"],
+                item["min_context_window"], item["reason"]))
+        return 0
+
+    if command == "stats":
+        from forge.models.stats import StatsStore, render
+        print(render(StatsStore(root).snapshot(), limit=args.limit))
+        return 0
+
+    if command == "agents":
+        from forge.engineering import default_roster
+        roster = default_roster()
+        implemented = set(roster.implemented())
+        for spec in roster.specs:
+            print("%-14s %-11s mutating=%-5s %s" % (
+                spec.role, "implemented" if spec.role in implemented
+                else "not wired", spec.mutating, spec.responsibility[:60]))
+        return 0
+
+    print("nothing to do; try: forge engineer --help")
+    return 2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -3581,6 +3785,88 @@ def main() -> None:
                                  default=argparse.SUPPRESS,
                                  help="Emit machine-readable JSON")
 
+    engineer_parser = subparsers.add_parser(
+        "engineer",
+        help="A83 engineering platform: plan, approve, execute, probe, boot",
+        description="Drive the A83 engineering pipeline. A requirement "
+        "becomes a reviewable plan; nothing executes until that plan is "
+        "approved, and an edit invalidates the approval.",
+    )
+    engineer_subs = engineer_parser.add_subparsers(dest="engineer_command")
+
+    _eng_plan = engineer_subs.add_parser(
+        "plan", help="Turn a requirement into an editable plan")
+    _eng_plan.add_argument("requirement", help="What to build")
+    _eng_plan.add_argument("--profile", default="",
+                           help="Project profile name (e.g. zeroos)")
+    _eng_plan.add_argument("--json", action="store_true",
+                           help="Emit the plan as JSON")
+
+    _eng_show = engineer_subs.add_parser("show", help="Show a stored plan")
+    _eng_show.add_argument("plan_id")
+    _eng_show.add_argument("--json", action="store_true")
+
+    engineer_subs.add_parser("list", help="List stored plans")
+
+    _eng_approve = engineer_subs.add_parser(
+        "approve", help="Approve a plan for execution")
+    _eng_approve.add_argument("plan_id")
+    _eng_approve.add_argument("--actor", default="cli")
+
+    _eng_edit = engineer_subs.add_parser(
+        "edit", help="Edit a plan field (drops any approval)")
+    _eng_edit.add_argument("plan_id")
+    _eng_edit.add_argument("--field", required=True,
+                           help="One of: specifications, components, "
+                                "decisions, dependencies, tasks, test_plan, "
+                                "benchmark_plan, release_plan, open_questions")
+    _eng_edit.add_argument("--value", required=True,
+                           help="JSON value for the field")
+    _eng_edit.add_argument("--summary", default="")
+    _eng_edit.add_argument("--actor", default="cli")
+
+    _eng_execute = engineer_subs.add_parser(
+        "execute", help="Check out an approved plan and show its frontier")
+    _eng_execute.add_argument("plan_id")
+
+    _eng_pipeline = engineer_subs.add_parser(
+        "pipeline", help="Run the multi-agent engineering pipeline")
+    _eng_pipeline.add_argument("--roles", default="",
+                               help="Comma-separated roles to run")
+    _eng_pipeline.add_argument("--profile", default="")
+
+    _eng_hw = engineer_subs.add_parser(
+        "hardware", help="Probe this machine's hardware support")
+    _eng_hw.add_argument("--json", action="store_true")
+    _eng_hw.add_argument("--profile", default="")
+
+    _eng_boot = engineer_subs.add_parser(
+        "boot", help="Build and boot the artifact under QEMU")
+    _eng_boot.add_argument("--profile", default="")
+    _eng_boot.add_argument("--no-build", action="store_true",
+                           help="Skip the build and boot what exists")
+    _eng_boot.add_argument("--scenario", default="",
+                           help="Run only this boot scenario")
+
+    _eng_mem = engineer_subs.add_parser(
+        "memory", help="Long-term project memory")
+    _eng_mem.add_argument("--search", default="")
+    _eng_mem.add_argument("--kind", default="")
+    _eng_mem.add_argument("--path", default="")
+    _eng_mem.add_argument("--add", default="", help="Title for a new entry")
+    _eng_mem.add_argument("--kind-value", dest="add_kind", default="decision")
+    _eng_mem.add_argument("--detail", default="")
+    _eng_mem.add_argument("--source", default="cli")
+
+    engineer_subs.add_parser(
+        "tasks", help="Show the task-kind -> model-class routing table")
+
+    _eng_stats = engineer_subs.add_parser(
+        "stats", help="Measured model routing statistics")
+    _eng_stats.add_argument("--limit", type=int, default=20)
+
+    engineer_subs.add_parser("agents", help="Show the agent roster")
+
     args = parser.parse_args()
 
     if args.command == "status":
@@ -3712,6 +3998,9 @@ def main() -> None:
 
     elif args.command == "server":
         raise SystemExit(_run_server(args, parser))
+
+    elif args.command == "engineer":
+        raise SystemExit(_run_engineer(args))
 
     else:
         parser.print_help()
