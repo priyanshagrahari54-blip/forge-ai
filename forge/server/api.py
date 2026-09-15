@@ -626,7 +626,23 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - flat route table
         task = backend.tasks.get_or_raise(task_id)
         payload = task.to_dict(include_result=task.terminal)
         payload["queue_position"] = backend.queue.position(task_id)
+        #: §10 — durable inference state travels with the task read: which path
+        #: handled it, which attempt/generation, and whether that attempt is
+        #: still authorized to publish.
+        try:
+            payload["inference"] = backend.task_inference_state(task_id)
+        except Exception:                              # noqa: BLE001
+            #: a task read must not fail because inference state is missing
+            payload["inference"] = {"task_id": task_id, "available": False}
         return {"task": payload}
+
+    @app.get(prefix + "/tasks/{task_id}/inference")
+    def get_task_inference(request: Request, task_id: str) -> Dict[str, Any]:
+        """§10 — the inference job state of one task, on its own typed route."""
+        _require(request, "task.read")
+        backend = _server(request)
+        return {"task_id": task_id,
+                "inference": backend.task_inference_state(task_id)}
 
     @app.post(prefix + "/tasks/{task_id}/pause")
     def pause_task(payload: TaskActionRequest, request: Request,

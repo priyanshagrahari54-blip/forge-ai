@@ -225,6 +225,7 @@ class DebuggerAgent(AgentExecutor):
             required_capabilities=("debugging",),
             context=context,
             task=task,
+            caller="debugger",
             prefer_local=True,
             prefer_free=True,
             metadata={"model_data_policy": self.model_policy}

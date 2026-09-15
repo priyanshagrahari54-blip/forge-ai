@@ -358,14 +358,32 @@ def run_agent_benchmark(package: Any, *, fabric: Any = None,
                 if spec.model_requirements.capabilities else "coding"
             response = fabric.generate(ModelRequest(
                 prompt="Reply with exactly the text %s and nothing else."
-                % MARKER, capability=capability))
+                % MARKER, capability=capability,
+                #: §22 — the benchmark is a caller like any other.
+                caller="agent-bench"))
             text = (getattr(response, "text", "")
                     or getattr(response, "output", "") or "")
             if (getattr(response, "success", False)
                     and MARKER in text):
-                checks.append(_check("model-smoke",
-                                     "Fabric routes the required capability "
-                                     "and echoes the marker", "passed"))
+                #: §20/§30 — a benchmark result must say what answered it: a
+                #: passed smoke check on the deterministic rung is not the same
+                #: claim as one on a verified neural model.
+                from forge.models.inference_path import \
+                    provenance_from_response
+
+                provenance = provenance_from_response(response)
+                checks.append(_check(
+                    "model-smoke",
+                    "Fabric routes the required capability "
+                    "and echoes the marker", "passed",
+                    detail="path=%s model=%s backend=%s neural=%s "
+                           "deterministic=%s verification=%s"
+                           % (provenance.get("path", ""),
+                              provenance.get("model", ""),
+                              provenance.get("backend_id", ""),
+                              provenance.get("neural", ""),
+                              provenance.get("deterministic", ""),
+                              provenance.get("verification_state", ""))))
             else:
                 checks.append(_check(
                     "model-smoke",

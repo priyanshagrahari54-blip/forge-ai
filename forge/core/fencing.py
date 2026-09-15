@@ -319,6 +319,25 @@ class FenceRegistry:
             if generation > self._generations.get(task_id, 0):
                 self._generations[task_id] = int(generation)
 
+    def snapshot(self, *, limit: int = 50) -> Dict[str, Any]:
+        """Bounded, read-only view of the authority (observability, §33).
+
+        Counts and the most recent ``limit`` current attempts only: no prompts,
+        no results, no unbounded arrays. Reading it never changes a state.
+        """
+        limit = max(1, min(int(limit or 50), 500))
+        with self._lock:
+            current = [{"task_id": task_id, "generation": generation}
+                       for task_id, generation
+                       in list(self._current.items())[-limit:]]
+            return {
+                "tasks": len(self._current),
+                "fences": len(self._fences),
+                "authorized": sum(1 for fence in self._fences.values()
+                                  if fence.state in AUTHORIZED_STATES),
+                "current": current,
+            }
+
     def is_authorized(self, fence: AttemptFence) -> bool:
         """False once the fence is stale or in a non-authorized state.
 

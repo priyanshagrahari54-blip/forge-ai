@@ -239,6 +239,7 @@ class InferenceResult:
 
     def to_model_response(self) -> Any:
         """Legacy ``ModelResponse`` view for existing fabric consumers."""
+        from forge.models.inference_path import PATH_SESSION11
         from forge.models.request import ModelResponse
 
         response = ModelResponse(
@@ -264,11 +265,20 @@ class InferenceResult:
             "verification_state": self.verification_state,
             "fallback_used": bool(self.fallback.get("fallback_used")),
             "output_flags": list(self.output_scan.get("flags") or ()),
+            #: §20/§30 — the path labels itself. A response that came out of the
+            #: Session-11 fabric says so even when the consumer never travelled
+            #: the ModelFabric seam (an agent holding this fabric directly, the
+            #: CLI, a benchmark). Without this, the honest fallback in
+            #: ``provenance_from_response`` would have to call it legacy — a
+            #: false label for work this fabric really did.
+            "inference_path": PATH_SESSION11,
         })
         return response
 
     def to_dict(self, *, include_text: bool = False) -> Dict[str, Any]:
         """A loggable view: identifiers, timings and decisions — no content."""
+        from forge.models.inference_path import PATH_SESSION11
+
         payload: Dict[str, Any] = {
             "request_id": self.request_id,
             "task_id": self.task_id,
@@ -286,6 +296,7 @@ class InferenceResult:
             "error": self.error[:400],
             "error_code": self.error_code,
             "finish_reason": self.finish_reason,
+            "inference_path": PATH_SESSION11,
             "phase": self.phase,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -1545,6 +1556,53 @@ class InferenceFabric:
         self._count("stale")
         return self._finish(result, started)
 
+    def _label_result(self, result: InferenceResult) -> InferenceResult:
+        """§20/§30 — a Session-11 result says it came from the Session-11 path.
+
+        Consumers that hold this fabric directly (an agent, the CLI, a
+        benchmark) never travel the ``ModelFabric`` seam, so the seam cannot
+        label their responses; without this the honest fallback in
+        ``provenance_from_response`` would have to call real Session-11 work
+        "legacy", which is a false label in the one place labels matter.
+
+        ``setdefault`` only: whatever the run already recorded (a routing
+        reason, a fallback rung, an explicit stamp from the seam) wins over a
+        generic value. Bounded metadata, identifiers and verdicts — never
+        prompt text, never a completion.
+        """
+        from forge.models.inference_path import PATH_SESSION11
+
+        metadata = result.metadata
+        metadata.setdefault("inference_path", PATH_SESSION11)
+        metadata.setdefault("model", result.model_id)
+        metadata.setdefault("provider", result.provider)
+        metadata.setdefault("backend_id", result.backend_id)
+        metadata.setdefault("neural", bool(result.neural))
+        metadata.setdefault("deterministic", not bool(result.neural))
+        metadata.setdefault("state", result.state)
+        metadata.setdefault("error_code", result.error_code)
+        metadata.setdefault("verification_state", result.verification_state)
+        metadata.setdefault("availability_state", result.availability_state)
+        metadata.setdefault("truncated", bool(result.truncated))
+        metadata.setdefault("streamed", bool(result.streamed))
+        for key, value in (("request_id", result.request_id),
+                           ("generation_id", result.generation_id),
+                           ("task_id", result.task_id),
+                           ("attempt_id", result.attempt_id)):
+            if value:
+                metadata.setdefault(key, value)
+        routing = result.routing or {}
+        if routing.get("reason"):
+            metadata.setdefault("routing_reason",
+                                str(routing.get("reason"))[:200])
+        fallback = result.fallback or {}
+        metadata.setdefault("fallback_used",
+                            bool(fallback.get("fallback_used")))
+        if fallback.get("rung"):
+            metadata.setdefault("fallback_rung",
+                                str(fallback.get("rung"))[:64])
+        return result
+
     def _finish(self, result: InferenceResult, started: float) -> Any:
         result.finished_at = time.time()
         result.latency_ms = (self._clock() - started) * 1000.0
@@ -1565,6 +1623,7 @@ class InferenceFabric:
         if (not result.success or not result.text
                 or result.backend_id in ("", "deterministic")):
             result.neural = False
+        self._label_result(result)
         record = result.to_dict()
         with self._lock:
             self._history.append(record)

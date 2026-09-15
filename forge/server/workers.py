@@ -200,6 +200,12 @@ def run_task(server: Any, task_id: str, owner: str,
                        level="warning", source="worker")
             return
         if control.cancel_requested or outcome.get("cancelled"):
+            #: §7 — even the cancellation write needs authority: a superseded
+            #: attempt must not stamp CANCELLED over its successor's record.
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "cancelled outcome")
+                return
             _settle_attempt(server, task_id, project_id, fence, "cancelled",
                             reason="cancelled by operator")
             _finish_cancelled(server, task_id, project_id, owner,
@@ -208,12 +214,23 @@ def run_task(server: Any, task_id: str, owner: str,
             return
         task = server.tasks.get_or_raise(task_id)
         if outcome.get("accepted"):
+            #: §7/§9 — checked *before* the commit, because committing
+            #: SUCCEEDED is itself a terminal transition: an attempt that lost
+            #: authority mid-run must discard its result, not publish it.
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "completed outcome")
+                return
             _settle_attempt(server, task_id, project_id, fence, "succeeded",
                             reason="task accepted",
                             payload={"attempt_id": ctx.attempt_id,
                                      "files": len(outcome.get("files") or [])})
             _finish_completed(server, task, owner, outcome)
         else:
+            if not _may_publish(server, task_id, owner, fence):
+                _discard_unauthorized(server, task_id, project_id, owner,
+                                      fence, "failed outcome")
+                return
             _settle_attempt(server, task_id, project_id, fence, "failed",
                             reason="task rejected by the pipeline")
             _finish_failed(server, task_id, project_id, owner,
@@ -273,6 +290,67 @@ def _ensure_checkpoint(server: Any, task: Any) -> Optional[str]:
 
 def _fenced(server: Any, task_id: str, owner: str) -> bool:
     return server.queue.lease_held_by(task_id, owner)
+
+
+def _may_publish(server: Any, task_id: str, owner: str,
+                 fence: Any = None) -> bool:
+    """One answer to "may this attempt publish?" (§7/§8/§9).
+
+    Two independent authorities must agree, and uncertainty is denial:
+
+    * the queue lease — this process still owns the task; and
+    * the attempt fence — this attempt is still the authorized generation and
+      is still in a state that may commit.
+
+    A lease without a fence is not permission, and a fence without a lease is
+    not either. The registry's view of the fence wins over the copy the worker
+    holds, so a superseded attempt cannot talk itself into publishing.
+    """
+    try:
+        if not server.queue.lease_held_by(task_id, owner):
+            return False
+    except Exception:                                  # noqa: BLE001
+        return False
+    fences = getattr(server, "fences", None)
+    if fences is None or fence is None:
+        #: No authority exists to consult (legacy wiring): the lease is all
+        #: there is, and refusing here would break tasks that never had fences.
+        return True
+    try:
+        return bool(fences.is_authorized(fence))
+    except Exception:                                  # noqa: BLE001
+        return False
+
+
+def _discard_unauthorized(server: Any, task_id: str, project_id: str,
+                          owner: str, fence: Any, kind: str) -> None:
+    """Throw away an outcome this attempt may no longer publish (§9).
+
+    The task record belongs to whoever holds authority now — a successor
+    attempt, or the operator who cancelled. Writing to it from here is exactly
+    the overwrite §9 forbids, so the attempt is fenced, the discard is logged
+    and emitted as bounded metadata, and the record is left untouched.
+    """
+    attempt_id = str(getattr(fence, "attempt_id", "") or "")
+    _settle_attempt(server, task_id, project_id, fence, "fenced",
+                    reason="publish refused: %s" % kind)
+    try:
+        server.log(
+            task_id, project_id,
+            "Discarded %s from attempt %s: the attempt is no longer authorized "
+            "to publish (lease held: %s)."
+            % (kind, attempt_id or "-",
+               bool(server.queue.lease_held_by(task_id, owner))),
+            level="warning", source="worker")
+    except Exception:                                  # noqa: BLE001
+        pass
+    try:
+        server.emit(task_id, project_id, "attempt.fenced",
+                    {"attempt_id": attempt_id[:128],
+                     "reason": "unauthorized_publish",
+                     "kind": str(kind)[:64]})
+    except Exception:                                  # noqa: BLE001
+        pass
 
 
 def _begin_attempt(server: Any, task_id: str, task: Any,

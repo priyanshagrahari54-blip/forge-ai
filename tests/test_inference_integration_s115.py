@@ -98,6 +98,7 @@ LEGACY_PAYLOAD = json.dumps({
 
 def server_on_path(tmp_path: Any, *, mode: str = "session11",
                    inference_fabric: Any = None,
+                   inference_config: Any = None,
                    reference_dir: Any = None,
                    max_output_tokens: int = 48,
                    max_retries: int = 0,
@@ -112,7 +113,9 @@ def server_on_path(tmp_path: Any, *, mode: str = "session11",
     """
     provider = ScriptedProvider(legacy_payload)
     legacy = make_fabric(provider)
-    if reference_dir is not None:
+    if inference_config is not None:
+        pass                                  #: caller-supplied service config
+    elif reference_dir is not None:
         inference_config = InferenceServiceConfig(
             enabled=True, reference_dirs=(str(reference_dir),),
             auto_verify=True, require_verified=True,
@@ -382,17 +385,20 @@ def test_legacy_mode_preserves_the_existing_behaviour(tmp_path):
 
 
 def test_hybrid_mode_records_which_caller_stayed_legacy(tmp_path):
-    """INTEGRATION_TEST: hybrid eligibility is configuration, and it is logged.
+    """INTEGRATION_TEST (§3/§22): hybrid eligibility is configuration.
 
-    The CoderAgent sends ``task=<requirement>``, so a requirement named in
-    ``hybrid_legacy_callers`` stays on the legacy path — and the response says
-    so, with the reason.
+    The allow-list names a *component* — ``coder`` — not a requirement string.
+    Keying it off ``ModelRequest.task`` (as this test originally did) would mean
+    keying configuration off user content, since that same field becomes a
+    remote system prompt; §22 gave requests a stable ``caller`` label instead.
+    The task therefore stays on the legacy path, and the response says so with
+    the reason.
     """
     fabric, backend = scripted_fabric(response=CSV_PAYLOAD,
                                       backend_name="s11double")
     server, legacy_provider = server_on_path(
         tmp_path, mode="hybrid", inference_fabric=fabric,
-        hybrid_legacy_callers=("Add CSV export functionality",))
+        hybrid_legacy_callers=("coder",))
     client = make_client(server)
     try:
         with client:
@@ -404,12 +410,13 @@ def test_hybrid_mode_records_which_caller_stayed_legacy(tmp_path):
                     if "verification probe" not in (call.prompt or "")] == []
             assert legacy_provider.prompts
             response = server.fabric.generate(
-                ModelRequest(prompt="x", capability="coding",
+                ModelRequest(prompt="x", capability="coding", caller="coder",
                              task="Add CSV export functionality"))
             assert response.metadata["inference_path"] == PATH_LEGACY
             assert "not migrated" in response.metadata["inference_path_reason"]
             migrated = server.fabric.generate(
-                ModelRequest(prompt="x", capability="coding", task="other"))
+                ModelRequest(prompt="x", capability="coding", caller="reviewer",
+                             task="Add CSV export functionality"))
             assert migrated.metadata["inference_path"] == PATH_SESSION11
             history = server.fabric.inference_path.history(limit=10)
             assert {entry["path"] for entry in history} == {PATH_LEGACY,
@@ -682,3 +689,528 @@ def test_the_reference_engine_is_labelled_as_what_it_is(tmp_path):
         assert response.text != ""
     finally:
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# §15 — provider configuration must be visible: CONFIGURED →
+# INVALID_CONFIGURATION → UNAVAILABLE, never a silent drop and never NO_MODEL.
+# ---------------------------------------------------------------------------
+
+
+def _remote_env(monkeypatch, provider_id, *, url="http://127.0.0.1:9/v1",
+                model="m", allow_http=True, api_key=""):
+    """Point one remote provider at env values (no network call is made)."""
+    upper = provider_id.upper().replace("-", "_")
+    monkeypatch.setenv("FORGE_REMOTE_%s_URL" % upper, url)
+    monkeypatch.setenv("FORGE_REMOTE_%s_MODEL" % upper, model)
+    monkeypatch.setenv("FORGE_REMOTE_%s_ALLOW_HTTP" % upper,
+                       "1" if allow_http else "0")
+    if api_key:
+        monkeypatch.setenv("FORGE_REMOTE_%s_API_KEY" % upper, api_key)
+
+
+def test_invalid_remote_provider_configuration_is_visible_not_dropped(
+        tmp_path, monkeypatch):
+    """[S11.5] MOCK/INTEGRATION — one broken provider cannot disappear.
+
+    A missing URL makes 'broken' INVALID_CONFIGURATION with a bounded reason;
+    the unrelated 'good' provider still registers and still works; and both
+    facts reach inference.status, models.status and /health. Before Session
+    11.5 the exception was swallowed and the operator saw only NO_MODEL.
+    """
+    from forge.server.inference import (PROVIDER_CONFIGURED, PROVIDER_INVALID)
+
+    monkeypatch.setenv("FORGE_REMOTE_BROKEN_URL", "")
+    _remote_env(monkeypatch, "good", api_key="s3cr3t-token-value")
+    server, _provider = server_on_path(
+        tmp_path,
+        inference_config=InferenceServiceConfig(
+            enabled=True, remote_providers=("broken", "good"),
+            allow_network=True, require_verified=True,
+            max_concurrent_requests=2))
+    service = server.inference
+    service.fabric                                     # build for real
+    try:
+        records = {item["provider_id"]: item
+                   for item in service.provider_configuration()}
+        assert set(records) == {"broken", "good"}
+        assert records["broken"]["state"] == PROVIDER_INVALID
+        assert records["broken"]["available"] is False
+        #: the reason names the missing variable and leaks no credential
+        assert "FORGE_REMOTE_BROKEN_URL" in records["broken"]["reason"]
+        assert "s3cr3t-token-value" not in json.dumps(records)
+        assert records["good"]["state"] == PROVIDER_CONFIGURED
+        #: an unrelated provider is unaffected and its backend really registered
+        backends = {item.get("backend_id") for item
+                    in (service.fabric.status().get("backends") or [])}
+        assert "remote-good" in backends
+
+        #: visible through the HTTP-facing payloads too (models.status embeds it)
+        status = service.models_status()
+        providers = {item["provider_id"]: item
+                     for item in status["service"]["providers"]}
+        assert providers["broken"]["state"] == PROVIDER_INVALID
+        assert status["service"]["invalid_providers"] == ["broken"]
+
+        server.start()
+        health = server.health_monitor.health()
+        component = health["components"]["inference"]
+        assert component["ok"] is False
+        assert component["invalid_providers"] == ["broken"]
+        assert component["mode"] == "session11"
+        assert any("broken" in line and "invalid_configuration" in line
+                   for line in health["warnings"])
+        assert "s3cr3t-token-value" not in json.dumps(health)
+    finally:
+        server.stop()
+
+
+def test_unreachable_provider_is_unavailable_not_invalid(tmp_path,
+                                                         monkeypatch):
+    """[S11.5] MOCK/INTEGRATION — configured ≠ reachable, and neither is a lie.
+
+    With the network denied by policy the provider's configuration is fine, so
+    it must not be reported INVALID_CONFIGURATION; and because it has never
+    been probed it must not be reported unreachable either. What is reported is
+    the policy denial itself.
+    """
+    from forge.server.inference import PROVIDER_INVALID
+
+    _remote_env(monkeypatch, "locked")
+    server, _provider = server_on_path(
+        tmp_path,
+        inference_config=InferenceServiceConfig(
+            enabled=True, remote_providers=("locked",), allow_network=False,
+            require_verified=True, max_concurrent_requests=2))
+    server.inference.fabric
+    try:
+        record = server.inference.provider_configuration()[0]
+        assert record["provider_id"] == "locked"
+        assert record["state"] != PROVIDER_INVALID
+        assert record["state"] in ("configured", "unavailable")
+        if record["state"] == "unavailable":
+            #: the reason is the policy denial, not a fabricated "unreachable"
+            assert record["reason"]
+            assert ("network" in record["reason"].lower()
+                    or record.get("denial"))
+        if record.get("probed") is False:
+            assert record["reachable"] is None          # unknown, not false
+    finally:
+        server.stop()
+
+
+def test_health_reading_performs_no_model_work(tmp_path):
+    """[S11.5] MOCK/INTEGRATION — health is a read, not a side effect.
+
+    Describing the canonical path must not discover, verify, load or contact a
+    model: a health poll that did would touch model directories and could start
+    network probes on every scrape. The fabric is therefore only described when
+    it already exists, and reading health must not add a single generation.
+    """
+    fabric, backend = scripted_fabric("health check")
+    server, _provider = server_on_path(tmp_path, inference_fabric=fabric)
+    try:
+        server.start()
+        before = len(backend.generate_calls)
+        component: Dict[str, Any] = {}
+        for _unused in range(3):
+            health = server.health_monitor.health()
+            component = health["components"]["inference"]
+        assert component["enabled"] is True
+        assert component["mode"] == "session11"
+        assert component["ok"] is True
+        #: three health polls produced no model traffic whatsoever
+        assert len(backend.generate_calls) == before
+        #: the fence authority is described without mutating a single fence
+        assert component["fences"]["tasks"] == 0
+        assert component["fences"]["authorized"] == 0
+        assert "prompt" not in json.dumps(component).lower()
+    finally:
+        server.stop()
+
+
+def test_fence_snapshot_is_bounded_and_free_of_payloads(tmp_path):
+    """[S11.5] MOCK/INTEGRATION — §33 observability of the authority itself."""
+    from forge.core.fencing import commit_guard
+
+    models = tmp_path / "models"
+    write_reference_artifact(models, "reference-clm")
+    server, _provider = server_on_path(tmp_path, reference_dir=models)
+    registry = server.fences
+    try:
+        for index in range(5):
+            task_id = "t%d" % index
+            fence = registry.begin(task_id, owner="w")
+            registry.mark_running(task_id, fence)
+        snapshot = registry.snapshot(limit=2)
+        assert snapshot["tasks"] == 5
+        assert snapshot["authorized"] == 5
+        assert len(snapshot["current"]) == 2                # bounded
+        registry.commit("t0", registry.current("t0"), "SUCCEEDED",
+                        payload={"result": "x" * 5000})
+        after = registry.snapshot()
+        assert after["authorized"] == 4
+        #: a snapshot is metadata only: no prompts, results or requirement text
+        text = json.dumps(after).lower()
+        for forbidden in ("prompt", "requirement", "xxxx"):
+            assert forbidden not in text
+        guard = commit_guard(registry.current("t1"), registry)
+        assert isinstance(guard(), str)
+    finally:
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# §10 — durable inference job state, readable from the task API
+# ---------------------------------------------------------------------------
+
+
+def test_task_read_exposes_durable_inference_state(tmp_path):
+    """INTEGRATION_TEST · MOCK_BACKEND_TEST — the task API answers §10.
+
+    After a real loop run the task read reports which path handled the work,
+    which attempt and generation produced it, and whether that attempt may
+    still publish. A terminal attempt is *not* authorized to publish: the fence
+    is committed, and that is visible rather than implied.
+    """
+    fabric, backend = scripted_fabric(response=CSV_PAYLOAD,
+                                      backend_name="s11double",
+                                      model_name="s11-model")
+    server, _legacy = server_on_path(tmp_path, inference_fabric=fabric)
+    client = make_client(server)
+    try:
+        with client:
+            task = create_task(client, ADMIN, "Add CSV export functionality")
+            task_id = task["task_id"]
+            state = approve_until_terminal(client, ADMIN, task_id, timeout=240)
+            assert state["status"] == "completed", state.get("error", "")
+
+            read = client.get("/api/v1/tasks/%s" % task_id, headers=ADMIN)
+            assert read.status_code == 200
+            inference = read.json()["task"]["inference"]
+            assert inference["persisted"] is True
+            assert inference["path"] == PATH_SESSION11
+            assert inference["model"] == "s11double:s11-model"
+            assert inference["backend_id"] == "s11double"
+            assert inference["attempt_id"] == "%s#g1" % task_id
+            assert inference["generation"] == 1
+            assert inference["fence_state"] == "SUCCEEDED"
+            assert inference["authorized_to_publish"] is False
+            assert inference["mode"] == "session11"
+            assert inference["path_attached"] is True
+
+            #: the dedicated route reports the same facts, and needs auth
+            dedicated = client.get("/api/v1/tasks/%s/inference" % task_id,
+                                   headers=ADMIN)
+            assert dedicated.status_code == 200
+            body = dedicated.json()
+            assert body["task_id"] == task_id
+            assert body["inference"]["model"] == "s11double:s11-model"
+            assert body["inference"]["fence_state"] == "SUCCEEDED"
+            anonymous = client.get("/api/v1/tasks/%s/inference" % task_id)
+            assert anonymous.status_code in (401, 403)
+
+            #: §14/§33 — the state is metadata: no prompt, no model output
+            blob = json.dumps(inference).lower()
+            assert "export_csv" not in blob
+            assert CSV_PAYLOAD not in json.dumps(inference)
+            assert backend.generate_calls
+    finally:
+        server.stop()
+
+
+def test_unstarted_task_reports_no_inference_facts(tmp_path):
+    """[S11.5] MOCK — an attempt that never ran has no provenance to show.
+
+    §10 must not manufacture history: a queued task reports that nothing was
+    persisted and that no attempt is authorized, while still reporting the
+    server's configured mode (a fact about the server, not about the attempt).
+    """
+    server, _legacy = server_on_path(tmp_path)
+    try:
+        task = server.tasks.create("demo", "queued, never started")
+        state = server.task_inference_state(task.task_id)
+        assert state["persisted"] is False
+        assert state["authorized_to_publish"] is False
+        assert state["fence_state"] == "unknown"
+        assert state["mode"] == "session11"
+        for absent in ("model", "backend_id", "path", "generation_id",
+                       "neural", "verification_state"):
+            assert absent not in state, absent
+    finally:
+        server.stop()
+
+
+def test_cancelled_attempt_state_is_readable_and_denies_publishing(tmp_path):
+    """[S11.5] MOCK — §8/§10: a cancelled attempt says so, and cannot publish."""
+    server, _legacy = server_on_path(tmp_path)
+    try:
+        task = server.tasks.create("demo", "will be cancelled")
+        task_id = task.task_id
+        fence = server.fences.begin(task_id, owner="worker-1")
+        server.fences.mark_running(task_id, fence)
+        running = server.task_inference_state(task_id)
+        assert running["fence_state"] == "RUNNING"
+        assert running["authorized_to_publish"] is True
+        assert running["attempt_id"] == "%s#g1" % task_id
+
+        server.cancel_task(task_id, actor="operator")
+        cancelled = server.task_inference_state(task_id)
+        assert cancelled["fence_state"] in ("CANCELLING", "CANCELLED")
+        assert cancelled["authorized_to_publish"] is False
+        assert cancelled["persisted"] is False
+        #: a superseding attempt takes the authority away for good
+        successor = server.fences.begin(task_id, owner="worker-2")
+        server.fences.mark_running(task_id, successor)
+        after = server.task_inference_state(task_id)
+        assert after["generation"] == 2
+        assert after["attempt_id"] == "%s#g2" % task_id
+        assert after["authorized_to_publish"] is True
+        assert server.fences.is_authorized(fence) is False
+    finally:
+        server.stop()
+
+
+def test_an_unauthorized_attempt_cannot_write_the_task_record(tmp_path,
+                                                             monkeypatch):
+    """INTEGRATION_TEST (§7/§8/§9): the lease is not the only authority.
+
+    A worker that still holds its lease but has lost its fence — superseded by a
+    retry, or cancelled by an operator — must not publish. The task record stays
+    exactly as the authority left it, the attempt is fenced, and the discard is
+    reported as bounded metadata instead of being silently dropped.
+
+    The lease itself is a labelled test double (``lease_held_by`` forced true)
+    so the fence is the only variable under test.
+    """
+    from forge.server.workers import _discard_unauthorized, _may_publish
+
+    fabric, _backend = scripted_fabric(response="zombie-result",
+                                       backend_name="s11double")
+    server, _provider = server_on_path(tmp_path, inference_fabric=fabric)
+    monkeypatch.setattr(server.queue, "lease_held_by",
+                        lambda task_id, owner: True)
+    try:
+        task = server.tasks.create("demo", "superseded work",
+                                   mode="autonomous")
+        task_id = task.task_id
+        fence_a, _identity = _begin_attempt(server, task_id, task, "worker-A")
+        assert fence_a is not None
+        #: while it is the authorized generation, it may publish
+        assert _may_publish(server, task_id, "worker-A", fence_a) is True
+
+        before = server.tasks.get_or_raise(task_id)
+        version_before = before.version
+        result_before = before.result_json
+
+        #: a successor attempt takes the authority away
+        fence_b = server.fences.begin(task_id, owner="worker-B")
+        server.fences.mark_running(task_id, fence_b)
+        assert _may_publish(server, task_id, "worker-A", fence_a) is False
+        #: and B — the current attempt — still may
+        assert _may_publish(server, task_id, "worker-B", fence_b) is True
+
+        _discard_unauthorized(server, task_id, "demo", "worker-A", fence_a,
+                              "completed outcome")
+        assert server.fences.get(task_id, fence_a.generation).state == "FENCED"
+        after = server.tasks.get_or_raise(task_id)
+        #: the stale attempt wrote nothing at all
+        assert after.version == version_before
+        assert after.result_json == result_before
+        assert after.status.value not in ("completed", "failed", "cancelled")
+        fenced_events = [event for event in task_events(server, task_id)
+                         if event["type"] == "attempt.fenced"]
+        assert fenced_events
+        assert fenced_events[-1]["data"]["attempt_id"] == fence_a.attempt_id
+        assert fenced_events[-1]["data"]["reason"] == "unauthorized_publish"
+        assert "zombie-result" not in json.dumps(fenced_events[-1]["data"])
+
+        #: losing the lease alone is also enough to lose publish rights
+        monkeypatch.setattr(server.queue, "lease_held_by",
+                            lambda task_id, owner: False)
+        assert _may_publish(server, task_id, "worker-B", fence_b) is False
+    finally:
+        server.stop()
+
+
+def test_operator_cancellation_revokes_publish_authority_immediately(tmp_path,
+                                                                    monkeypatch):
+    """INTEGRATION_TEST (§8): one cancellation chain, no privileged gap.
+
+    Before Session 11.5 ``cancel_task`` set a flag and signalled the running
+    control, but the attempt fence stayed RUNNING — so a worker that finished
+    before noticing the cancel could still commit SUCCEEDED and publish a
+    result the operator had just forbidden. Cancellation now reaches the
+    authority at once: the fence goes to CANCELLING, authorization is revoked,
+    and the worker's own confirmation still completes the transition.
+    """
+    from forge.server.workers import _may_publish, _settle_attempt
+    from forge.server import TaskStatus
+
+    fabric, _backend = scripted_fabric(response="late-result",
+                                       backend_name="s11double")
+    server, _provider = server_on_path(tmp_path, inference_fabric=fabric)
+    monkeypatch.setattr(server.queue, "lease_held_by",
+                        lambda task_id, owner: True)
+    try:
+        task = server.tasks.create("demo", "long running work",
+                                   mode="autonomous")
+        task_id = task.task_id
+        #: walk the real transition table: created → queued → started, so the
+        #: cooperative branch of cancel_task (a running attempt) is what runs.
+        server.tasks.transition(task_id, TaskStatus.QUEUED,
+                                expected=(TaskStatus.CREATED,))
+        server.tasks.transition(task_id, TaskStatus.STARTED,
+                                expected=(TaskStatus.QUEUED,))
+        fence, _identity = _begin_attempt(server, task_id, task, "worker-A")
+        assert _may_publish(server, task_id, "worker-A", fence) is True
+
+        server.cancel_task(task_id, actor="operator")
+
+        current = server.fences.current(task_id)
+        assert current.state == "CANCELLING"
+        #: the worker that has not noticed yet may no longer publish
+        assert _may_publish(server, task_id, "worker-A", fence) is False
+        assert server.fences.is_authorized(fence) is False
+        state = server.task_inference_state(task_id)
+        assert state["authorized_to_publish"] is False
+        assert state["fence_state"] == "CANCELLING"
+
+        #: the worker's confirmation still lands, and is idempotent-safe
+        assert _settle_attempt(server, task_id, "demo", fence, "cancelled",
+                               reason="cancelled by operator") == "CANCELLED"
+        assert server.fences.current(task_id).state == "CANCELLED"
+        #: a second cancellation request neither raises nor resurrects anything
+        server.tasks.update(task_id, cancel_requested=True)
+        assert server.fences.current(task_id).state == "CANCELLED"
+    finally:
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# §22 — every model call site is classified, and none keeps a private path
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_eligibility_keys_off_the_stable_caller_label(tmp_path):
+    """[S11.5] MOCK — configuration names components, not user content.
+
+    ``ModelRequest.task`` is free text: it becomes a remote system prompt and a
+    routing hint, so keying hybrid eligibility off it means keying it off the
+    requirement. ``caller`` is the stable label; ``task`` remains only a
+    fallback for callers that predate the field.
+    """
+    from forge.models.inference_path import (PATH_HYBRID, InferencePathConfig,
+                                             decide_path)
+
+    config = InferencePathConfig(mode=PATH_HYBRID,
+                                hybrid_legacy_callers=("reviewer",))
+    labelled = decide_path(config, ModelRequest(prompt="p", capability="coding",
+                                                caller="reviewer",
+                                                task="Add CSV export"),
+                           available=True)
+    assert labelled.path == PATH_LEGACY
+    assert "not migrated" in labelled.reason
+
+    #: the same requirement from a migrated component still uses Session 11
+    migrated = decide_path(config, ModelRequest(prompt="p", capability="coding",
+                                                caller="coder",
+                                                task="Add CSV export"),
+                           available=True)
+    assert migrated.path == PATH_SESSION11
+
+    #: and the pre-field fallback still works, so nothing regressed
+    fallback = decide_path(config, ModelRequest(prompt="p", capability="coding",
+                                                task="reviewer"),
+                           available=True)
+    assert fallback.path == PATH_LEGACY
+
+
+def test_production_call_sites_declare_a_stable_caller(tmp_path):
+    """[S11.5] MOCK — §22: the call-site map is enforced, not remembered.
+
+    Every production model call site sends a stable ``caller`` label, so the
+    canonical path can classify it, hybrid mode can allow-list it, and an audit
+    record can name the component that asked. A new call site that forgets the
+    label fails here rather than silently becoming unclassifiable.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    repo = _Path(__file__).resolve().parents[1]
+    expected = {
+        "forge/agents/coder.py": '"coder"',
+        "forge/agents/debugger.py": '"debugger"',
+        "forge/agents/reviewer.py": '"reviewer"',
+        "forge/agents/mediation.py": '"mediated-agent:%s"',
+        "forge/agents/agent_bench.py": '"agent-bench"',
+    }
+    for relative, label in expected.items():
+        text = (repo / relative).read_text(encoding="utf-8")
+        assert "caller=%s" % label in text, "%s lost its caller label" % relative
+        #: and the label really reaches a fabric request
+        assert re.search(r"fabric\.generate\(", text), relative
+
+
+def test_reviewer_and_mediation_record_which_path_answered(tmp_path):
+    """[S11.5] MOCK — a verdict and a mediated run carry their provenance.
+
+    A BLOCK from an unverified deterministic rung and a BLOCK from a verified
+    neural model are different facts, so the reviewer records which one it was;
+    a mediated agent gets no private inference story of its own.
+    """
+    from forge.agents.reviewer import ReviewerAgent
+    from forge.models.inference_path import PATH_SESSION11
+
+    fabric, _backend = scripted_fabric(
+        response='{"findings": [], "verdict": "APPROVE"}',
+        backend_name="s11double", model_name="s11-model",
+        capabilities=("coding", "review"))
+    reviewer = ReviewerAgent(fabric=fabric)
+    assert reviewer.last_inference == {}
+    findings = reviewer.review(task="t", changed_files=("a.py",),
+                               diff="- old\n+ new")
+    assert findings is not None and findings == []
+    provenance = reviewer.last_inference
+    assert provenance["path"] == PATH_SESSION11
+    assert provenance["model"] == "s11double:s11-model"
+    assert provenance["backend_id"] == "s11double"
+    assert provenance["success"] is True
+    #: bounded and content-free: no diff, no prompt, no findings text
+    blob = json.dumps(provenance).lower()
+    assert "old" not in blob and "findings" not in blob
+
+    #: A double that never claimed "review" is *refused*, not stretched: the
+    #: verdict is None, and the refusal is still recorded with its path (§19).
+    coding_only, _backend2 = scripted_fabric(
+        response='{"findings": [], "verdict": "APPROVE"}',
+        backend_name="coding-only", model_name="coding-model")
+    strict = ReviewerAgent(fabric=coding_only)
+    assert strict.review(task="t", changed_files=("a.py",), diff="d") is None
+    refused = strict.last_inference
+    assert refused["path"] == PATH_SESSION11
+    assert refused["success"] is False
+    #: the refusal names the missing capability and the rung that answered
+    reason = str(refused.get("routing_reason", "")).lower()
+    assert "review" in reason
+    assert refused.get("error_code") == "NEEDS_MODEL"
+    assert refused.get("backend_id") == "deterministic"
+    assert refused.get("neural") is False
+    assert refused.get("deterministic") is True
+
+
+def test_benchmark_smoke_check_states_what_answered(tmp_path):
+    """[S11.5] MOCK — §30: a passed check says whether it was real or a rung."""
+    from forge.agents.agent_bench import MARKER, _check
+
+    fabric, _backend = scripted_fabric(response=MARKER,
+                                       backend_name="s11double",
+                                       model_name="s11-model")
+    detail = ("path=%s model=%s neural=%s"
+              % (PATH_SESSION11, "s11double:s11-model", True))
+    check = _check("model-smoke", "d", "passed", detail=detail)
+    assert check["detail"].startswith("path=session11")
+    assert "s11double:s11-model" in check["detail"]
+    #: the detail is bounded like every other evidence string
+    assert len(_check("x", "y", "passed", detail="z" * 5000)["detail"]) <= 500
+    assert fabric is not None

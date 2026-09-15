@@ -24,6 +24,13 @@ class ModelRequest:
     required_capabilities: tuple[str, ...] = ()
     context: str = ""
     task: str = ""
+    #: Session 11.5 (§22): the *stable* identity of the component making this
+    #: call — ``"coder"``, ``"reviewer"``, ``"mediated-agent:<name>"``. Hybrid
+    #: path eligibility is decided from this, not from ``task``: ``task`` is
+    #: free text (it becomes a remote system prompt and a routing hint), so
+    #: keying configuration off it would mean keying configuration off user
+    #: content. Empty falls back to ``task`` for callers that predate it.
+    caller: str = ""
     min_context_window: int = 0
     max_output_tokens: int | None = None
     #: 1.0 = trivial, higher = more complex. Used for complexity-aware routing.
@@ -117,6 +124,7 @@ class ModelRequest:
             "required_capabilities": list(self.required_capabilities),
             "context_chars": len(self.context),
             "task": self.task,
+            "caller": self.caller,
             "min_context_window": self.min_context_window,
             "max_output_tokens": self.max_output_tokens,
             "complexity": self.complexity,

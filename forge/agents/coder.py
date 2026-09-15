@@ -485,6 +485,7 @@ class CoderAgent(AgentExecutor):
             required_capabilities=("coding",),
             context=model_request.context,
             task=model_request.task,
+            caller="coder",
             prefer_local=True,
             prefer_free=True,
             max_output_tokens=4000,
@@ -517,6 +518,8 @@ class CoderAgent(AgentExecutor):
             required_capabilities=("coding",),
             context=str(request.context) if request.context else "",
             task=request.task.description,
+            #: §22 — stable caller label for hybrid eligibility and audit.
+            caller="coder",
             min_context_window=request.context.estimated_tokens if request.context else 0,
             prefer_local=True,
             prefer_free=True,

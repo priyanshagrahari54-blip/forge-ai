@@ -38,6 +38,9 @@ from forge.server.errors import (InvalidRequest, NotFound, PermissionDenied,
 
 __all__ = [
     "FenceAuthorityDenied",
+    "PROVIDER_CONFIGURED",
+    "PROVIDER_INVALID",
+    "PROVIDER_UNAVAILABLE",
     "FenceAuthorityError",
     "CancelledAttempt",
     "InferenceNotConfigured",
@@ -65,6 +68,13 @@ MAX_TIMEOUT_SECONDS = 300.0
 MAX_STREAM_CHARS = 128 * 1024
 #: Completed streams are retained this long for cursor replay.
 STREAM_TTL_SECONDS = 300.0
+#: §15 provider-configuration states. A provider that is configured but cannot
+#: be parsed/validated is not "absent": it is invalid, and says why.
+PROVIDER_CONFIGURED = "configured"
+PROVIDER_INVALID = "invalid_configuration"
+PROVIDER_UNAVAILABLE = "unavailable"
+#: Bound on how many provider records are kept (one per configured id).
+MAX_TRACKED_PROVIDERS = 32
 MAX_RETAINED_STREAMS = 64
 MAX_EVENTS_PER_STREAM = 2048
 
@@ -321,6 +331,12 @@ class ServerInferenceService:
         self._started = False
         self._start_error = ""
         self._counts: Dict[str, int] = {}
+        #: §15 — configured remote providers and what became of them. An
+        #: invalid provider is recorded (CONFIGURED → INVALID_CONFIGURATION →
+        #: UNAVAILABLE) with a bounded, redacted reason instead of quietly
+        #: disappearing from the registry. Insertion-ordered, bounded, and
+        #: never holding a credential.
+        self._providers: "Dict[str, Dict[str, Any]]" = {}
 
     # -- lifecycle -------------------------------------------------------
 
@@ -386,13 +402,28 @@ class ServerInferenceService:
         remotes: List[RemoteProviderConfig] = []
         for provider_id in self.config.remote_providers:
             try:
-                remotes.append(RemoteProviderConfig.from_env(provider_id))
+                #: Not ``config``: that name is the RuntimeConfig this method
+                #: hands to build_inference_fabric, and shadowing it would
+                #: quietly reconfigure the whole runtime. ``from_env`` performs
+                #: the dataclass validation, so a raise here *is* the
+                #: INVALID_CONFIGURATION signal — nothing is probed over the
+                #: network at build time.
+                provider_config = RemoteProviderConfig.from_env(provider_id)
             except Exception as exc:
-                # A misconfigured optional provider must not break the server;
-                # it is simply not registered (and reported as unavailable).
-                self._count("remote_provider_refused")
-                self._start_error = ""
-                _ = exc
+                #: §15 — a misconfigured provider must not break the server, and
+                #: it must not vanish either. It is recorded as configured but
+                #: invalid, with a bounded redacted reason; unrelated providers
+                #: keep working. The alternative (silently dropping it) turns a
+                #: PROVIDER_CONFIGURATION_ERROR into a mysterious NO_MODEL.
+                self._count("remote_provider_invalid")
+                self._note_provider(provider_id, PROVIDER_INVALID,
+                                    reason=_redact(str(exc))[:300])
+                self._audit("models.provider_invalid", scope=provider_id[:64],
+                            allowed=False,
+                            reason=_redact(str(exc))[:200])
+                continue
+            remotes.append(provider_config)
+            self._note_provider(provider_id, PROVIDER_CONFIGURED)
 
         from forge.models.telemetry import Telemetry
 
@@ -657,11 +688,85 @@ class ServerInferenceService:
                 payload["error"] = _redact(str(exc))
         return payload
 
+    def _note_provider(self, provider_id: str, state: str, *,
+                       reason: str = "") -> None:
+        """Record what became of a configured remote provider (§15)."""
+        provider_id = str(provider_id or "")[:64]
+        if not provider_id:
+            return
+        with self._lock:
+            self._providers[provider_id] = {
+                "provider_id": provider_id,
+                "state": state,
+                #: CONFIGURED → INVALID_CONFIGURATION → UNAVAILABLE. The last
+                #: two are the same fact from two angles: the configuration is
+                #: wrong, therefore the provider cannot serve.
+                "available": state == PROVIDER_CONFIGURED,
+                "reason": _redact(str(reason))[:300],
+                "recorded_at": time.time(),
+            }
+            if len(self._providers) > MAX_TRACKED_PROVIDERS:
+                for stale in list(self._providers)[:
+                        len(self._providers) - MAX_TRACKED_PROVIDERS]:
+                    self._providers.pop(stale, None)
+
+    def provider_configuration(self) -> List[Dict[str, Any]]:
+        """Configured remote providers and their real state, newest last.
+
+        §15's ladder in one place: CONFIGURED (parsed and registered) →
+        INVALID_CONFIGURATION (could not be parsed/validated) → UNAVAILABLE
+        (registered but its backend reports it cannot serve). Reachability
+        comes from the already-built backend snapshot; nothing here performs a
+        network call, so reading it is free of side effects.
+        """
+        with self._lock:
+            records = [dict(item) for item in self._providers.values()]
+        fabric = self._fabric
+        if fabric is None or not records:
+            return records
+        try:
+            backends = (fabric.status() or {}).get("backends") or []
+        except Exception:                              # noqa: BLE001
+            return records
+        live: Dict[str, Dict[str, Any]] = {}
+        for item in backends:
+            key = str(item.get("backend_id") or item.get("name") or "")
+            if key:
+                live[key] = item
+        for record in records:
+            snapshot = (live.get("remote-%s" % record["provider_id"])
+                        or live.get(record["provider_id"]))
+            if snapshot is None:
+                continue
+            detail = str(snapshot.get("detail") or "")
+            denial = str(snapshot.get("denial") or "")
+            #: A backend that has never been probed is not "unreachable": it is
+            #: configured with reachability unknown. Claiming otherwise would
+            #: be its own kind of fabrication.
+            probed = "not probed" not in detail
+            record["probed"] = probed
+            record["reachable"] = bool(snapshot.get("reachable")) if probed \
+                else None
+            record["denial"] = denial[:64]
+            if record["state"] != PROVIDER_CONFIGURED:
+                continue
+            if not bool(snapshot.get("configured", True)):
+                record["state"] = PROVIDER_INVALID
+                record["reason"] = (record["reason"] or denial
+                                    or detail or "backend not configured")[:300]
+            elif denial or (probed and snapshot.get("reachable") is False):
+                record["state"] = PROVIDER_UNAVAILABLE
+                record["reason"] = (denial or detail
+                                    or "backend cannot serve")[:300]
+            record["available"] = record["state"] == PROVIDER_CONFIGURED
+        return records
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             counts = dict(self._counts)
             streams = len(self._streams)
             running = self._running
+        providers = self.provider_configuration()
         return {
             "enabled": bool(self.config.enabled),
             "started": bool(self._started),
@@ -673,6 +778,11 @@ class ServerInferenceService:
             "retained_streams": streams,
             "counts": counts,
             "governor": _governor_snapshot(self.governor),
+            #: §15 — visible in inference.status *and* models.status (which
+            #: embeds this payload), so a configuration failure cannot hide.
+            "providers": providers,
+            "invalid_providers": [item["provider_id"] for item in providers
+                                  if item["state"] != PROVIDER_CONFIGURED],
         }
 
     # -- internals --------------------------------------------------------

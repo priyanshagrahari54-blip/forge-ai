@@ -22,6 +22,9 @@ class ReviewerAgent:
 
     def __init__(self, fabric=None):
         self.fabric = fabric
+        #: §20/§22 — bounded provenance of the last review generation: which
+        #: path answered, which model, and whether it was verified/neural.
+        self.last_inference: dict = {}
 
     def describe(self) -> str:
         return "Responsible for independently reviewing changes."
@@ -81,9 +84,18 @@ class ReviewerAgent:
             capability="review",
             required_capabilities=("review",),
             task=task,
+            #: §22 — a stable caller label, so hybrid eligibility and audit can
+            #: name the component instead of the requirement text.
+            caller="reviewer",
             prefer_local=True,
             prefer_free=True,
         ))
+        #: §20/§22 — which path answered a review verdict is part of the
+        #: verdict's provenance: a BLOCK from an unverified deterministic rung
+        #: and a BLOCK from a verified neural model are different facts.
+        from forge.models.inference_path import provenance_from_response
+
+        self.last_inference = provenance_from_response(response)
         if not response.success:
             return None
         findings = self._parse(response.text)

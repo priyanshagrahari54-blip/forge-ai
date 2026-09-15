@@ -856,6 +856,9 @@ class GatedAgentRuntime:
             prompt=requirement, capability=caps[0],
             required_capabilities=tuple(caps[1:]),
             task="agent:%s:%s" % (name, run_id),
+            #: §22 — stable per component, not per run: a run id in the caller
+            #: label makes hybrid allow-listing impossible to express.
+            caller="mediated-agent:%s" % name,
             min_context_window=_spec_int(model_req, "min_context_window",
                                          0),
             prefer_free=prefer_free,
@@ -882,12 +885,19 @@ class GatedAgentRuntime:
                 "allow_fallback=false)"
                 + (": model identity could not be confirmed — %s"
                    % probe_error if probe_error else ""))
+        from forge.models.inference_path import provenance_from_response
+
         return {"text": getattr(response, "text", "")
                 or getattr(response, "output", ""),
                 "model": model,
                 "provider": provider,
                 "fallback": fallback,
-                "probe_error": probe_error}
+                "probe_error": probe_error,
+                #: §20/§22 — bounded, content-free: which path served a
+                #: mediated agent, whether it was neural, and whether the model
+                #: was verified. A mediated agent gets no private inference
+                #: story of its own.
+                "inference": provenance_from_response(response)}
 
     def _probe_fallback(self, model: str, provider: str) -> tuple[bool, str]:
         """Decide whether a response came from the offline placeholder.

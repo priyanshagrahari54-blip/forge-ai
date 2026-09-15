@@ -934,7 +934,12 @@ def _inference_accessor(inference: Any) -> Any:
     raises when asked, and the adapter turns that into an honest
     ``INFERENCE_PATH_UNAVAILABLE`` refusal instead of a silent legacy call.
     """
-    if hasattr(inference, "fabric") and not hasattr(inference, "generate"):
+    #: Look for ``fabric`` on the *type*, never with ``hasattr`` on the
+    #: instance: on a service that property is lazy, and probing it would build
+    #: the fabric (touching model directories) or raise during attaching.
+    owns_lazy_fabric = (getattr(type(inference), "fabric", None) is not None
+                        and getattr(type(inference), "generate", None) is None)
+    if owns_lazy_fabric:
         #: ServerInferenceService (and anything else that owns a lazy fabric).
         def _from_service() -> Any:
             return inference.fabric

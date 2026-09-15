@@ -148,6 +148,45 @@ User → Cockpit/CLI/API/Voice → typed task submission → SQLite TaskQueue (u
 | **M** | Docs: `SESSION11.5-PLAN.md` (this file), `INFERENCE-INTEGRATION.md`, `SESSION11.5-REPORT.md`. | §34 §37 |
 | **N** | Leftover from the Session-11 follow-up: operations reporting as a shipped feature — typed `GET/POST /api/v1/inference/report`, `forge ops report`, cockpit panel, tests. | (carry-over) |
 
+### Delivery status
+
+Commits are on `arena/01a09a74-forge-ai` (PR #36). Test counts are for
+`tests/test_inference_integration_s115.py` unless noted.
+
+| Slice | Status | Commit | Notes |
+|---|---|---|---|
+| **A** | done | `700f333` | canonical seam, typed modes, adapter, identity-bound view, provenance |
+| **B** | done | `700f333` | one `FenceRegistry` on the server, fail-closed `_fence_for`, worker fence lifecycle |
+| **E** | done | `ce30675` | provider ladder + `inference` health component + `FenceRegistry.snapshot()`; 4 tests |
+| **C** | done | `e6ff51f` | `task_inference_state` on the task API; **and** the two §8 defects it exposed (below); 5 tests |
+| **M** | partial | `9767d31` | `docs/INFERENCE-PATH.md` written; `SESSION11.5-REPORT.md` still owed (§37) |
+| **I** | done | `9c6d0af` | stable `caller` labels, provenance at reviewer/mediation/bench, self-labelling results; 3 tests + 1 corrected |
+| **D** | not started | — | audit vs telemetry classification (§13/§14) |
+| **F** | not started | — | resource hierarchy, denial owner, residency release (§16–§18) |
+| **G** | not started | — | streaming correctness under the new path (§23) |
+| **H** | not started | — | G560 thin-client end-to-end delegation (§26) |
+| **J** | not started | — | CLI provenance (§32) |
+| **K** | not started | — | bounded observability histories (§33) |
+| **L** | not started | — | measured performance before/after (§25) |
+| **N** | not started | — | leftover operations-reporting feature (carry-over) |
+
+Two defects Slice C found while making inference state readable — both were
+publish-authority holes, not reporting holes:
+
+1. `cancel_task` never reached the fence. It set `cancel_requested` and signalled
+   the running control, leaving the attempt `RUNNING` and therefore *authorized*:
+   a worker that finished before noticing the cancel could commit `SUCCEEDED` and
+   publish a result the operator had just forbidden. Cancellation now moves the
+   current fence to `CANCELLING` immediately (pre-start cancellations confirm
+   `CANCELLED` themselves).
+2. Publication was gated on the queue **lease** only, by a helper named
+   `_fenced()` that never looked at a fence. `_may_publish()` now requires the
+   lease *and* an authorized attempt, checked **before** the terminal commit
+   (committing `SUCCEEDED` is itself terminal, so checking after would always
+   refuse). An unauthorized outcome is discarded: the attempt is fenced, the
+   discard is logged and emitted as `attempt.fenced`, and the task record is left
+   to whoever really owns it.
+
 ## 3. Invariants that may not be weakened
 
 1. `CONFIGURED ≠ VERIFIED`, `DISCOVERED ≠ READY`; READY requires real verification.

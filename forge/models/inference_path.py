@@ -203,7 +203,10 @@ def decide_path(config: Optional[InferencePathConfig], request: Any, *,
     """
     cfg = config or InferencePathConfig()
     capability = str(getattr(request, "capability", "") or "")
-    caller = str(getattr(request, "task", "") or "")
+    #: §22 — the stable component label wins; ``task`` is only a fallback for
+    #: callers that predate the field (and is free text, so it is a poor key).
+    caller = str(getattr(request, "caller", "") or "") or \
+        str(getattr(request, "task", "") or "")
     metadata = getattr(request, "metadata", None) or {}
     forced = str(metadata.get("inference_path", "") or "").lower()
 

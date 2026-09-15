@@ -574,6 +574,13 @@ class ForgeServer:
                 task_id, TaskStatus.CANCELLED, expected=(task.status,),
                 error="Cancelled before start.", stage="cancelled")
             self.queue.remove(task_id)
+            #: §8/§9 — a task cancelled before start may still have an attempt
+            #: fence (a worker that began and lost its lease, or a zombie from a
+            #: dead boot). Terminal for the task means terminal for the attempt:
+            #: it may not publish afterwards.
+            self._settle_cancelled_attempt(
+                task_id, project_id=task.project_id,
+                reason="cancelled before start", confirm=True)
             self.expire_task_approvals(task_id)
             self.emit(task_id, task.project_id, "task.cancelled",
                       {"actor": actor, "detail": "cancelled_before_start"})
@@ -587,6 +594,15 @@ class ForgeServer:
             return updated
         # Cooperative cancellation at the next stage boundary.
         self.tasks.update(task_id, cancel_requested=True)
+        #: §8 — the cancellation chain is unified: operator → task record →
+        #: running control → attempt fence → inference boundary. Moving the
+        #: fence to CANCELLING here revokes publish authority *now*, so an
+        #: attempt whose worker has not noticed the cancel yet cannot commit a
+        #: result the operator just forbade. The worker confirms the stop.
+        self._settle_cancelled_attempt(
+            task_id, project_id=task.project_id,
+            reason="cancellation requested by %s" % (actor or "unknown"),
+            confirm=False)
         if control is not None:
             control.request_cancel()
         self.emit(task_id, task.project_id, "task.cancelling",
@@ -828,6 +844,113 @@ class ForgeServer:
         return self.recovery.bundle(after=after, since=since,
                                     project_id=project_id)
 
+    def _settle_cancelled_attempt(self, task_id: str, *, project_id: str = "",
+                                  reason: str = "",
+                                  confirm: bool = False) -> Optional[Any]:
+        """Move the current attempt fence towards CANCELLED (§8).
+
+        ``confirm=False`` stops at CANCELLING and leaves the confirmation to the
+        worker that owns the attempt; ``confirm=True`` finishes the job for an
+        attempt that will never run again. Either way this is best-effort at the
+        *task* level and never raises: a fence that cannot be reached is logged,
+        because silently pretending the cancellation propagated would be worse
+        than admitting it did not.
+        """
+        fences = getattr(self, "fences", None)
+        if fences is None:
+            return None
+        try:
+            fence = fences.current(task_id)
+            if fence is None or not fences.is_authorized(fence):
+                return fence
+            fences.cancel(task_id)                     # RUNNING -> CANCELLING
+            if not confirm:
+                return fences.current(task_id)
+            current = fences.current(task_id)
+            if current is None:
+                return None
+            if current.state == "CANCELLING":
+                return fences.confirm_cancelled(task_id, current,
+                                                reason=reason or "cancelled")
+            #: QUEUED has no legal edge to CANCELLING's confirmation; commit is
+            #: the route the authority itself allows.
+            fences.commit(task_id, current, "CANCELLED",
+                          payload={"reason": str(reason or "cancelled")[:120]})
+            return fences.current(task_id)
+        except Exception as exc:                       # noqa: BLE001
+            try:
+                self.log(task_id, project_id,
+                         "Cancellation could not reach the attempt fence: %s"
+                         % type(exc).__name__, level="warning",
+                         source="server")
+            except Exception:                          # noqa: BLE001
+                pass
+            return None
+
+    def task_inference_state(self, task_id: str) -> Dict[str, Any]:
+        """§10 — the durable inference job state of one task.
+
+        Two sources, no invention:
+
+        * the ``inference`` block persisted with the attempt's result, which is
+          the authority after a restart (in-memory state is gone by then); and
+        * the live fence for that task, which is the authority right now.
+
+        Reading it changes nothing. Unknown facts stay absent rather than being
+        filled with a plausible guess, and every value was already bounded by
+        its writer, so this cannot smuggle a prompt or a full model output out
+        of the store.
+        """
+        record = self.tasks.get_or_raise(task_id)
+        payload: Dict[str, Any] = {
+            "task_id": str(task_id)[:128],
+            "mode": self.inference_path_config.mode,
+            "path_attached": self.inference_path_snapshot()["attached"],
+        }
+        try:
+            result = json.loads(record.result_json or "{}")
+        except ValueError:
+            result = {}
+        durable = result.get("inference") if isinstance(result, dict) else None
+        if isinstance(durable, dict):
+            #: persisted provenance wins for the facts it recorded
+            payload.update(durable)
+            payload["persisted"] = True
+        else:
+            payload["persisted"] = False
+        fence = self.fences.current(str(task_id))
+        if fence is not None:
+            payload["attempt_id"] = fence.attempt_id
+            payload["generation"] = int(fence.generation)
+            payload["fence_state"] = fence.state
+            payload["authorized_to_publish"] = bool(
+                self.fences.is_authorized(fence))
+        else:
+            #: no fence in memory: never started, or the server restarted and
+            #: the durable record above is all that is known.
+            payload["authorized_to_publish"] = False
+            payload.setdefault("fence_state", "unknown")
+        return payload
+
+    def inference_path_snapshot(self) -> Dict[str, Any]:
+        """§3/§33 — which path this server treats as canonical, right now.
+
+        Bounded and secret-free: the mode, whether the seam is attached to the
+        fabric, and the routing switches an operator can actually reason about.
+        """
+        config = self.inference_path_config
+        payload: Dict[str, Any] = {
+            "mode": config.mode,
+            "attached": bool(getattr(self.fabric, "inference_path", None)
+                             is not None),
+            "require_verified": bool(config.require_verified),
+            "allow_deterministic": bool(config.allow_deterministic),
+            "hybrid_capabilities": list(config.hybrid_capabilities),
+            "hybrid_legacy_callers": list(config.hybrid_legacy_callers),
+            "boot_id": self.boot_id,
+        }
+        return payload
+
     def status(self) -> Dict[str, Any]:
         counts = self.tasks.status_counts()
         return {
@@ -857,6 +980,9 @@ class ForgeServer:
             "pending_approvals": len(self.approvals.pending()),
             "unread_notifications": self.notifications.unread_count(),
             "inference": self.inference.status(),
+            #: §3/§33 — the canonical path is part of the server's own status:
+            #: an operator must be able to see which path is authoritative.
+            "inference_path": self.inference_path_snapshot(),
         }
 
     def health(self) -> Dict[str, Any]:
