@@ -1,7 +1,7 @@
 """Forge AI Desktop — zero-setup thin client for the Forge Server.
 
-Double-click this file (or run ``python desktop.py``).  The desktop is only a
-thin client: model weights and inference stay on Forge Server.  When the
+Double-click this file (or run ``python desktop.py``). The desktop is only a
+thin client: model weights and inference stay on Forge Server. When the
 configured local server is not already running, this launcher starts one in
 the background, creates/loads its local bootstrap token, and then discovers a
 real usable model through the server Model Fabric.
@@ -13,8 +13,8 @@ Environment variables (optional):
   FORGE_SERVER_DB   Server database/token location
   FORGE_MODEL       Optional exact model id/name to select
 
-The only GUI dependency is Tkinter. Forge's normal Python dependencies are
-used for the embedded local server when it needs to be started.
+The GUI uses Tkinter. Forge's normal Python dependencies are used for the
+embedded local server when it needs to be started.
 """
 from __future__ import annotations
 
@@ -31,17 +31,16 @@ from urllib.parse import urlparse
 from forge.server.client import ForgeServerClient, ForgeServerClientError
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_SERVER = os.environ.get("FORGE_SERVER_URL", "http://127.0.0.1:8300")
 DEFAULT_CREDENTIAL = (
     os.environ.get("FORGE_API_KEY", "").strip()
     or os.environ.get("FORGE_SERVER_TOKEN", "").strip()
 )
 DEFAULT_MODEL = os.environ.get("FORGE_MODEL", "").strip()
-DEFAULT_DB = os.environ.get("FORGE_SERVER_DB", ".forge/server/server.db")
-
-
-class DesktopStartupError(Exception):
-    """A clean, user-facing desktop startup failure."""
+DEFAULT_DB = os.environ.get(
+    "FORGE_SERVER_DB", str(PROJECT_ROOT / ".forge" / "server" / "server.db")
+)
 
 
 def _base_host_port(server_url: str) -> Tuple[str, int]:
@@ -94,12 +93,7 @@ def _model_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _model_identity(row: Dict[str, Any]) -> str:
-    return str(
-        row.get("model_id")
-        or row.get("name")
-        or row.get("id")
-        or ""
-    )
+    return str(row.get("model_id") or row.get("name") or row.get("id") or "")
 
 
 def discover_model(client: ForgeServerClient) -> Dict[str, Any]:
@@ -110,11 +104,7 @@ def discover_model(client: ForgeServerClient) -> Dict[str, Any]:
 
     if requested:
         for row in rows:
-            candidates = {
-                _model_identity(row),
-                str(row.get("name", "")),
-            }
-            if requested in candidates:
+            if requested in {_model_identity(row), str(row.get("name", ""))}:
                 return row
         raise ForgeServerClientError(
             "MODEL_NOT_FOUND",
@@ -228,8 +218,7 @@ class ForgeDesktop(tk.Tk):
             if not client.ping():
                 if not (auto_start and _is_local_server(server_url)):
                     raise ForgeServerClientError(
-                        "UNREACHABLE",
-                        "Forge Server is not running at %s." % server_url,
+                        "UNREACHABLE", "Forge Server is not running at %s." % server_url
                     )
                 token = self._start_local_server(server_url, token)
                 client = ForgeServerClient(server_url, token=token)
@@ -239,17 +228,11 @@ class ForgeDesktop(tk.Tk):
                         "Forge Server started but did not become ready in time.",
                     )
 
-            # A bootstrap token is a valid bearer credential, but an API key
-            # should be exchanged for a short-lived session before discovery.
-            # If the supplied credential is already a session/bootstrap token,
-            # direct bearer discovery is the correct path.
             if token:
                 try:
                     client.whoami()
                 except ForgeServerClientError as exc:
                     if exc.http_status == 401:
-                        # It may be an API key. login() performs the official
-                        # challenge/response exchange and replaces client.token.
                         client.login(token)
                     else:
                         raise
@@ -269,9 +252,7 @@ class ForgeDesktop(tk.Tk):
         except Exception as exc:
             self.after(
                 0,
-                lambda: self._failure(
-                    ForgeServerClientError("CLIENT_ERROR", str(exc))
-                ),
+                lambda: self._failure(ForgeServerClientError("CLIENT_ERROR", str(exc))),
             )
 
     def _start_local_server(self, server_url: str, existing_token: str) -> str:
@@ -282,19 +263,18 @@ class ForgeDesktop(tk.Tk):
         token = existing_token or secrets.token_urlsafe(32)
         _write_token(token)
 
-        root = str(Path(__file__).resolve().parent)
-        db_path = str(_server_db_path())
+        root = str(PROJECT_ROOT)
         config = ServerConfig(
-            db_path=db_path,
+            db_path=str(_server_db_path()),
             host=host,
             port=port,
-            projects={Path(root).name or "forge": root},
+            projects={PROJECT_ROOT.name or "forge": root},
             bootstrap_token=token,
             profile="assisted",
         )
         server = ForgeServer(config)
         self._owned_server = server
-        self.status_var.set("Starting local Forge Server…")
+        self.after(0, lambda: self.status_var.set("Starting local Forge Server…"))
         threading.Thread(
             target=lambda: server.run_uvicorn(host=host, port=port, log_level="warning"),
             daemon=True,
