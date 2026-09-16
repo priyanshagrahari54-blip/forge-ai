@@ -36,7 +36,9 @@ fi
 cd "$ROOT_DIR"
 mkdir -p workspace
 
-sudo install -m 0644 "$SERVICE_SRC" "$SERVICE_DST"
+# Install a service bound to this actual user's Forge checkout. This avoids
+# relying on systemd's home-directory specifier semantics for system units.
+sed "s|%h/forge-ai|$ROOT_DIR|g" "$SERVICE_SRC" | sudo tee "$SERVICE_DST" >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable docker.service
 sudo systemctl enable --now forge-direct.service
