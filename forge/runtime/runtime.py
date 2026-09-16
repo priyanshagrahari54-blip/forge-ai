@@ -117,10 +117,15 @@ class ToolRuntime:
                     if token_ok:
                         allowed, reason = True, ""
             if not allowed:
+                decision = (
+                    PolicyDecision.REQUIRE_APPROVAL
+                    if reason == self.APPROVAL_DENIAL
+                    else PolicyDecision.DENY
+                )
                 self._audit_tool(tool, allowed=False, reason=reason,
                                  actor=actor, task_id=task_id,
                                  approval_token_id=approval_token_id,
-                                 call=kwargs, decision=PolicyDecision.DENY)
+                                 call=kwargs, decision=decision)
                 return ToolResult.fail(tool_name, reason,
                                        metadata={"error_code": "PERMISSION_DENIED"})
         else:
