@@ -313,9 +313,10 @@ def _may_publish(server: Any, task_id: str, owner: str,
         return False
     fences = getattr(server, "fences", None)
     if fences is None or fence is None:
-        #: No authority exists to consult (legacy wiring): the lease is all
-        #: there is, and refusing here would break tasks that never had fences.
-        return True
+        #: A lease without an execution fence is not enough authority.
+        #: Legacy callers must fail closed rather than publish an unbound
+        #: attempt.
+        return False
     try:
         return bool(fences.is_authorized(fence))
     except Exception:                                  # noqa: BLE001

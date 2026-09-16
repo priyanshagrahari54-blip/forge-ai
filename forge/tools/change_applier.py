@@ -710,6 +710,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=commit_guard,
                     )
                 else:
                     write = self.runtime.execute(
@@ -718,6 +719,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=commit_guard,
                     )
             except Exception as exc:
                 # An unexpected execution failure fails closed: the
