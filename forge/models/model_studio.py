@@ -284,17 +284,17 @@ class ModelStudio:
                 continue
             if not instruction or not output:
                 rejected += 1
-                issues.append(DatasetIssue(index, "EMPTY", "instruction and output are required"))
+                issues.append(DatasetIssue(index, "EMPTY", "instruction and output are required", fatal=True))
                 continue
             canonical = _canonical_json({"instruction": instruction, "output": output, "context": context})
             if len(canonical) > MAX_RECORD_CHARS:
                 rejected += 1
-                issues.append(DatasetIssue(index, "RECORD_BOUND", "record exceeds safety bound"))
+                issues.append(DatasetIssue(index, "RECORD_BOUND", "record exceeds safety bound", fatal=True))
                 continue
             if _secret_like(canonical):
                 rejected += 1
                 secret_count += 1
-                issues.append(DatasetIssue(index, "SECRET", "secret-bearing sample rejected"))
+                issues.append(DatasetIssue(index, "SECRET", "secret-bearing sample rejected", fatal=True))
                 continue
             fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             if fingerprint in seen:

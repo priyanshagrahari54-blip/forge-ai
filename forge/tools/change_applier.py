@@ -625,18 +625,18 @@ class ChangeApplier:
         # superseded by a retry, lost across a restart), refuse before
         # any checkpoint or write exists. The transaction reports the
         # fence instead of succeeding.
-        if commit_guard is not None:
-            try:
-                fenced_reason = commit_guard()
-            except Exception as exc:
-                fenced_reason = f"commit guard errored: {exc}"
-            if fenced_reason:
-                message = f"Change set fenced by execution attempt: {fenced_reason}"
-                result.errors.append(message)
-                result.error_details.append(
-                    ChangeError("FENCED_ATTEMPT", "", message))
-                result.duration_ms = (time.perf_counter() - started) * 1000
-                return result
+        effective_guard = commit_guard if commit_guard is not None else (lambda: "")
+        try:
+            fenced_reason = effective_guard()
+        except Exception as exc:
+            fenced_reason = f"commit guard errored: {exc}"
+        if fenced_reason:
+            message = f"Change set fenced by execution attempt: {fenced_reason}"
+            result.errors.append(message)
+            result.error_details.append(
+                ChangeError("FENCED_ATTEMPT", "", message))
+            result.duration_ms = (time.perf_counter() - started) * 1000
+            return result
 
         # Phase 3 — checkpoint the fully validated + authorized plan.
         if self.checkpoint_manager is not None:
@@ -710,6 +710,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=effective_guard,
                     )
                 else:
                     write = self.runtime.execute(
@@ -718,6 +719,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=effective_guard,
                     )
             except Exception as exc:
                 # An unexpected execution failure fails closed: the
