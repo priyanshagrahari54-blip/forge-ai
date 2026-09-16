@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Repair cross-layer fencing regressions
-        if: github.sha == '4781e93d0b6ee07dbbc8a0ab0582303fddf85b31'
+        if: github.sha == '01e0a58617455550d09487215614fd8efb79b661'
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -29,8 +29,9 @@ jobs:
           def replace_n(path, old, new, count):
               p = Path(path)
               text = p.read_text(encoding='utf-8')
-              if text.count(old) < count:
-                  raise SystemExit(f'expected {count} patch anchors in {path}, found {text.count(old)}')
+              found = text.count(old)
+              if found < count:
+                  raise SystemExit(f'expected {count} patch anchors in {path}, found {found}')
               p.write_text(text.replace(old, new, count), encoding='utf-8')
 
           replace_n(
@@ -48,7 +49,7 @@ jobs:
           p.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
       - name: Persist one-time source repair
-        if: github.sha == '4781e93d0b6ee07dbbc8a0ab0582303fddf85b31' && matrix.python-version == '3.11'
+        if: github.sha == '01e0a58617455550d09487215614fd8efb79b661' && matrix.python-version == '3.11'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
