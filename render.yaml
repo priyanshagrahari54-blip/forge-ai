@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: forge-ai
+    runtime: docker
+    repo: https://github.com/priyanshagrahari54-blip/forge-ai
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /ping
+    plan: free
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 8300
+      - key: FORGE_AUTH_MODE
+        value: production
+      - key: FORGE_SECURE_COOKIES
+        value: "1"
+      - key: FORGE_DB_PATH
+        value: /data/forge/cockpit.db
+      - key: FORGE_PROJECT_ID
+        value: forge
+      - key: FORGE_PROJECT_ROOT
+        value: /workspace
+    disk:
+      name: forge-data
+      mountPath: /data/forge
+      sizeGB: 1
