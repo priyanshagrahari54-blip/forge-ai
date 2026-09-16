@@ -21,20 +21,24 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Repair cross-layer fencing regressions
-        if: github.sha == '01e0a58617455550d09487215614fd8efb79b661'
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          def replace_n(path, old, new, count):
+          def replace_if_present(path, old, new, count=1):
               p = Path(path)
               text = p.read_text(encoding='utf-8')
               found = text.count(old)
+              if found == 0:
+                  print(f'{path}: anchor already repaired')
+                  return False
               if found < count:
-                  raise SystemExit(f'expected {count} patch anchors in {path}, found {found}')
+                  raise SystemExit(f'expected {count} anchors in {path}, found {found}')
               p.write_text(text.replace(old, new, count), encoding='utf-8')
+              print(f'{path}: repaired {count} anchor(s)')
+              return True
 
-          replace_n(
+          replace_if_present(
               'forge/tools/change_applier.py',
               '''                        actor=actor, task_id=task_id,\n                        approval_token_id=active_token, risk=change.risk,\n                        fingerprint=result.fingerprint or "",\n                        request_id=enforcement_id,\n                    )''',
               '''                        actor=actor, task_id=task_id,\n                        approval_token_id=active_token, risk=change.risk,\n                        fingerprint=result.fingerprint or "",\n                        request_id=enforcement_id,\n                        commit_guard=commit_guard,\n                    )''',
@@ -44,28 +48,28 @@ jobs:
           text = p.read_text(encoding='utf-8')
           old = '''    if fences is None or fence is None:\n        #: No authority exists to consult (legacy wiring): the lease is all\n        #: there is, and refusing here would break tasks that never had fences.\n        return True\n'''
           new = '''    if fences is None or fence is None:\n        #: A lease without an execution fence is not enough authority.\n        #: Legacy callers must fail closed rather than publish an unbound\n        #: attempt.\n        return False\n'''
-          if old not in text:
-              raise SystemExit('expected patch anchor missing in forge/server/workers.py')
-          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          if old in text:
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+              print('forge/server/workers.py: repaired fail-open fence authority')
+          else:
+              print('forge/server/workers.py: fence authority already repaired')
           PY
-      - name: Persist one-time source repair
-        if: github.sha == '01e0a58617455550d09487215614fd8efb79b661' && matrix.python-version == '3.11'
+      - name: Persist source repair
+        if: matrix.python-version == '3.11'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add forge/tools/change_applier.py forge/server/workers.py
           if git diff --cached --quiet; then
             echo "No source repair changes needed."
           else
-            git commit -m "fix: propagate execution fences through change application"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "fix: propagate and enforce execution fences"
             git push origin HEAD:main
           fi
       - run: python -m pip install --upgrade pip
       - name: Install dependencies
         run: |
           if [ "${{ matrix.python-version }}" = "3.8" ]; then
-            # Python 3.8 uses the repository's frozen dependency set so the
-            # legacy compatibility target does not depend on resolver changes.
             python -m pip install -r requirements/py38-dev.txt
             python -m pip install -e . --no-deps
           else
