@@ -61,6 +61,12 @@ forge = "forge.cli:main"
 forge-build = "forge.project_builder:main"
 forge-model = "forge.model_studio_cli:main"
 
+# Explicit package discovery is required because Forge intentionally ships
+# both the `forge` package and the top-level `server` package. Setuptools'
+# automatic flat-layout discovery rejects multiple top-level packages.
+[tool.setuptools.packages.find]
+include = ["forge*", "server*"]
+
 # Shipped data files. Without this the builtins below resolve from a source
 # checkout (editable installs, CI) but vanish from a wheel. The cockpit web
 # assets are declared in MANIFEST.in for the sdist as well.
