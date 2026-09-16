@@ -92,6 +92,11 @@ class DatasetReport:
 
     @property
     def ok(self) -> bool:
+        # A secret-bearing sample is a safety finding, not a cleanup item:
+        # a dataset that would train a model on leaked credentials is
+        # unusable even when every individual issue is non-fatal.
+        if self.secret_bearing:
+            return False
         return not any(issue.fatal for issue in self.issues)
 
     def to_dict(self) -> Dict[str, Any]:

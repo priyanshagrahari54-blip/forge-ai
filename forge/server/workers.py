@@ -313,9 +313,12 @@ def _may_publish(server: Any, task_id: str, owner: str,
         return False
     fences = getattr(server, "fences", None)
     if fences is None or fence is None:
-        #: No authority exists to consult (legacy wiring): the lease is all
-        #: there is, and refusing here would break tasks that never had fences.
-        return True
+        #: A task-bound publish with no fence authority to consult is
+        #: uncertainty, and uncertainty is denial: the real server always
+        #: carries a FenceRegistry, so reaching this branch means the
+        #: attempt has no identity that could be superseded — exactly the
+        #: stale-write case the fence exists to prevent.
+        return False
     try:
         return bool(fences.is_authorized(fence))
     except Exception:                                  # noqa: BLE001

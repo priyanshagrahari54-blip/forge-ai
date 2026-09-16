@@ -437,12 +437,27 @@ class GatedAgentRuntime:
                 "no tool runtime is attached; refusing to execute %r "
                 "outside one" % tool)
         self._tool_calls[counter] = used + 1
+        effective_guard = commit_guard
+        if run_id and effective_guard is None:
+            # Session 11.5: task-bound mutations require an execution
+            # fence. A direct tool call without a scheduler-provided
+            # guard begins its own attempt so the runtime's
+            # NO_FENCE_AUTHORITY refusal never blocks a legitimate call.
+            from forge.core.fencing import (
+                FenceRegistry,
+                commit_guard as build_commit_guard,
+            )
+            call_fences = FenceRegistry()
+            call_fence = call_fences.mark_running(
+                run_id, call_fences.begin(
+                    run_id, owner="agent-tool:%s" % name))
+            effective_guard = build_commit_guard(call_fence, call_fences)
         try:
             result = self.tool_runtime.execute(
                 tool, approved=approved, actor=agent_identity(name),
                 task_id=run_id, approval_token_id=approval_token_id,
                 risk=risk, request_id=chain_id,
-                commit_guard=commit_guard, **kwargs)
+                commit_guard=effective_guard, **kwargs)
         except Exception as exc:
             raise MediationError("TOOL_FAILED",
                                  "tool %r crashed: %s" % (tool, exc)
@@ -648,6 +663,22 @@ class GatedAgentRuntime:
         changed: list[str] = []
         tool_results: list[dict[str, Any]] = []
         rolled_back = False
+        run_ok = False
+        # Session 11.5: when the caller does not drive a scheduler that
+        # owns fences, this run begins its own attempt and carries the
+        # guard for every mutating tool call below.
+        run_fences = None
+        run_fence = None
+        if guard is None:
+            from forge.core.fencing import (
+                FenceRegistry,
+                commit_guard as build_commit_guard,
+            )
+            run_fences = FenceRegistry()
+            run_fence = run_fences.mark_running(
+                run_id, run_fences.begin(run_id,
+                                         owner="agent-run:%s" % name))
+            guard = build_commit_guard(run_fence, run_fences)
 
         def _fail_rollback() -> None:
             # Roll back what ACTUALLY changed, not just the paths a tool
@@ -728,6 +759,7 @@ class GatedAgentRuntime:
                     % (name, max_wall))
             version = _version_of(package)
             fingerprint = spec_fingerprint(spec)
+            run_ok = True
             return {"run_id": run_id, "agent": name, "success": True,
                     "actor": actor,
                     "output": output, "model": response.get("model", ""),
@@ -768,6 +800,20 @@ class GatedAgentRuntime:
                     },
                     "elapsed_ms": elapsed_ms, "at": time.time()}
         finally:
+            if run_fences is not None and run_fence is not None:
+                # The attempt ends inside its fence; record the terminal
+                # state so a late duplicate can never re-authorize. Fence
+                # bookkeeping never changes the run's outcome.
+                from forge.core.fencing import (
+                    FAILED as FENCE_FAILED,
+                    SUCCEEDED as FENCE_SUCCEEDED,
+                )
+                try:
+                    run_fences.commit(
+                        run_id, run_fence,
+                        FENCE_SUCCEEDED if run_ok else FENCE_FAILED)
+                except Exception:
+                    pass
             self._governor.end(name)
             self._tool_calls.pop(run_id, None)
             self._tool_seqs.pop(run_id, None)

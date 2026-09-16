@@ -207,6 +207,26 @@ class Supervisor:
         checkpoint = checkpoint_manager.create(f"supervisor-run-{run_id}")
         engine = TaskEngine()
         task = engine.add(f"supervisor-task-{run_id}", requirement)
+        # Session 11.5 fence authority: task-bound mutations are only
+        # permitted under an execution fence. Callers driving their own
+        # scheduler bring their own guard; a plain Supervisor run begins
+        # its own attempt and carries the guard for the whole transaction.
+        # Without this, the runtime's NO_FENCE_AUTHORITY refusal makes the
+        # loop unwritable.
+        from forge.core.fencing import (
+            CANCELLED as FENCE_CANCELLED,
+            FAILED as FENCE_FAILED,
+            SUCCEEDED as FENCE_SUCCEEDED,
+            FenceRegistry,
+            commit_guard as build_commit_guard,
+        )
+        owns_fence = commit_guard is None
+        fence_registry = FenceRegistry() if owns_fence else None
+        attempt_fence = None
+        if owns_fence:
+            attempt_fence = fence_registry.mark_running(
+                task.id, fence_registry.begin(task.id, owner="supervisor"))
+            commit_guard = build_commit_guard(attempt_fence, fence_registry)
         touched: list[str] = []
         task_grant_snapshot: dict[str, Any] | None = None
         files_read: list[str] = []
@@ -527,6 +547,14 @@ class Supervisor:
             timed("commit", commit_started)
             event("commit", {"files": list(touched)})
             checkpoint_manager.cleanup(checkpoint)
+            if owns_fence:
+                # The attempt finished inside its fence; record the
+                # terminal state so a late duplicate can never re-authorize.
+                try:
+                    fence_registry.commit(task.id, attempt_fence,
+                                          FENCE_SUCCEEDED)
+                except Exception:
+                    pass
             timings["total"] = perf_counter() - started
             result.update(accepted=True, files=touched, model=response.metadata.get("model"),
                           duration_seconds=perf_counter() - started,
@@ -578,6 +606,16 @@ class Supervisor:
             git.unstage_files(touched)
             checkpoint_manager.rollback(checkpoint, sorted(set(touched)))
             checkpoint_manager.cleanup(checkpoint)
+            if owns_fence:
+                # Fence the attempt's terminal state; rollback already
+                # restored the tree, so this is bookkeeping that keeps the
+                # authority honest.
+                try:
+                    fence_registry.commit(
+                        task.id, attempt_fence,
+                        FENCE_CANCELLED if cancelled else FENCE_FAILED)
+                except Exception:
+                    pass
             timings["total"] = perf_counter() - started
             try:
                 history_source = (fabric.router.history if fabric is not None

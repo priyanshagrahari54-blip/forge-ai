@@ -514,6 +514,59 @@ class ChangeApplier:
               commit_guard: Callable[[], str] | None = None) -> ApplyResult:
         """Validate, authorize, checkpoint, and apply a change set atomically.
 
+        Session 11.5 fence authority: task-bound mutations require an
+        execution fence. Callers driving a scheduler pass their own
+        ``commit_guard`` and it always wins. When a task-scoped apply
+        arrives without one, the transaction begins its own attempt on a
+        private registry and carries its guard for the duration of the
+        apply — the runtime's ``NO_FENCE_AUTHORITY`` refusal then never
+        blocks a legitimate write, while fenced/stale attempts are still
+        impossible.
+        """
+        fence_registry = None
+        attempt_fence = None
+        if task_id and commit_guard is None:
+            from forge.core.fencing import (
+                FAILED as FENCE_FAILED,
+                SUCCEEDED as FENCE_SUCCEEDED,
+                FenceRegistry,
+                commit_guard as build_commit_guard,
+            )
+            fence_registry = FenceRegistry()
+            attempt_fence = fence_registry.mark_running(
+                task_id,
+                fence_registry.begin(task_id, owner=label or actor
+                                     or "change-applier"))
+            commit_guard = build_commit_guard(attempt_fence, fence_registry)
+        result = self._apply_inner(
+            changes, approved, label, allow_delete=allow_delete,
+            capability=capability, actor=actor, task_id=task_id,
+            approval_token_id=approval_token_id,
+            commit_guard=commit_guard)
+        if fence_registry is not None and attempt_fence is not None:
+            from forge.core.fencing import (
+                FAILED as FENCE_FAILED,
+                SUCCEEDED as FENCE_SUCCEEDED,
+            )
+            try:
+                fence_registry.commit(
+                    task_id, attempt_fence,
+                    FENCE_SUCCEEDED if result.success else FENCE_FAILED)
+            except Exception:
+                # Fence bookkeeping must never change the transaction's
+                # outcome: the writes (or their rollback) already happened.
+                pass
+        return result
+
+    def _apply_inner(self, changes: Iterable[CodeChange | dict[str, Any]],
+                     approved: bool, label: str = "change", *,
+                     allow_delete: bool = False, capability: str = "",
+                     actor: str = "", task_id: str = "",
+                     approval_token_id: str = "",
+                     commit_guard: Callable[[], str] | None = None
+                     ) -> ApplyResult:
+        """The apply transaction itself; see :meth:`apply` for the contract.
+
         The transaction boundary is strict: the ENTIRE change set is
         normalized, structurally validated, and policy-authorized BEFORE the
         checkpoint is created and before any candidate file is modified. A
@@ -703,6 +756,10 @@ class ChangeApplier:
                                     message))
                     break
             try:
+                # The runtime enforces fence authority independently for
+                # task-bound mutations (Session 11.5), so the same guard
+                # this applier just re-checked must travel with the call;
+                # without it a task-scoped write is refused outright.
                 if change.action == "delete":
                     write = self.runtime.execute(
                         "delete_file", approved=approved, path=change.path,
@@ -710,6 +767,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=commit_guard,
                     )
                 else:
                     write = self.runtime.execute(
@@ -718,6 +776,7 @@ class ChangeApplier:
                         approval_token_id=active_token, risk=change.risk,
                         fingerprint=result.fingerprint or "",
                         request_id=enforcement_id,
+                        commit_guard=commit_guard,
                     )
             except Exception as exc:
                 # An unexpected execution failure fails closed: the

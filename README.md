@@ -688,6 +688,34 @@ roadmap + blueprint + stage-1 prompt → real Supervisor run → verified?
 See `docs/A82-STAGED-BUILDS.md` for the architecture, prompt assembly,
 API reference, and guarantees.
 
+## AutoPilot (A84) — give it a complex project, it completes it
+
+One command turns a complex requirement into a finished, committed
+project:
+
+```bash
+forge auto "Build a todo list CLI tool with JSON storage and tests" \
+    --root ./myproject --init-git
+forge auto --resume <plan-id> --root ./myproject   # continue a blocked/interrupted run
+forge engineer execute <plan-id> --auto            # run an approved A83 plan
+```
+
+The AutoPilot joins the existing engines into one autonomous
+transaction: the Architect plans, the PlanStore records a
+fingerprint-bound approval, and a frontier loop executes every task —
+coding tasks as full guarded Supervisor transactions (model → code →
+test/debug → review → security → acceptance → checkpoint → commit),
+verification tasks (review/security/release) as deterministic gates
+with one bounded model repair on failure, research as evidence-bound
+project memory, performance as a measured baseline. Progress persists
+after every task, failed tasks are retried with their failure context,
+blocked tasks are reported — never silently skipped — and resume picks
+up exactly where the run stopped. What was approved is what gets
+executed: any edit after approval invalidates the run.
+
+See `docs/A84-AUTOPILOT.md` for the role-by-role execution table,
+retry/resume semantics, and the approval contract.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -830,6 +858,10 @@ A provider can be registered with `ModelInfo(provider=...)` (legacy router) or `
 
 ```bash
 forge doctor                   # diagnose why tasks would fail (exit 0 when ready)
+forge auto "build a todo CLI with JSON storage" --root ./proj --init-git
+                               # AutoPilot: plan -> approve -> build -> commit
+forge auto --resume <plan-id> --root ./proj   # continue a blocked/interrupted run
+forge auto "..." --dry-run     # store a reviewable plan; approve/execute nothing
 forge run "add CSV export"     # run one autonomous task end to end
 forge run "fix login bug" --mode autonomous --approve --root /path/to/repo
 forge desktop                  # native desktop app (Tkinter, no server needed)
@@ -838,6 +870,9 @@ forge server --project demo=/path/to/repo  # standalone task backend on 127.0.0.
 forge server status            # live status of a running Forge Server
 forge server health            # Forge Server component health
 forge plan "add CSV export"
+forge engineer plan "build an HTTP API"   # A83 plan (stored as a draft)
+forge engineer approve <plan-id>          # approve for execution
+forge engineer execute <plan-id> --auto   # AutoPilot-executes the approved plan
 forge analyze
 forge models                   # list models (same as: forge models list)
 forge models health            # model/provider health

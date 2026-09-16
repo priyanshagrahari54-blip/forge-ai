@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -1948,6 +1949,122 @@ def _run_task(args) -> int:
     return 0 if result.get("accepted") else 1
 
 
+def _autopilot_events_printer(as_json: bool):
+    """Live, bounded progress lines for AutoPilot runs."""
+    def on_event(name: str, details: dict) -> None:
+        if as_json:
+            return
+        if name == "plan_created":
+            print("plan %s created (%s, %d task(s))" % (
+                details.get("plan_id"), details.get("kind"),
+                details.get("tasks", 0)))
+        elif name == "execution_started":
+            note = "resuming" if details.get("resumed") else "executing"
+            print("%s plan %s (%d task(s))" % (
+                note, details.get("plan_id"),
+                len(details.get("tasks") or [])))
+        elif name == "task_started":
+            print("  -> %s [%s] attempt %d/%d: %s" % (
+                details.get("task_id"), details.get("role"),
+                details.get("attempt", 1), details.get("max_attempts", 1),
+                details.get("title", "")))
+        elif name == "task_finished":
+            status = details.get("status")
+            error = details.get("error") or ""
+            print("  <- %s %s%s" % (
+                details.get("task_id"), status,
+                " (%s)" % error[:160] if error else ""))
+        elif name == "plan_completed":
+            print("plan %s completed" % details.get("plan_id"))
+    return on_event
+
+
+def _run_auto(args) -> int:
+    """Give Forge a complex project; it plans, builds, and completes it."""
+    from forge.autopilot import AutoPilot, AutoPilotError
+    from forge.security.permissions import OperationMode
+
+    root = Path(getattr(args, "root", ".") or ".")
+    resuming = str(getattr(args, "resume", "") or "").strip()
+    requirement = str(getattr(args, "requirement", "") or "").strip()
+    if not resuming and not requirement:
+        print("forge auto needs a requirement, or --resume <plan-id>",
+              file=sys.stderr)
+        return 2
+
+    if getattr(args, "init_git", False) and not (root / ".git").is_dir():
+        root.mkdir(parents=True, exist_ok=True)
+        init = subprocess.run(["git", "init"], cwd=str(root),
+                              text=True, capture_output=True)
+        if init.returncode != 0:
+            print("git init failed: %s" % init.stderr.strip(),
+                  file=sys.stderr)
+            return 2
+        # A commit identity is mandatory for Forge's per-task commits; set a
+        # local one only when git has none at all.
+        for key, fallback in (("user.name", "Forge AutoPilot"),
+                              ("user.email", "autopilot@forge.local")):
+            probe = subprocess.run(["git", "config", key], cwd=str(root),
+                                   text=True, capture_output=True)
+            if probe.returncode != 0 or not probe.stdout.strip():
+                subprocess.run(["git", "config", key, fallback],
+                               cwd=str(root), text=True, capture_output=True)
+        print("initialised git repository at %s" % root.resolve())
+
+    profile = _engineer_profile(getattr(args, "profile", "") or "")
+    fabric = _build_fabric(args)
+    try:
+        mode = OperationMode(args.mode)
+    except ValueError:
+        print(f"Unknown mode: {args.mode!r} "
+              f"(expected autonomous|assisted)", file=sys.stderr)
+        return 2
+
+    as_json = bool(getattr(args, "json", False))
+    try:
+        pilot = AutoPilot(
+            root,
+            project_id=getattr(args, "project", "autopilot") or "autopilot",
+            fabric=fabric,
+            mode=mode,
+            max_task_retries=int(getattr(args, "max_task_retries", 1)),
+            max_debug_retries=int(getattr(args, "max_debug_retries", 3)),
+            actor=getattr(args, "actor", "operator") or "operator",
+            profiles=[profile] if profile is not None else (),
+        )
+    except AutoPilotError as exc:
+        message = str(exc)
+        if as_json:
+            _emit_json({"status": "refused", "reason": message})
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    on_event = _autopilot_events_printer(as_json)
+    force = bool(getattr(args, "force", False))
+    if resuming:
+        report = pilot.resume(resuming, force=force, on_event=on_event)
+    else:
+        report = pilot.run(requirement,
+                           dry_run=bool(getattr(args, "dry_run", False)),
+                           force=force, on_event=on_event)
+
+    if as_json:
+        _emit_json(report.to_dict())
+    else:
+        print()
+        print(report.render())
+        if report.status == "blocked":
+            print("\ncontinue after fixing the blockers with:\n"
+                  "  forge auto --resume %s --root %s"
+                  % (report.plan_id, root))
+    if report.status == "completed":
+        return 0
+    if report.status == "blocked":
+        return 1
+    return 2
+
+
 def _agents_engine(args):
     from forge.agents.creation import AgentCreationEngine
 
@@ -2893,6 +3010,35 @@ def _run_engineer(args) -> int:
     if command == "execute":
         from forge.architect import NotApproved, PlanStore
         store = PlanStore(root)
+        if getattr(args, "auto", False):
+            from forge.autopilot import AutoPilot, AutoPilotError
+            from forge.security.permissions import OperationMode
+
+            try:
+                mode = OperationMode(args.mode)
+            except ValueError:
+                print("unknown mode %r (expected autonomous|assisted)"
+                      % args.mode)
+                return 2
+            as_json = bool(getattr(args, "json", False))
+            try:
+                pilot = AutoPilot(root, fabric=_build_fabric(args),
+                                  mode=mode,
+                                  actor=getattr(args, "actor", "cli"))
+            except AutoPilotError as exc:
+                print("refused: %s" % exc)
+                return 2
+            report = pilot.resume(
+                args.plan_id, force=bool(getattr(args, "force", False)),
+                on_event=_autopilot_events_printer(as_json))
+            if as_json:
+                _emit_json(report.to_dict())
+            else:
+                print()
+                print(report.render())
+            if report.status == "completed":
+                return 0
+            return 1 if report.status == "blocked" else 2
         try:
             plan = store.checkout_for_execution(args.plan_id)
         except NotApproved as exc:
@@ -3054,6 +3200,60 @@ def main() -> None:
     doctor_parser.add_argument("--offline", action="store_true",
                                help="Skip live endpoint probes")
     doctor_parser.add_argument("--json", action="store_true")
+
+    auto_parser = subparsers.add_parser(
+        "auto",
+        help="Give Forge a complex project; it plans, builds, and completes it",
+        description="Autopilot mode: one complex requirement becomes a "
+        "reviewable plan (A83 Architect), the plan is approved and checked "
+        "out, and every task is executed through Forge's guarded loop "
+        "(model -> code -> tests -> review -> security -> acceptance -> "
+        "commit) until the project is complete. Progress is persisted after "
+        "every task, so an interrupted run can continue with "
+        "`forge auto --resume <plan-id>`.",
+    )
+    auto_parser.add_argument("requirement", nargs="?", default="",
+                             help="The complex project to build. Omit when "
+                                  "using --resume.")
+    auto_parser.add_argument("--resume", default="", metavar="PLAN_ID",
+                             help="Continue an interrupted or blocked run "
+                                  "of an already-approved plan")
+    auto_parser.add_argument("--root", default=".",
+                             help="Repository root to work in (default: .)")
+    auto_parser.add_argument("--project", default="autopilot",
+                             help="Project name for reporting "
+                                  "(default: autopilot)")
+    auto_parser.add_argument("--mode", default="autonomous",
+                             help="Permission mode: autonomous|assisted "
+                                  "(default: autonomous; safe/locked cannot "
+                                  "complete a project)")
+    auto_parser.add_argument("--max-task-retries", type=int, default=1,
+                             help="Extra attempts per task after the first, "
+                                  "fed the previous failure (default: 1)")
+    auto_parser.add_argument("--max-debug-retries", type=int, default=3,
+                             help="Bounded test/debug repairs inside each "
+                                  "task (default: 3)")
+    auto_parser.add_argument("--profile", default="",
+                             help="Project profile name shaping the plan "
+                                  "(e.g. zeroos)")
+    auto_parser.add_argument("--actor", default="operator",
+                             help="Who to record as approving the plan")
+    auto_parser.add_argument("--dry-run", action="store_true",
+                             help="Plan only: store the plan for review, "
+                                  "approve nothing, execute nothing")
+    auto_parser.add_argument("--init-git", action="store_true",
+                             help="Initialise a git repository at --root "
+                                  "when there is none (needed for commits)")
+    auto_parser.add_argument("--config", default="",
+                             help="Fabric config file (.forge/models.yaml|.json)")
+    auto_parser.add_argument("--ollama-url", default="")
+    auto_parser.add_argument("--ollama-model", default="")
+    auto_parser.add_argument("--force", action="store_true",
+                             help="Bypass the no-model pre-flight gate (the "
+                                  "run then fails honestly at the first "
+                                  "unsatisfiable step)")
+    auto_parser.add_argument("--json", action="store_true",
+                             help="Emit machine-readable JSON")
 
     desktop_parser = subparsers.add_parser(
         "desktop",
@@ -3828,6 +4028,24 @@ def main() -> None:
     _eng_execute = engineer_subs.add_parser(
         "execute", help="Check out an approved plan and show its frontier")
     _eng_execute.add_argument("plan_id")
+    _eng_execute.add_argument(
+        "--auto", action="store_true",
+        help="Actually execute the plan through the AutoPilot until it is "
+             "complete (requires an approved plan)")
+    _eng_execute.add_argument(
+        "--force", action="store_true",
+        help="With --auto: bypass the no-model pre-flight gate")
+    _eng_execute.add_argument("--mode", default="autonomous",
+                              help="With --auto: permission mode "
+                                   "(default: autonomous)")
+    _eng_execute.add_argument("--config", default="",
+                              help="With --auto: fabric config file")
+    _eng_execute.add_argument("--ollama-url", default="",
+                              help="With --auto: Ollama endpoint override")
+    _eng_execute.add_argument("--ollama-model", default="",
+                              help="With --auto: Ollama model override")
+    _eng_execute.add_argument("--json", action="store_true",
+                              help="With --auto: emit machine-readable JSON")
 
     _eng_pipeline = engineer_subs.add_parser(
         "pipeline", help="Run the multi-agent engineering pipeline")
@@ -3886,6 +4104,9 @@ def main() -> None:
 
     elif args.command == "run":
         raise SystemExit(_run_task(args))
+
+    elif args.command == "auto":
+        raise SystemExit(_run_auto(args))
 
     elif args.command == "doctor":
         raise SystemExit(_run_doctor(args))
