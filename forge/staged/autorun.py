@@ -34,6 +34,9 @@ def _state(plane: Any):
 
 def start(plane: Any, session: Any, build_id: str, *, mode: str = "") -> Dict[str, Any]:
     """Start a non-blocking sequential runner and return its state."""
+    service = StagedBuilds(plane)
+    # Validate ownership/existence before creating a background thread.
+    service.get_board(session, build_id)
     lock, runs = _state(plane)
     key = "%s:%s" % (session.project_id, build_id)
     with lock:
@@ -53,6 +56,8 @@ def start(plane: Any, session: Any, build_id: str, *, mode: str = "") -> Dict[st
 
 
 def status(plane: Any, session: Any, build_id: str) -> Dict[str, Any]:
+    # Also enforce project ownership for status probes.
+    StagedBuilds(plane).get_board(session, build_id)
     lock, runs = _state(plane)
     key = "%s:%s" % (session.project_id, build_id)
     with lock:
@@ -76,7 +81,6 @@ def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
             current_stage = next(
                 (item for item in stages if item.get("position") == current), None)
             if current_stage and current_stage.get("status") == StageStatus.FAILED.value:
-                # Stop rather than silently retrying a verified failure.
                 return
             if current_stage and current_stage.get("status") == StageStatus.RUNNING.value:
                 time.sleep(1.0)
@@ -84,8 +88,6 @@ def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
             try:
                 service.run_next(session, build_id, mode=mode)
             except Exception:
-                # The board is the source of truth; transient conflicts are
-                # retried, but terminal stage failures stop the loop above.
                 time.sleep(1.0)
     finally:
         lock, runs = _state(plane)
