@@ -1,0 +1,20 @@
+services:
+  forge:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8300:8300"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8300
+      FORGE_AUTH_MODE: production
+      FORGE_SECURE_COOKIES: "0"
+      FORGE_DB_PATH: /data/forge/cockpit.db
+      FORGE_PROJECT_ID: forge
+      FORGE_PROJECT_ROOT: /workspace
+    volumes:
+      - forge-data:/data/forge
+      - ./workspace:/workspace
+
+volumes:
+  forge-data:
