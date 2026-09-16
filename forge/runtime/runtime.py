@@ -6,7 +6,12 @@ from typing import Any, Callable
 
 from forge.security.policy import translate_a32
 from forge.security.policy_gate import PolicyDecision
-from forge.core.fencing import FenceRegistry, commit_guard as make_commit_guard
+from forge.core.fencing import (
+    FenceRegistry,
+    FAILED,
+    SUCCEEDED,
+    commit_guard as make_commit_guard,
+)
 
 
 @dataclass
@@ -166,12 +171,12 @@ class ToolRuntime:
             result.duration_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
             if local_fences is not None and local_fence is not None:
                 local_fences.commit(task_id, local_fence,
-                                    "succeeded" if result.success else "failed")
+                                    SUCCEEDED if result.success else FAILED)
             return result
         except Exception as exc:
             if local_fences is not None and local_fence is not None:
                 try:
-                    local_fences.commit(task_id, local_fence, "failed")
+                    local_fences.commit(task_id, local_fence, FAILED)
                 except Exception:
                     pass
             elapsed = (datetime.now(timezone.utc) - started).total_seconds() * 1000
