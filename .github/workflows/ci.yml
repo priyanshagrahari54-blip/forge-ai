@@ -17,7 +17,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
+      - name: Install dependencies
+        run: |
+          if [ "${{ matrix.python-version }}" = "3.8" ]; then
+            # Python 3.8 uses the repository's frozen dependency set so the
+            # legacy compatibility target does not depend on resolver changes.
+            python -m pip install -r requirements/py38-dev.txt
+            python -m pip install -e . --no-deps
+          else
+            python -m pip install -e ".[dev]"
+          fi
       - run: python -m pytest -q
       - run: python -m compileall -q forge
       - run: git diff --check
