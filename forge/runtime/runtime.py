@@ -75,23 +75,14 @@ class ToolRuntime:
         is_mutating = tool.permission in self.MUTATING_PERMISSIONS
 
         # A real worker supplies the scheduler-owned fence. Direct local agent
-        # runs (the trusted in-process API used by the supervisor and tests)
-        # must mint their own short-lived attempt fence rather than bypassing
-        # the fence requirement. Remote callers cannot set ``approved=True``;
-        # token approval is still checked by the policy layer below.
+        # runs are trusted in-process execution, so they also get a short-lived
+        # attempt fence when none was supplied. The fence proves lifecycle
+        # authority; the permission/policy checks below still decide whether the
+        # mutation is allowed. A fence is never itself permission to write.
         local_fences: FenceRegistry | None = None
         local_fence: Any = None
         effective_guard = commit_guard
         if is_mutating and task_id and effective_guard is None:
-            if not approved and not approval_token_id:
-                reason = "NO_FENCE_AUTHORITY: task-bound mutation requires an execution fence."
-                self._audit_tool(tool, allowed=False, reason=reason,
-                                 actor=actor, task_id=task_id,
-                                 approval_token_id=approval_token_id,
-                                 call=kwargs, decision=PolicyDecision.DENY)
-                return ToolResult.fail(
-                    tool_name, reason,
-                    metadata={"fenced": True, "error_code": "NO_FENCE_AUTHORITY"})
             local_fences = FenceRegistry()
             local_fence = local_fences.begin(task_id, owner=actor)
             local_fence = local_fences.mark_running(task_id, local_fence)
@@ -129,8 +120,9 @@ class ToolRuntime:
                 self._audit_tool(tool, allowed=False, reason=reason,
                                  actor=actor, task_id=task_id,
                                  approval_token_id=approval_token_id,
-                                 call=kwargs)
-                return ToolResult.fail(tool_name, reason)
+                                 call=kwargs, decision=PolicyDecision.DENY)
+                return ToolResult.fail(tool_name, reason,
+                                       metadata={"error_code": "PERMISSION_DENIED"})
         else:
             permission = self.permission_manager.check(tool.permission)
             if permission.value == "blocked":
