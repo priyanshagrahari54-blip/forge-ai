@@ -22,6 +22,7 @@ from forge.api.schemas import (
     StagedStagesAddRequest,
 )
 from forge.control.control_plane import ControlPlane
+from forge.staged.autorun import start as start_autorun, status as autorun_status
 from forge.staged.service import StagedBuilds
 
 router = APIRouter()
@@ -112,6 +113,29 @@ async def run_next(build_id: str, body: Optional[StagedRunRequest] = None,
         current.session, build_id, mode=body.mode if body else "")
 
 
+@router.post("/builds/{build_id}/run-all",
+             dependencies=[rate_limit("task_create")])
+async def run_all(build_id: str, body: Optional[StagedRunRequest] = None,
+                  current: Authed = Depends(authed_mutation),
+                  plane: ControlPlane = Depends(get_plane)):
+    """Launch every remaining stage sequentially in the server background.
+
+    The browser is not part of the execution lifecycle. Closing the tab does
+    not cancel the runner; each stage is started only after the previous one
+    has reached verified completion.
+    """
+    return start_autorun(
+        plane, current.session, build_id,
+        mode=body.mode if body else "")
+
+
+@router.get("/builds/{build_id}/run-all/status")
+async def run_all_status(build_id: str,
+                         current: Authed = Depends(authed),
+                         plane: ControlPlane = Depends(get_plane)):
+    return autorun_status(plane, current.session, build_id)
+
+
 @router.post("/builds/{build_id}/stages/{position}/run",
              dependencies=[rate_limit("task_create")])
 async def run_stage(build_id: str, position: int,
@@ -172,10 +196,6 @@ async def preview_raw(build_id: str, path: str = "",
                       plane: ControlPlane = Depends(get_plane)):
     abspath, media_type = _service(plane).resolve_preview_raw(
         current.session, build_id, path)
-    # The cockpit embeds this in a sandboxed iframe (no
-    # allow-same-origin), and the document carries its own sandbox CSP:
-    # previewed scripts can never reach the cockpit DOM, cookies, or
-    # storage. no-store keeps every refresh live.
     return FileResponse(
         abspath, media_type=media_type,
         headers={
