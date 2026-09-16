@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Forge AI — City Command</title>
+  <style>
+    :root{--bg:#070a12;--panel:#0d1220e8;--line:#24304a;--text:#edf3ff;--muted:#8e9ab3;--cyan:#55d6ff;--violet:#9b7cff;--green:#55e39a;--amber:#ffc86b;--red:#ff6b86}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 70% 15%,#172044 0,#090d18 42%,#05070d 100%);color:var(--text);font:14px/1.45 Inter,system-ui,Segoe UI,sans-serif;min-height:100vh;overflow:hidden}
+    button,input,textarea{font:inherit}button{cursor:pointer;border:1px solid var(--line);background:#11182a;color:var(--text);border-radius:10px;padding:9px 12px}button:hover{border-color:#4b638f;background:#17213a}.primary{background:linear-gradient(135deg,#4c72ff,#8b62ff);border:0}.danger{color:#ff9bad}.shell{height:100vh;display:grid;grid-template-columns:235px 1fr 330px}.side,.right{background:#090d16d9;border-color:var(--line);backdrop-filter:blur(16px)}.side{border-right:1px solid var(--line);padding:18px}.right{border-left:1px solid var(--line);padding:16px;overflow:auto}.brand{font-weight:800;font-size:20px;letter-spacing:.08em;margin-bottom:24px}.brand b{color:var(--cyan)}.nav{display:grid;gap:7px}.nav button{text-align:left;background:transparent}.nav button.active{background:#141e35;border-color:#314a70}.stats{position:absolute;bottom:18px;left:18px;right:auto;color:var(--muted);font-size:12px}.main{position:relative;overflow:hidden}.top{height:64px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px;background:#080c16b8}.status{display:flex;gap:8px;align-items:center;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}.map{position:absolute;inset:64px 0 0;background-image:linear-gradient(#18213a55 1px,transparent 1px),linear-gradient(90deg,#18213a55 1px,transparent 1px);background-size:44px 44px;overflow:auto}.roads{position:absolute;inset:0;background:radial-gradient(ellipse at 48% 50%,transparent 0 17%,#55d6ff12 17.3% 17.6%,transparent 18%),linear-gradient(24deg,transparent 47%,#55d6ff18 47.2% 47.6%,transparent 47.8%),linear-gradient(-28deg,transparent 54%,#9b7cff15 54.2% 54.6%,transparent 54.8%)}.district{position:absolute;width:180px;min-height:115px;border:1px solid #304263;background:linear-gradient(145deg,#10182aee,#0a0f1ceb);border-radius:18px;padding:14px;box-shadow:0 18px 60px #0008;transition:.25s}.district:hover{transform:translateY(-3px);border-color:#5573a5}.district h3{margin:0 0 4px;font-size:13px}.district p{margin:0;color:var(--muted);font-size:11px}.agents{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px}.agent{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;background:#152542;border:1px solid #365078;color:var(--cyan);font-size:10px;animation:pulse 2.2s infinite}.agent.idle{color:var(--muted);animation:none}.agent.work{color:var(--green);box-shadow:0 0 16px #55e39a55}.agent.warn{color:var(--amber)}@keyframes pulse{50%{box-shadow:0 0 20px #55d6ff35}}.command{left:50%;top:50%;transform:translate(-50%,-50%);width:220px;text-align:center;border-color:#5b65a0;box-shadow:0 0 80px #7162ff18}.research{left:7%;top:12%}.models{right:8%;top:13%}.engineering{left:9%;bottom:14%}.security{right:8%;bottom:14%}.qa{left:50%;top:13%;transform:translateX(-50%)}.tools{left:50%;bottom:11%;transform:translateX(-50%)}.flow{position:absolute;inset:0;pointer-events:none}.flow i{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 16px var(--cyan);animation:travel 4s linear infinite}.flow i:nth-child(1){left:23%;top:30%}.flow i:nth-child(2){left:73%;top:32%;animation-delay:1s;background:var(--violet)}.flow i:nth-child(3){left:31%;top:66%;animation-delay:2s;background:var(--green)}@keyframes travel{0%{transform:translate(0,0);opacity:0}10%,80%{opacity:1}100%{transform:translate(260px,100px);opacity:0}}
+    .card{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:13px;margin-bottom:12px}.card h2,.card h3{margin:0 0 10px}.small{color:var(--muted);font-size:12px}.field{display:grid;gap:6px;margin:9px 0}input,textarea{width:100%;border:1px solid var(--line);background:#080d18;color:var(--text);border-radius:9px;padding:9px;outline:0}textarea{min-height:110px;resize:vertical}.row{display:flex;gap:7px;flex-wrap:wrap}.stage{display:flex;gap:8px;align-items:flex-start;padding:9px 0;border-top:1px solid #1b263b}.stage:first-child{border-top:0}.num{min-width:25px;height:25px;border-radius:8px;display:grid;place-items:center;background:#18243d;color:var(--cyan);font-weight:700}.stage.done .num{color:var(--green)}.stage.run .num{color:var(--amber);box-shadow:0 0 14px #ffc86b33}.log{max-height:150px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:#9fb0ce;white-space:pre-wrap}.mic{border-radius:50%;width:42px;height:42px;padding:0;border-color:#3e5b88}.mic.live{color:var(--red);border-color:var(--red);box-shadow:0 0 24px #ff6b8638}.hidden{display:none}@media(max-width:1000px){.shell{grid-template-columns:70px 1fr}.side{padding:10px}.brand{font-size:13px}.nav button{font-size:0;text-align:center}.right{display:none}.stats{display:none}.district{transform:scale(.82)}.command{transform:translate(-50%,-50%) scale(.85)}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">F<span>◈</span>RGE</div>
+    <div class="nav">
+      <button class="active">🏙️ City Command</button>
+      <button onclick="focusMission()">🎯 Mission</button>
+      <button onclick="runNext()">▶ Run Next Stage</button>
+      <button onclick="toggleVoice()">🎙 Voice Command</button>
+    </div>
+    <div class="stats">FORGE CITY<br><span>persistent mission console</span></div>
+  </aside>
+  <main class="main">
+    <header class="top"><div><strong>Forge City</strong><div class="small">Multi-agent mission control</div></div><div class="status"><span class="dot"></span><span id="serverState">Server connection pending</span></div></header>
+    <section class="map">
+      <div class="roads"></div><div class="flow"><i></i><i></i><i></i></div>
+      <div class="district research"><h3>🔬 Research District</h3><p>Research · evidence · synthesis</p><div class="agents"><span class="agent work">R1</span><span class="agent work">R2</span><span class="agent">R3</span><span class="agent idle">R4</span></div></div>
+      <div class="district models"><h3>🧠 Model District</h3><p>Registry · routing · health</p><div class="agents"><span class="agent work">M1</span><span class="agent">M2</span><span class="agent">M3</span></div></div>
+      <div class="district qa"><h3>🧪 QA District</h3><p>Tests · review · verification</p><div class="agents"><span class="agent work">Q1</span><span class="agent">Q2</span><span class="agent warn">Q3</span></div></div>
+      <div class="district command"><h3>🏛️ Command Center</h3><p>Supervisor · planner · DAG scheduler</p><div class="agents" style="justify-content:center"><span class="agent work">S</span><span class="agent work">P</span><span class="agent">D</span></div></div>
+      <div class="district engineering"><h3>🏗️ Engineering District</h3><p>Coding · build · integration</p><div class="agents"><span class="agent work">E1</span><span class="agent work">E2</span><span class="agent">E3</span><span class="agent idle">E4</span></div></div>
+      <div class="district security"><h3>🛡️ Security District</h3><p>Threats · permissions · audit</p><div class="agents"><span class="agent work">X1</span><span class="agent">X2</span><span class="agent idle">X3</span></div></div>
+      <div class="district tools"><h3>🛠️ Tool District</h3><p>Runtime · artifacts · execution</p><div class="agents"><span class="agent work">T1</span><span class="agent">T2</span><span class="agent">T3</span></div></div>
+    </section>
+  </main>
+  <aside class="right">
+    <div class="card" id="missionCard">
+      <h2>Mission Builder</h2><div class="small">Paste multiple stages at once. Forge stores them in order and runs them one-by-one.</div>
+      <div class="field"><label>Server</label><input id="server" value="/api/v1"></div>
+      <div class="field"><label>Bearer token</label><input id="token" type="password" placeholder="Paste Forge token"></div>
+      <div class="field"><label>Project / mission name</label><input id="name" value="My Forge Mission"></div>
+      <div class="field"><label>Stage prompts</label><textarea id="stages" placeholder="Stage 1: Research and understand the problem...\n\nStage 2: Design the architecture...\n\nStage 3: Implement...\n\nStage 4: Test and fix..."></textarea></div>
+      <div class="row"><button class="primary" onclick="createMission()">Create Mission</button><button onclick="loadMission()">Refresh</button></div>
+      <div class="small" style="margin-top:8px">Tip: each blank-line-separated block becomes a stage. You can paste prompts prepared in ChatGPT without merging them.</div>
+    </div>
+    <div class="card"><h3>🎙 Voice Command</h3><div class="row"><button class="mic" id="mic" onclick="toggleVoice()">●</button><span id="voiceState" class="small">Press to speak</span></div><div id="transcript" class="small" style="margin-top:8px"></div></div>
+    <div class="card"><h3>Mission Stages</h3><div id="stageList" class="small">No mission loaded.</div></div>
+    <div class="card"><h3>Activity</h3><div id="log" class="log"></div></div>
+  </aside>
+</div>
+<script>
+let buildId="", stages=[], recognition=null, listening=false;
+const $=id=>document.getElementById(id);
+function api(path,opts={}){const base=$('server').value.replace(/\/$/,'');opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});const token=$('token').value.trim();if(token)opts.headers.Authorization='Bearer '+token;return fetch(base+path,opts).then(async r=>{const t=await r.text();let d={};try{d=JSON.parse(t)}catch{}if(!r.ok)throw new Error(d.detail||d.message||t||('HTTP '+r.status));return d})}
+function log(x){$('log').textContent=new Date().toLocaleTimeString()+'  '+x+'\n'+$('log').textContent}
+function render(){if(!stages.length){$('stageList').textContent='No mission loaded.';return}$('stageList').innerHTML=stages.map((s,i)=>`<div class="stage ${s.status||''}"><span class="num">${i+1}</span><div><b>${esc(s.title||('Stage '+(i+1)))}</b><div class="small">${esc((s.status||'queued').toUpperCase())}</div></div></div>`).join('')}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function parseStages(){const raw=$('stages').value.trim();return raw.split(/\n\s*\n/).map((x,i)=>x.trim()).filter(Boolean).map((prompt,i)=>{let title='Stage '+(i+1);const m=prompt.match(/^Stage\s*\d+\s*[:\-]\s*(.+?)(?:\n|$)/i);if(m)title=m[1].slice(0,160);return{title,prompt}})}
+async function createMission(){try{const parsed=parseStages();if(!parsed.length)return alert('Add at least one stage prompt.');const name=$('name').value.trim()||'Forge Mission';const created=await api('/builds',{method:'POST',body:JSON.stringify({name,description:'Forge City staged mission',roadmap:'Sequential staged execution',blueprint:'Created from Forge City Mission Builder'})});buildId=created.build.id;await api('/builds/'+encodeURIComponent(buildId)+'/stages',{method:'POST',body:JSON.stringify({stages:parsed})});log('Mission '+buildId+' created with '+parsed.length+' stages.');await loadMission();}catch(e){log('ERROR: '+e.message);alert(e.message)}}
+async function loadMission(){if(!buildId)return log('Create a mission first.');try{const d=await api('/builds/'+encodeURIComponent(buildId));stages=d.stages||d.build?.stages||[];render();$('serverState').textContent='Connected · '+buildId;log('Mission refreshed.');}catch(e){$('serverState').textContent='Connection error';log('ERROR: '+e.message)}}
+async function runNext(){if(!buildId)return alert('Create a mission first.');try{log('Starting next stage...');const d=await api('/builds/'+encodeURIComponent(buildId)+'/run-next',{method:'POST',body:JSON.stringify({mode:'autonomous'})});log('Stage dispatched: '+JSON.stringify(d));await loadMission();}catch(e){log('ERROR: '+e.message);alert(e.message)}}
+function focusMission(){$('stages').focus()}
+function toggleVoice(){if(listening){recognition?.stop();return}const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){alert('Voice recognition is not supported by this browser. The server-side Forge voice API can still be used from the main cockpit.');return}recognition=new SR();recognition.lang='en-IN';recognition.interimResults=true;recognition.continuous=false;recognition.onstart=()=>{listening=true;$('mic').classList.add('live');$('voiceState').textContent='Listening…'};recognition.onend=()=>{listening=false;$('mic').classList.remove('live');$('voiceState').textContent='Press to speak'};recognition.onresult=e=>{let text=Array.from(e.results).map(r=>r[0].transcript).join('');$('transcript').textContent=text; if(e.results[e.results.length-1].isFinal){handleVoice(text)}};recognition.onerror=e=>log('Voice: '+e.error);recognition.start()}
+function handleVoice(text){const t=text.toLowerCase();if(/run (the )?next|start next|continue/.test(t)){runNext();return}if(/refresh|reload/.test(t)){loadMission();return}if(/create mission|new mission/.test(t)){createMission();return}$('stages').value=($('stages').value.trim()?$('stages').value.trim()+'\n\n':'')+text;log('Voice added as a new stage prompt. Review it before execution.')}
+window.addEventListener('load',()=>log('Forge City ready. Add stages, create a mission, then run them one at a time.'));
+</script>
+</body>
+</html>
