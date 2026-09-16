@@ -37,7 +37,6 @@ def build_app():
         local_dev_mode=os.environ.get("FORGE_AUTH_MODE", "production") != "production",
     )
     plane = ControlPlane(config)
-    plane.start()
     app = create_app(
         plane,
         ApiConfig(
