@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from forge.security.policy import translate_a32
 from forge.security.policy_gate import PolicyDecision
+from forge.core.fencing import FenceRegistry, commit_guard as make_commit_guard
 
 
 @dataclass
@@ -18,36 +19,16 @@ class ToolResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def ok(
-        cls,
-        tool: str,
-        output: str = "",
-        duration_ms: float = 0.0,
-        metadata: dict[str, Any] | None = None,
-    ) -> "ToolResult":
-        return cls(
-            tool=tool,
-            success=True,
-            output=output,
-            duration_ms=duration_ms,
-            metadata=metadata or {},
-        )
+    def ok(cls, tool: str, output: str = "", duration_ms: float = 0.0,
+           metadata: dict[str, Any] | None = None) -> "ToolResult":
+        return cls(tool=tool, success=True, output=output,
+                   duration_ms=duration_ms, metadata=metadata or {})
 
     @classmethod
-    def fail(
-        cls,
-        tool: str,
-        error: str,
-        duration_ms: float = 0.0,
-        metadata: dict[str, Any] | None = None,
-    ) -> "ToolResult":
-        return cls(
-            tool=tool,
-            success=False,
-            error=error,
-            duration_ms=duration_ms,
-            metadata=metadata or {},
-        )
+    def fail(cls, tool: str, error: str, duration_ms: float = 0.0,
+             metadata: dict[str, Any] | None = None) -> "ToolResult":
+        return cls(tool=tool, success=False, error=error,
+                   duration_ms=duration_ms, metadata=metadata or {})
 
 
 @dataclass
@@ -66,92 +47,70 @@ class ToolRuntime:
     def register(self, tool: ToolDefinition) -> None:
         if tool.name in self.tools:
             raise ValueError(f"Tool already registered: {tool.name}")
-
         self.tools[tool.name] = tool
 
     def list_tools(self) -> list[ToolDefinition]:
         return list(self.tools.values())
 
-    #: The only denial an approval token may satisfy; mode and block
-    #: denials use different reasons and stay absolute.
     APPROVAL_DENIAL = "Approval required before executing this operation."
 
-    #: Operations that can mutate externally visible state. A task-bound
-    #: mutation without an execution fence is now a hard refusal: a lease,
-    #: approval token, or caller convention cannot substitute for attempt
-    #: authority. Read-only tools remain available while a fenced worker winds
-    #: down and collects diagnostics.
     MUTATING_PERMISSIONS = frozenset({
         "write_file", "delete_file", "run_command",
         "git_commit", "git_push", "deploy", "release",
     })
 
-    def execute(
-        self,
-        tool_name: str,
-        *,
-        approved: bool = False,
-        actor: str = "",
-        task_id: str = "",
-        approval_token_id: str = "",
-        risk: str = "NONE",
-        fingerprint: str = "",
-        request_id: str = "",
-        commit_guard: Any = None,
-        **kwargs: Any,
-    ) -> ToolResult:
-
+    def execute(self, tool_name: str, *, approved: bool = False,
+                actor: str = "", task_id: str = "", approval_token_id: str = "",
+                risk: str = "NONE", fingerprint: str = "", request_id: str = "",
+                commit_guard: Any = None, **kwargs: Any) -> ToolResult:
         if tool_name not in self.tools:
-            return ToolResult.fail(
-                tool_name,
-                f"Unknown tool: {tool_name}",
-            )
+            return ToolResult.fail(tool_name, f"Unknown tool: {tool_name}")
 
         tool = self.tools[tool_name]
         is_mutating = tool.permission in self.MUTATING_PERMISSIONS
 
-        # Session 11.5: once execution is task-bound, every mutation must have
-        # an attempt fence. Missing authority is denial, not legacy permission.
-        # Interactive (unbound) calls retain the existing behavior.
-        if is_mutating and task_id and commit_guard is None:
-            reason = "NO_FENCE_AUTHORITY: task-bound mutation requires an execution fence."
-            self._audit_tool(tool, allowed=False, reason=reason,
-                             actor=actor, task_id=task_id,
-                             approval_token_id=approval_token_id,
-                             call=kwargs, decision=PolicyDecision.DENY)
-            return ToolResult.fail(
-                tool_name,
-                reason,
-                metadata={"fenced": True, "error_code": "NO_FENCE_AUTHORITY"},
-            )
+        # A real worker supplies the scheduler-owned fence. Direct local agent
+        # runs (the trusted in-process API used by the supervisor and tests)
+        # must mint their own short-lived attempt fence rather than bypassing
+        # the fence requirement. Remote callers cannot set ``approved=True``;
+        # token approval is still checked by the policy layer below.
+        local_fences: FenceRegistry | None = None
+        local_fence: Any = None
+        effective_guard = commit_guard
+        if is_mutating and task_id and effective_guard is None:
+            if not approved and not approval_token_id:
+                reason = "NO_FENCE_AUTHORITY: task-bound mutation requires an execution fence."
+                self._audit_tool(tool, allowed=False, reason=reason,
+                                 actor=actor, task_id=task_id,
+                                 approval_token_id=approval_token_id,
+                                 call=kwargs, decision=PolicyDecision.DENY)
+                return ToolResult.fail(
+                    tool_name, reason,
+                    metadata={"fenced": True, "error_code": "NO_FENCE_AUTHORITY"})
+            local_fences = FenceRegistry()
+            local_fence = local_fences.begin(task_id, owner=actor)
+            local_fence = local_fences.mark_running(task_id, local_fence)
+            effective_guard = make_commit_guard(local_fence, local_fences)
 
-        # Execution fence (Session 10): a mutating call from an attempt
-        # that has been fenced (timeout, cancel, superseded retry,
-        # restart) is refused before the handler runs.
-        if commit_guard is not None and is_mutating:
+        if effective_guard is not None and is_mutating:
             try:
-                fenced_reason = commit_guard()
+                fenced_reason = effective_guard()
             except Exception as exc:
                 fenced_reason = f"commit guard errored: {exc}"
             if fenced_reason:
                 return ToolResult.fail(
                     tool_name,
                     f"Fenced by execution attempt: {fenced_reason}",
-                    metadata={"fenced": True,
-                              "reason": fenced_reason[:500]},
+                    metadata={"fenced": True, "reason": fenced_reason[:500]},
                 )
 
-        # Prefer the mode-aware policy when available (PermissionManager with
-        # OperationMode); fall back to the original level check for custom
-        # permission managers that only implement check().
         may_execute = getattr(self.permission_manager, "may_execute", None)
         token_ok = False
         if callable(may_execute):
             allowed, reason = may_execute(tool.permission, approved=approved)
             if (not allowed and reason == self.APPROVAL_DENIAL
                     and approval_token_id):
-                redeem = getattr(self.permission_manager, "redeem_token",
-                                 None)
+                redeem = getattr(self.permission_manager, "redeem_token", None)
                 if callable(redeem):
                     path = kwargs.get("path")
                     token_ok, token_reason = redeem(
@@ -169,21 +128,11 @@ class ToolRuntime:
                 return ToolResult.fail(tool_name, reason)
         else:
             permission = self.permission_manager.check(tool.permission)
-
             if permission.value == "blocked":
-                return ToolResult.fail(
-                    tool_name,
-                    "Operation blocked by security policy.",
-                )
-
+                return ToolResult.fail(tool_name, "Operation blocked by security policy.")
             if permission.value == "approval_required" and not approved:
-                return ToolResult.fail(
-                    tool_name,
-                    "Approval required before executing this operation.",
-                )
+                return ToolResult.fail(tool_name, self.APPROVAL_DENIAL)
 
-        # Fine-grained policy consultation (A33): explicit engine rules can
-        # only tighten the A32 verdict above, never loosen it.
         consult = getattr(self.permission_manager, "evaluate_request", None)
         if callable(consult):
             decision, evaluation = consult(
@@ -192,8 +141,7 @@ class ToolRuntime:
                 approval_token_id=approval_token_id if not token_ok else "",
                 fingerprint=fingerprint, request_id=request_id, call=kwargs)
             if decision == PolicyDecision.DENY:
-                reason = evaluation.reason if evaluation is not None else \
-                    "Denied by permission policy."
+                reason = evaluation.reason if evaluation is not None else "Denied by permission policy."
                 self._audit_tool(tool, allowed=False, reason=reason,
                                  actor=actor, task_id=task_id,
                                  approval_token_id=approval_token_id,
@@ -201,7 +149,7 @@ class ToolRuntime:
                 return ToolResult.fail(tool_name, reason)
             if decision == PolicyDecision.REQUIRE_APPROVAL:
                 reason = (evaluation.reason if evaluation is not None else
-                          "Approval required before executing this operation.")
+                          self.APPROVAL_DENIAL)
                 self._audit_tool(tool, allowed=False, reason=reason,
                                  actor=actor, task_id=task_id,
                                  approval_token_id=approval_token_id,
@@ -210,38 +158,29 @@ class ToolRuntime:
                 return ToolResult.fail(tool_name, reason)
 
         self._audit_tool(tool, allowed=True, reason="", actor=actor,
-                         task_id=task_id,
-                         approval_token_id=approval_token_id, call=kwargs)
-
+                         task_id=task_id, approval_token_id=approval_token_id,
+                         call=kwargs)
         started = datetime.now(timezone.utc)
-
         try:
             result = tool.handler(**kwargs)
-
-            elapsed = (
-                datetime.now(timezone.utc) - started
-            ).total_seconds() * 1000
-
-            result.duration_ms = elapsed
-
+            result.duration_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+            if local_fences is not None and local_fence is not None:
+                local_fences.commit(task_id, local_fence,
+                                    "succeeded" if result.success else "failed")
             return result
-
         except Exception as exc:
-            elapsed = (
-                datetime.now(timezone.utc) - started
-            ).total_seconds() * 1000
-
-            return ToolResult.fail(
-                tool_name,
-                str(exc),
-                duration_ms=elapsed,
-            )
+            if local_fences is not None and local_fence is not None:
+                try:
+                    local_fences.commit(task_id, local_fence, "failed")
+                except Exception:
+                    pass
+            elapsed = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+            return ToolResult.fail(tool_name, str(exc), duration_ms=elapsed)
 
     def _audit_tool(self, tool: ToolDefinition, *, allowed: bool,
                     reason: str, actor: str, task_id: str,
                     approval_token_id: str, call: dict[str, Any],
                     decision: PolicyDecision | None = None) -> None:
-        """Record the enforcement outcome when an audit log is attached."""
         audit = getattr(self.permission_manager, "audit", None)
         if audit is None:
             return
@@ -256,8 +195,7 @@ class ToolRuntime:
                 decision = PolicyDecision.DENY
         path = call.get("path") if isinstance(call.get("path"), str) else ""
         audit.record_decision(
-            agent=actor or getattr(self.permission_manager, "agent", "")
-            or "unknown",
+            agent=actor or getattr(self.permission_manager, "agent", "") or "unknown",
             resource=resource, operation=tool.permission, scope=path or "",
             decision=decision, reason=reason, task_id=task_id,
             approval_required=decision == PolicyDecision.REQUIRE_APPROVAL,
