@@ -3,9 +3,16 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8300:8300"
-    env_file:
-      - .env.direct-server
+      - "${FORGE_PORT:-8300}:8300"
+    environment:
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "${PORT:-8300}"
+      FORGE_AUTH_MODE: "${FORGE_AUTH_MODE:-production}"
+      FORGE_SECURE_COOKIES: "${FORGE_SECURE_COOKIES:-0}"
+      FORGE_DB_PATH: "${FORGE_DB_PATH:-/data/forge/cockpit.db}"
+      FORGE_PROJECT_ID: "${FORGE_PROJECT_ID:-forge}"
+      FORGE_PROJECT_ROOT: "${FORGE_PROJECT_ROOT:-/workspace}"
+      FORGE_ALLOWED_ORIGINS: "${FORGE_ALLOWED_ORIGINS:-}"
     volumes:
       - forge-data:/data/forge
       - ./workspace:/workspace
