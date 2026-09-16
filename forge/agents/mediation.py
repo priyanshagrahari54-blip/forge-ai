@@ -437,13 +437,12 @@ class GatedAgentRuntime:
                 "no tool runtime is attached; refusing to execute %r "
                 "outside one" % tool)
         self._tool_calls[counter] = used + 1
-        effective_guard = commit_guard if commit_guard is not None else (lambda: "")
         try:
             result = self.tool_runtime.execute(
                 tool, approved=approved, actor=agent_identity(name),
                 task_id=run_id, approval_token_id=approval_token_id,
                 risk=risk, request_id=chain_id,
-                commit_guard=effective_guard, **kwargs)
+                commit_guard=commit_guard, **kwargs)
         except Exception as exc:
             raise MediationError("TOOL_FAILED",
                                  "tool %r crashed: %s" % (tool, exc)

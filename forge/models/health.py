@@ -19,13 +19,6 @@ class HealthStatus(str, Enum):
     UNHEALTHY = "unhealthy"
 
 
-# Module-level string constants to avoid repetitive Enum attribute lookups.
-_UNKNOWN = HealthStatus.UNKNOWN.value
-_HEALTHY = HealthStatus.HEALTHY.value
-_DEGRADED = HealthStatus.DEGRADED.value
-_UNHEALTHY = HealthStatus.UNHEALTHY.value
-
-
 @dataclass
 class ModelHealth:
     """Mutable health state for a single model."""
@@ -80,30 +73,30 @@ class ModelHealth:
 
     def _recompute(self) -> None:
         if self.consecutive_failures >= self.unhealthy_after:
-            self.status = _UNHEALTHY
+            self.status = HealthStatus.UNHEALTHY.value
         elif self.consecutive_failures >= self.degrade_after:
-            self.status = _DEGRADED
+            self.status = HealthStatus.DEGRADED.value
         elif self.consecutive_successes >= self.recover_after:
-            self.status = _HEALTHY
+            self.status = HealthStatus.HEALTHY.value
         elif self.consecutive_failures == 0 and self.consecutive_successes == 0:
-            self.status = _UNKNOWN
+            self.status = HealthStatus.UNKNOWN.value
 
     @property
     def recheck_due(self) -> bool:
         """True when an unhealthy model may be rechecked after a bounded delay."""
-        if self.status != _UNHEALTHY:
+        if self.status != HealthStatus.UNHEALTHY.value:
             return True
         return (time.time() - self.last_failure) >= self.recheck_after
 
     @property
     def usable(self) -> bool:
         """Healthy, degraded, or unknown models are routable; unhealthy is not."""
-        return self.status != _UNHEALTHY
+        return self.status != HealthStatus.UNHEALTHY.value
 
     @property
     def last_resort(self) -> bool:
         """An unhealthy model is only ever a deterministic last resort."""
-        return self.status == _UNHEALTHY
+        return self.status == HealthStatus.UNHEALTHY.value
 
     def to_dict(self) -> dict[str, Any]:
         return {

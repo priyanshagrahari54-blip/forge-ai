@@ -51,8 +51,6 @@ class Model:
                 raise ValueError(
                     f"Model {self.name!r} records status for unknown capability {capability!r}"
                 )
-        # Internal set index for O(1) capability membership lookups.
-        self._capabilities_set: set[str] = set(self.capabilities)
 
     def capability_status_for(self, capability: str) -> str:
         """Return the verification level for a capability.
@@ -63,10 +61,10 @@ class Model:
         return self.capability_status.get(capability, "declared")
 
     def supports(self, capability: str) -> bool:
-        return capability in self._capabilities_set
+        return capability in self.capabilities
 
     def supports_all(self, capabilities: Iterable[str]) -> bool:
-        return self._capabilities_set.issuperset(capabilities)
+        return all(capability in self.capabilities for capability in capabilities)
 
     # Derived, declarative capability checks. These never hard-code provider
     # assumptions: they read from the model's declared capability tuple.
@@ -159,12 +157,8 @@ class ModelRegistry:
 
     def __init__(self, models: Iterable[Model] | None = None) -> None:
         self._models: dict[str, Model] = {}
-        self._sorted_cache: list[Model] | None = None
         for model in models or ():
             self.register(model)
-
-    def _invalidate_cache(self) -> None:
-        self._sorted_cache = None
 
     def register(self, model: Model) -> None:
         if not model.name:
@@ -176,14 +170,12 @@ class ModelRegistry:
         if model.name in self._models:
             raise ValueError(f"Model already registered: {model.name}")
         self._models[model.name] = model
-        self._invalidate_cache()
 
     def replace(self, model: Model) -> None:
         """Register or overwrite a model by name."""
         if not model.name or not model.provider:
             raise ValueError("Model name and provider cannot be empty")
         self._models[model.name] = model
-        self._invalidate_cache()
 
     def get(self, name: str) -> Model:
         try:
@@ -195,7 +187,6 @@ class ModelRegistry:
         if name not in self._models:
             raise KeyError(f"Unknown model: {name}")
         del self._models[name]
-        self._invalidate_cache()
 
     def has(self, name: str) -> bool:
         return name in self._models
@@ -204,9 +195,7 @@ class ModelRegistry:
         return sorted(self._models)
 
     def list(self) -> list[Model]:
-        if self._sorted_cache is None:
-            self._sorted_cache = sorted(self._models.values(), key=lambda model: model.name)
-        return list(self._sorted_cache)
+        return sorted(self._models.values(), key=lambda model: model.name)
 
     def by_capability(self, capability: str) -> list[Model]:
         return sorted(
@@ -243,9 +232,7 @@ class ModelRegistry:
         return len(self._models)
 
     def __iter__(self) -> Iterator[Model]:
-        if self._sorted_cache is None:
-            self._sorted_cache = sorted(self._models.values(), key=lambda model: model.name)
-        return iter(self._sorted_cache)
+        return iter(self.list())
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._models

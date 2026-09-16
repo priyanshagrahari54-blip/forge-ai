@@ -75,8 +75,7 @@ class ModelRouter:
             return reliability * .4 + latency * .15 + cost * .15 + complexity * .2 + context * .1
 
         chosen = max(candidates, key=lambda model: (score(model), model.free, model.name))
-        chosen_score = score(chosen)
-        return RoutingDecision(chosen, chosen_score, {
+        return RoutingDecision(chosen, score(chosen), {
             "reliability": chosen.historical_success_rate - chosen.failure_rate,
             "latency": chosen.latency,
             "cost": chosen.cost_per_token,
@@ -107,14 +106,6 @@ class ModelRouter:
             "latency": latency,
             "task_complexity": task_complexity,
         })
-
-
-_HEALTH_SCORES = {
-    "healthy": 1.0,
-    "unknown": 0.8,
-    "degraded": 0.5,
-    "unhealthy": 0.0,
-}
 
 
 @dataclass
@@ -225,30 +216,21 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
-        allow_paid = "paid" in relaxed or policy.allow_paid
-        max_cost = None if "paid" in relaxed else policy.max_cost_per_token
-        allow_remote = "remote" in relaxed or policy.allow_remote
-        max_latency = None if "latency" in relaxed else policy.max_latency_ms
-        min_reliability = 0.0 if "reliability" in relaxed else policy.min_reliability
-        check_health = "health" not in relaxed
-
-        min_ctx = request.min_context_window
-
         candidates: list[Model] = []
         for model in capable:
-            if model.context_window < min_ctx:
+            if model.context_window < request.min_context_window:
                 continue
-            if not allow_paid and not model.free:
+            if "paid" not in relaxed and not policy.allow_paid and not model.free:
                 continue
-            if max_cost is not None and model.cost_per_token > max_cost:
+            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
                 continue
-            if not allow_remote and not model.local:
+            if "remote" not in relaxed and not policy.allow_remote and not model.local:
                 continue
-            if max_latency is not None and model.latency_ms > max_latency:
+            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
                 continue
-            if model.reliability < min_reliability:
+            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
                 continue
-            if check_health and model.health.last_resort:
+            if "health" not in relaxed and model.health.last_resort:
                 continue
             candidates.append(model)
 
@@ -267,19 +249,14 @@ class FabricRouter:
             _score, model = pair
             return (-_score, 0 if model.free else 1, 0 if model.local else 1, model.name)
 
-        # Precompute request-invariant denominators once per candidate evaluation
-        ctx_denom = max(request.min_context_window or 1, 1)
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_denom = 4096.0 * complexity
-
-        scored = [(self._score(model, pref_free, pref_local, ctx_denom, complexity_denom), model) for model in pool]
+        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
         scored.sort(key=rank)
         score, model = scored[0]
 
         chain = [entry for _, entry in scored]
         if regular and fallback_models:
             fallback_scored = [
-                (self._score(entry, pref_free, pref_local, ctx_denom, complexity_denom), entry)
+                (self._score(entry, request, policy, pref_free, pref_local), entry)
                 for entry in fallback_models
             ]
             fallback_scored.sort(key=rank)
@@ -306,42 +283,27 @@ class FabricRouter:
     def _score(
         self,
         model: Model,
-        arg2: Any,
-        arg3: Any,
-        arg4: Any = None,
-        arg5: Any = None,
-        ctx_denom: int | None = None,
-        complexity_denom: float | None = None,
+        request: ModelRequest,
+        policy: RoutingPolicy,
+        pref_free: bool,
+        pref_local: bool,
     ) -> float:
-        # Support both legacy _score(model, request, policy, pref_free, pref_local)
-        # and optimized _score(model, pref_free, pref_local, ctx_denom, complexity_denom).
-        if isinstance(arg2, ModelRequest):
-            request = arg2
-            pref_free = arg4
-            pref_local = arg5
-            ctx_denom = max(request.min_context_window or 1, 1)
-            complexity = max(0.0, request.complexity or 1.0)
-            complexity_denom = 4096.0 * complexity
-        else:
-            pref_free = arg2
-            pref_local = arg3
-            ctx_denom = arg4 if ctx_denom is None else ctx_denom
-            complexity_denom = arg5 if complexity_denom is None else complexity_denom
-
-        rel = model.reliability
-        reliability = 0.0 if rel <= 0.0 else (1.0 if rel >= 1.0 else rel)
-        lat = model.latency_ms
-        latency = 1.0 / (1.0 + (0.0 if lat <= 0.0 else lat) / 1000.0)
-        cost_val = model.cost_per_token
-        cost = 1.0 / (1.0 + (0.0 if cost_val <= 0.0 else cost_val) * 1_000_000.0)
+        reliability = max(0.0, min(1.0, model.reliability))
+        latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
+        cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        cw = model.context_window
-        context_fit = 1.0 if (ctx_denom and cw >= ctx_denom) else (cw / ctx_denom if ctx_denom else 1.0)
-        health = _HEALTH_SCORES.get(model.health.status, 0.5)
+        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
+        health = {
+            "healthy": 1.0,
+            "unknown": 0.8,
+            "degraded": 0.5,
+            "unhealthy": 0.0,
+        }.get(model.health.status, 0.5)
         # Complexity-aware: complex requests favor models with proportionally
         # larger context windows (and therefore more room to reason).
-        complexity_fit = 1.0 if (complexity_denom and cw >= complexity_denom) else (cw / complexity_denom if complexity_denom else 1.0)
+        complexity = max(0.0, request.complexity or 1.0)
+        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
         return (
             reliability * 0.30
             + latency * 0.15
