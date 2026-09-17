@@ -1,7 +1,7 @@
 """Authenticated remote-worker control-plane endpoints."""
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -36,7 +36,7 @@ def _store(plane: ControlPlane) -> WorkerStore:
 
 class WorkerRegistration(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    capabilities: list[str] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=list)
     cpu_threads: int = Field(default=1, ge=1)
     ram_mb: int = Field(default=0, ge=0)
     gpu: bool = False
