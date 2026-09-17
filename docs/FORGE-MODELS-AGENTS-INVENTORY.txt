@@ -1,0 +1,340 @@
+FORGE AI — AGENTS, MODELS & PROVIDER ECOSYSTEM INVENTORY
+==========================================================
+
+Purpose
+-------
+This document records the current Forge architecture for its specialist-agent
+fleet, model/provider ecosystem, provider links, routing and failover. It is
+intentionally an honest inventory: an entry in the catalog does NOT mean that
+the corresponding provider/model is installed, configured, reachable, paid for,
+or currently live.
+
+1. AGENT FLEET
+--------------
+Forge currently defines a 1000-slot logical specialist agent fleet.
+
+Architecture:
+- 33 domains
+- 30 specialist capability families
+- 990 deterministic domain/specialty combinations
+- Additional numbered slots bring the fleet to 1000
+- AgentSlot fields: name, role, domain, specialty, capabilities, priority
+- Fleet mode: logical-routable-fleet
+- Execution: delegated-to-configured-model-fabric
+
+Important:
+The 1000 agents are routing/specialization slots. They are NOT a claim that
+Forge has 1000 independently hosted neural networks. Multiple specialist
+agents can be backed by different models, the same model with different
+instructions/tools, or different providers according to routing policy.
+
+Implementation:
+- forge/agents/fleet.py
+- DEFAULT_AGENT_FLEET = build_fleet(1000)
+- fleet_snapshot() exposes count/domains/specialties/execution mode
+
+Verification commit:
+- 8a8afe7bd3451608b48ea3562139c75f4df04059 — add 1000-slot specialist agent fleet
+- 38f986b6f00e76387ca47325b8850f33e302eae8 — tests for 1000-agent fleet and provider failover
+
+2. PROVIDER FAILOVER
+--------------------
+Forge has quota-aware provider failover infrastructure.
+
+ProviderRuntime tracks:
+- failures
+- successes
+- cooldown_until
+- last_error
+- last_reason
+
+Retryable conditions include:
+- rate_limited
+- quota_exhausted
+- unavailable
+- timeout
+- transient
+
+The failover layer skips providers in local cooldown and tries another eligible
+candidate. It does NOT bypass provider quotas or manufacture capacity.
+
+Implementation:
+- forge/orchestration/failover.py
+
+Verification commit:
+- 0acdb68da09e1d5248ec40637a759eb5e8fad612 — quota-aware provider failover pool
+- 38f986b6f00e76387ca47325b8850f33e302eae8 — fleet/failover tests
+
+3. PROVIDER ECOSYSTEM CATALOG
+-----------------------------
+Current provider ecosystems represented by Forge's model catalog include:
+
+- OpenAI
+- Anthropic
+- Google / Gemini ecosystem
+- Mistral
+- Cohere
+- xAI
+- Groq
+- DeepSeek
+- OpenRouter
+- Together
+- Fireworks
+- Replicate
+- Hugging Face
+- Ollama
+- LM Studio
+- Perplexity
+- AI21
+- NVIDIA
+- Azure OpenAI
+- AWS Bedrock
+- Cloudflare
+- Baseten
+- Modal
+
+The catalog currently describes provider-level capability families rather than
+hard-coding every model ID. Concrete model IDs are intended to be discovered or
+configured at runtime and then verified by Model Fabric.
+
+Current capability families include combinations of:
+- reasoning
+- general
+- coding
+- vision
+- audio
+- embeddings
+- retrieval
+- reranking
+- fast-inference
+- multi-provider-routing
+- open-models
+- multimodal
+- image
+- video
+- research
+- search
+- enterprise
+- edge-inference
+- inference
+- custom-deployment
+- serverless
+- custom-inference
+- local
+
+Implementation:
+- forge/models/model_catalog.py
+- ModelDescriptor
+- PROVIDER_ECOSYSTEMS
+- catalog()
+- catalog_snapshot()
+
+Current model catalog file SHA:
+- 39623728aa3481f2b11b1f49eab5f94582feebc7
+
+4. OFFICIAL PROVIDER LINKS
+--------------------------
+Forge also maintains an official provider resource-link registry. These links
+are navigation/documentation metadata and do not themselves establish an API
+connection.
+
+Providers currently represented in provider_links.py include:
+OpenAI, Anthropic, Google, Gemini, Mistral, Cohere, xAI, Groq, DeepSeek,
+OpenRouter, Together, Fireworks, Replicate, Hugging Face, Ollama, LM Studio,
+Perplexity, AI21, NVIDIA, Azure OpenAI, AWS Bedrock, Cloudflare, Baseten, Modal.
+
+Available link categories:
+- website
+- api
+- docs
+
+Unknown providers receive no fabricated links.
+
+Implementation:
+- forge/models/provider_links.py
+- forge/models/provider_links_http.py
+
+Important commits:
+- 8cac24946f7fbc2f484ebc4fafd775bd70ce533a — provider link registry
+- 662f66c3a366bae766b3e6c60cb74101c9432890 — mount provider-links route
+- 32996ae412e3e79aa665b2a13b1980b06bc500fd — enrich /api/v1/providers
+- 45c98b73324132ead1453b90d565bbce9fe8c333 — cockpit/provider-link test
+- 47b7740cd80057d416e8b61ea50ed76f43ce371e — provider-link endpoint/auth tests
+
+5. CAPABILITY REALITY / HONEST STATUS
+--------------------------------------
+Forge uses explicit capability-truth states:
+- LIVE
+- READY
+- CONFIGURED
+- ARCHITECTURE
+- SIMULATED
+- MISSING
+- BLOCKED
+- ERROR
+
+Examples from the current reality registry:
+- autonomous-engineering: LIVE
+- persistent-server: LIVE
+- local-compute: LIVE
+- model-fabric: LIVE
+- host-runtime: LIVE
+- ai-city: READY
+- voice: SIMULATED by default
+- vision: SIMULATED by default
+- remote-compute: ARCHITECTURE
+- web-research: ARCHITECTURE
+- training: ARCHITECTURE
+- production-deployment: ARCHITECTURE
+
+Configured does not automatically mean live. Provider/model availability must
+be established through runtime evidence and health/configuration checks.
+
+Important commits:
+- 1e3ab64d1ecdc125d30721184d776bfa441bb58e — capability reality registry
+- a633eb4160bebbe23bc93ba27be1471e7a7d69d6 — expose capability registry
+- 4026eab — capability reality honesty tests
+- 8502228 — runtime evidence adapter
+- 575b04e — runtime capability tests
+- dd5c2aa — authenticated capability-truth route installer
+- 47549f6 — mount capability truth on Forge Server apps
+- 70312b5d764a8eb2fb38ea2fded32962e58a1159 — authenticated endpoint tests
+
+6. MODEL ARCHITECTURE
+---------------------
+The intended flow is:
+
+User task
+  -> Supervisor / Planner
+  -> task decomposition
+  -> specialist-agent routing
+  -> Model Fabric
+  -> provider/model selection
+  -> health/quota checks
+  -> execution
+  -> tests/debugging/review
+  -> checkpoint/rollback if required
+  -> final artifact
+
+A specialist agent is a logical worker identity. Model Fabric decides which
+configured model/provider can perform the required capability.
+
+This makes it possible to scale the number of agent roles independently from
+the number of actual model APIs available.
+
+7. MODEL PLUGIN / CONNECTOR STRATEGY
+-------------------------------------
+Each model ecosystem/provider should have its own connector/adapter where
+needed. One connector can support many models from that provider.
+
+Examples:
+- OpenAI connector -> multiple OpenAI model IDs
+- Anthropic connector -> multiple Claude model IDs
+- Google connector -> Gemini model IDs
+- Mistral connector -> Mistral model IDs
+- Ollama connector -> locally hosted model IDs
+- Hugging Face connector -> supported hosted/open model IDs
+
+Therefore 1000 agents do NOT require 1000 plugins. The scalable structure is:
+
+1000+ logical agents
+        |
+        v
+specialist routing
+        |
+        v
+Model Fabric
+        |
+        +--> Provider connector A --> many models
+        +--> Provider connector B --> many models
+        +--> Provider connector C --> many models
+        +--> local runtime connectors
+        +--> future provider connectors
+
+8. BACKGROUND / CONTINUOUS EXECUTION
+-------------------------------------
+Forge's server architecture is designed for persistent background work. Tasks
+can continue server-side instead of depending on the browser remaining open.
+The architecture includes durable task state, background dispatch/workers,
+persistent events, checkpoints, retry/recovery paths and task controls.
+
+The G560 should therefore act primarily as a thin client/control surface.
+Heavy AI/model inference should be delegated to configured remote/local server
+resources rather than assuming the G560 itself can run frontier-scale models.
+
+9. AI CITY / LIVE ACTIVITY
+--------------------------
+The cockpit's AI City is intended to visualize actual Forge work. Activity
+should be backed by real backend events/task state rather than animation being
+used as proof that a model or agent is working.
+
+10. NEXT MODEL/AGENT EXPANSION
+------------------------------
+Planned progression:
+
+A. Provider connector layer
+   - normalize authentication/configuration
+   - request/response adapters
+   - streaming support
+   - health checks
+   - quota/error classification
+
+B. Runtime model discovery
+   - provider model listing where APIs support it
+   - capability extraction
+   - context-window metadata
+   - modality metadata
+   - pricing/quota metadata when available
+   - runtime verification
+
+C. Agent routing
+   - capability matching
+   - task complexity routing
+   - latency/cost policies
+   - provider failover
+   - specialist-agent selection
+
+D. Continuous expansion
+   - new provider connector
+   - model discovery
+   - verification
+   - registry update
+   - health monitoring
+   - automatic availability state
+
+11. HONESTY RULE
+---------------
+Forge must never claim that a model, provider, agent, tool, or capability is
+LIVE merely because its name exists in a registry or catalog.
+
+Registry entry != installed model
+Configured != reachable
+Reachable != successful inference
+Architecture != implementation
+Simulation != real capability
+
+The runtime truth system exists specifically to preserve this distinction.
+
+12. CURRENT OVERALL STATUS
+--------------------------
+The architecture now has:
+- 1000 logical specialist agent slots
+- provider failover infrastructure
+- provider ecosystem catalog
+- official provider link metadata
+- capability-reality states
+- authenticated capability/provider routes
+- runtime-oriented model discovery design
+- persistent/background execution architecture
+- Model Fabric as the central routing layer
+
+Still provider/configuration dependent:
+- exact number of live model IDs
+- paid-provider access
+- API quotas
+- remote compute availability
+- real voice/vision provider connections
+- production deployment resources
+
+This inventory should be updated whenever a new provider connector, model
+family, agent family, or verified runtime capability is added.
