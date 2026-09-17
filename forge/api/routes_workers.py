@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from forge.api.deps import Authed, authed, authed_mutation, get_plane
 from forge.control.control_plane import ControlPlane
+from forge.workers.persistence import WorkerStore
 from forge.workers.registry import WorkerRegistry
 
 router = APIRouter()
@@ -19,6 +20,18 @@ def _registry(plane: ControlPlane) -> WorkerRegistry:
         registry = WorkerRegistry()
         plane.worker_registry = registry
     return registry
+
+
+def _store(plane: ControlPlane) -> WorkerStore:
+    store = getattr(plane, "worker_store", None)
+    if store is None:
+        path = getattr(plane, "worker_store_path", "")
+        if not path:
+            from pathlib import Path
+            path = str(Path(plane.config.db_path).parent / "workers.db")
+        store = WorkerStore(path)
+        plane.worker_store = store
+    return store
 
 
 class WorkerRegistration(BaseModel):
@@ -54,6 +67,7 @@ async def register_worker(body: WorkerRegistration, current: Authed = Depends(au
             platform=body.platform,
             endpoint=body.endpoint,
         )
+        _store(plane).save(worker)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return worker.to_dict(ttl=_registry(plane).heartbeat_ttl)
@@ -62,14 +76,22 @@ async def register_worker(body: WorkerRegistration, current: Authed = Depends(au
 @router.post("/workers/heartbeat")
 async def heartbeat_worker(body: WorkerHeartbeat, current: Authed = Depends(authed_mutation), plane: ControlPlane = Depends(get_plane)) -> Dict[str, Any]:
     del current
-    if not _registry(plane).heartbeat(body.worker_id):
+    registry = _registry(plane)
+    if not registry.heartbeat(body.worker_id):
         raise HTTPException(status_code=404, detail="Worker is unknown or revoked.")
+    worker = registry.get(body.worker_id)
+    if worker is not None:
+        _store(plane).save(worker)
     return {"ok": True, "worker_id": body.worker_id}
 
 
 @router.post("/workers/{worker_id}/revoke")
 async def revoke_worker(worker_id: str, current: Authed = Depends(authed_mutation), plane: ControlPlane = Depends(get_plane)) -> Dict[str, Any]:
     del current
-    if not _registry(plane).revoke(worker_id):
+    registry = _registry(plane)
+    if not registry.revoke(worker_id):
         raise HTTPException(status_code=404, detail="Worker not found.")
+    worker = registry.get(worker_id)
+    if worker is not None:
+        _store(plane).save(worker)
     return {"ok": True, "worker_id": worker_id, "revoked": True}
