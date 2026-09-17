@@ -1,0 +1,159 @@
+diff --git a/forge/agents/debugger.py b/forge/agents/debugger.py
+index d7d2c9b..c81902a 100644
+--- a/forge/agents/debugger.py
++++ b/forge/agents/debugger.py
+@@ -306,7 +306,8 @@ class TestDebugLoop:
+                      else "terminal")
+         for number in range(1, self.max_retries + 2):
+             result = self.debugger.runtime.execute(test_tool, approved=approved, command=command,
+-                                                   actor="debugger", task_id=task_id)
++                                                   actor="debugger", task_id=task_id,
++                                                   commit_guard=self.debugger.commit_guard)
+             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
+             output = combined or result.error or ""
+             exit_code = result.metadata.get("returncode")
+diff --git a/forge/agents/mediation.py b/forge/agents/mediation.py
+index f012ed0..6889c5d 100644
+--- a/forge/agents/mediation.py
++++ b/forge/agents/mediation.py
+@@ -641,6 +641,21 @@ class GatedAgentRuntime:
+         calls = self._checked_tool_calls(tool_calls)
+         self._governor.check(name, limits)
+         run_id = uuid4().hex[:12]
++        # Same default-fence rationale as ChangeApplier.apply()/Supervisor.run():
++        # execute_tool() binds every mutating call to this run's ``run_id``
++        # as its task_id, so ToolRuntime now requires attempt authority for
++        # it (Session 11.5). This run applies exactly once and
++        # synchronously — there is no concurrent retry that could make it
++        # "stale" — so mint a single-attempt fence when the caller hasn't
++        # supplied its own ``guard`` from a shared FenceRegistry, instead of
++        # hard-refusing every mutating tool call by default.
++        if guard is None:
++            from forge.core.fencing import FenceRegistry
++            from forge.core.fencing import commit_guard as _build_commit_guard
++            _registry = FenceRegistry()
++            _fence = _registry.begin(run_id, owner=actor or name)
++            _fence = _registry.mark_running(run_id, _fence)
++            guard = _build_commit_guard(_fence, _registry)
+         self._governor.begin(name)
+         started = time.monotonic()
+         checkpoint: Any = None
+diff --git a/forge/api/app.py b/forge/api/app.py
+index 0fff23c..6fdf6fa 100644
+--- a/forge/api/app.py
++++ b/forge/api/app.py
+@@ -80,7 +80,7 @@ class _RequestContextMiddleware(BaseHTTPMiddleware):
+                 "default-src 'self'; script-src 'self'; style-src 'self'; "
+                 "connect-src 'self'; img-src 'self' data:; "
+                 "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
+-        if not request.url.path.startswith("/api/"):
++        if not request.scope.get("path", "").startswith("/api/"):
+             response.headers["Cache-Control"] = "no-store"
+         return response
+ 
+diff --git a/forge/core/supervisor.py b/forge/core/supervisor.py
+index 9d5514a..0a3213b 100644
+--- a/forge/core/supervisor.py
++++ b/forge/core/supervisor.py
+@@ -207,6 +207,29 @@ class Supervisor:
+         checkpoint = checkpoint_manager.create(f"supervisor-run-{run_id}")
+         engine = TaskEngine()
+         task = engine.add(f"supervisor-task-{run_id}", requirement)
++        # Session 11.5 hardened ToolRuntime.execute() to refuse every
++        # task-bound mutation (write_file/delete_file/run_command/git_commit/
++        # ...) unless it carries a valid ``commit_guard`` (see
++        # forge.core.fencing). A caller that drives multiple attempts across
++        # retries — the DAG scheduler, the server executor — supplies its
++        # own guard from a shared FenceRegistry so a stale attempt can never
++        # win a race against a fresh one. A direct call (the CLI, scripts,
++        # anything calling Supervisor.run() without going through that
++        # infrastructure) does not supply one, and since this method already
++        # binds every write to ``task.id``, that would make every mutation
++        # in the run fail closed with NO_FENCE_AUTHORITY even though there
++        # is exactly one attempt here and it is plainly authorized. When the
++        # caller hasn't supplied its own guard, mint a single-attempt fence
++        # for this run so the default entry point keeps working; a
++        # caller-supplied ``commit_guard`` is always used as-is and never
++        # overridden.
++        if commit_guard is None:
++            from forge.core.fencing import FenceRegistry
++            from forge.core.fencing import commit_guard as _build_commit_guard
++            _fence_registry = FenceRegistry()
++            _fence = _fence_registry.begin(task.id, owner="supervisor")
++            _fence = _fence_registry.mark_running(task.id, _fence)
++            commit_guard = _build_commit_guard(_fence, _fence_registry)
+         touched: list[str] = []
+         task_grant_snapshot: dict[str, Any] | None = None
+         files_read: list[str] = []
+diff --git a/forge/server/api.py b/forge/server/api.py
+index 178c1d4..2ea516b 100644
+--- a/forge/server/api.py
++++ b/forge/server/api.py
+@@ -277,7 +277,19 @@ class _AuthMiddleware(BaseHTTPMiddleware):
+         self.server = server
+ 
+     async def dispatch(self, request: Request, call_next):
+-        path = request.url.path
++        # Read the ASGI-scope path, not ``request.url.path``. Starlette
++        # historically built ``request.url`` by string-concatenating the
++        # client-supplied ``Host`` header with the request path and
++        # re-parsing the result (fixed in 1.0.1, CVE-2026-48710 /
++        # "BadHost"). A ``Host`` header containing a delimiter such as
++        # ``/``, ``?``, ``#`` or ``@`` could shift where that re-parse
++        # placed the path boundary, so ``request.url.path`` could disagree
++        # with the path the router actually dispatches on. ``scope["path"]``
++        # comes straight from the HTTP request line, is what the router
++        # uses, and cannot be influenced by any header — so it is the only
++        # value this auth check can safely gate on, independent of which
++        # Starlette version ends up installed.
++        path = request.scope.get("path", "")
+         if (path == API_PREFIX + "/ping"
+                 or path == API_PREFIX + "/auth/challenge"
+                 or not path.startswith(API_PREFIX)):
+diff --git a/forge/tools/change_applier.py b/forge/tools/change_applier.py
+index 47f73d0..c4f3da0 100644
+--- a/forge/tools/change_applier.py
++++ b/forge/tools/change_applier.py
+@@ -535,6 +535,26 @@ class ChangeApplier:
+         """
+         started = time.perf_counter()
+         result = ApplyResult()
++        # A task-bound apply (``task_id`` set) now requires attempt
++        # authority at the ToolRuntime choke point (Session 11.5): a stale
++        # or superseded attempt must never be able to write. Callers that
++        # drive multiple attempts across retries (the DAG scheduler, the
++        # server executor) supply their own ``commit_guard`` from a shared
++        # FenceRegistry so an abandoned attempt can never race a fresh one.
++        # A caller that applies exactly once and synchronously — the common
++        # case for CoderAgent/DebuggerAgent used directly, or through
++        # Supervisor without an external scheduler — cannot be "stale" by
++        # construction: there is no concurrent retry to race. Rather than
++        # hard-refuse that case, mint a single-attempt fence here so it is
++        # self-authorized; an explicitly supplied ``commit_guard`` is always
++        # honored as-is and never overridden.
++        if commit_guard is None and task_id:
++            from forge.core.fencing import FenceRegistry
++            from forge.core.fencing import commit_guard as _build_commit_guard
++            _registry = FenceRegistry()
++            _fence = _registry.begin(task_id, owner=actor or "change_applier")
++            _fence = _registry.mark_running(task_id, _fence)
++            commit_guard = _build_commit_guard(_fence, _registry)
+         try:
+             normalized = _normalize(changes)
+         except (KeyError, TypeError, AttributeError) as exc:
+@@ -710,6 +730,7 @@ class ChangeApplier:
+                         approval_token_id=active_token, risk=change.risk,
+                         fingerprint=result.fingerprint or "",
+                         request_id=enforcement_id,
++                        commit_guard=commit_guard,
+                     )
+                 else:
+                     write = self.runtime.execute(
+@@ -718,6 +739,7 @@ class ChangeApplier:
+                         approval_token_id=active_token, risk=change.risk,
+                         fingerprint=result.fingerprint or "",
+                         request_id=enforcement_id,
++                        commit_guard=commit_guard,
+                     )
+             except Exception as exc:
+                 # An unexpected execution failure fails closed: the
