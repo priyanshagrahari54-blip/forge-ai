@@ -12,6 +12,7 @@ never land in the event stream.
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -49,6 +50,17 @@ class StoredEvent:
 class EventStore:
     """SQLite-backed, per-task sequenced event log."""
 
+    _TERMINAL_EVENT_TYPES = frozenset({
+        "task.completed", "task.failed", "task.cancelled",
+        "task.rolled_back",
+    })
+    _TERMINAL_STATUS_TO_EVENT = {
+        "SUCCEEDED": "task.completed",
+        "FAILED": "task.failed",
+        "CANCELLED": "task.cancelled",
+        "ROLLED_BACK": "task.rolled_back",
+    }
+
     def __init__(self, db: Database, *,
                  max_events_per_task: int = 5000) -> None:
         self._db = db
@@ -81,11 +93,18 @@ class EventStore:
                        "preview": encoded[:MAX_EVENT_BYTES // 2]}
             encoded = json.dumps(clipped)
             safe = clipped
-        event = StoredEvent(
-            seq=0, event_id=uuid4().hex, task_id=task_id,
-            project_id=project_id, timestamp=time.time(),
-            type=event_type, data=safe)
         with self._cond:
+            if event_type in self._TERMINAL_EVENT_TYPES:
+                existing = self._db.query_one(
+                    "SELECT * FROM events WHERE task_id = ? AND type = ? "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (task_id, event_type))
+                if existing is not None:
+                    return self._row_to_event(existing)
+            event = StoredEvent(
+                seq=0, event_id=uuid4().hex, task_id=task_id,
+                project_id=project_id, timestamp=time.time(),
+                type=event_type, data=safe)
             cursor = self._db.execute(
                 "INSERT INTO events (event_id, task_id, project_id, "
                 "timestamp, type, data) VALUES (?, ?, ?, ?, ?, ?)",
@@ -98,6 +117,47 @@ class EventStore:
             self._prune_locked(task_id)
             self._cond.notify_all()
             return stored
+
+    def _ensure_terminal_event(self, task_id: str) -> None:
+        """Reconcile terminal run state with its event stream.
+
+        Run persistence and event persistence are separate SQLite operations,
+        so a reader can observe a terminal run immediately before the worker
+        appends its corresponding terminal event. Rebuild that missing event
+        from the durable run row instead of exposing an incomplete history.
+        """
+        try:
+            run = self._db.query_one(
+                "SELECT project_id, status, error, rollback FROM runs "
+                "WHERE id = ?", (task_id,))
+        except (sqlite3.OperationalError, sqlite3.ProgrammingError):
+            return
+        if run is None:
+            return
+        event_type = self._TERMINAL_STATUS_TO_EVENT.get(
+            str(run["status"] or ""))
+        if event_type is None:
+            return
+        try:
+            existing = self._db.query_one(
+                "SELECT 1 FROM events WHERE task_id = ? AND type = ? LIMIT 1",
+                (task_id, event_type))
+            if existing is not None:
+                return
+            data = redact({
+                "error": str(run["error"] or ""),
+                "rollback": bool(run["rollback"]),
+                "reconciled": True,
+            })
+            self._db.execute(
+                "INSERT INTO events (event_id, task_id, project_id, "
+                "timestamp, type, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (uuid4().hex, task_id, str(run["project_id"]), time.time(),
+                 event_type, json.dumps(data, default=str)))
+            with self._cond:
+                self._cond.notify_all()
+        except sqlite3.ProgrammingError:
+            return
 
     def _prune_locked(self, task_id: str) -> None:
         """Keep the per-task buffer bounded; sequences stay monotonic."""
@@ -128,6 +188,7 @@ class EventStore:
         """Events with ``seq > after``; returns (events, latest seq)."""
         limit = max(1, min(500, int(limit)))
         after = max(0, int(after))
+        self._ensure_terminal_event(task_id)
         rows = self._db.query(
             "SELECT * FROM events WHERE task_id = ? AND seq > ? "
             "ORDER BY seq ASC LIMIT ?",
@@ -153,10 +214,14 @@ class EventStore:
         deadline = time.time() + max(0.1, timeout)
         with self._cond:
             while True:
-                rows = self._db.query(
-                    "SELECT * FROM events WHERE task_id = ? AND seq > ? "
-                    "ORDER BY seq ASC LIMIT 200",
-                    (task_id, max(0, int(after))))
+                try:
+                    self._ensure_terminal_event(task_id)
+                    rows = self._db.query(
+                        "SELECT * FROM events WHERE task_id = ? AND seq > ? "
+                        "ORDER BY seq ASC LIMIT 200",
+                        (task_id, max(0, int(after))))
+                except sqlite3.ProgrammingError:
+                    return []
                 if rows:
                     return [self._row_to_event(row) for row in rows]
                 remaining = deadline - time.time()
