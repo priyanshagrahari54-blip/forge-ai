@@ -1,0 +1,488 @@
+FORGE AI — 1000 AGENT INVENTORY
+================================
+
+These are logical/routable specialist agent roles. They do NOT imply 1000 separate frontier models are installed. Runtime execution is delegated to configured Model Fabric providers.
+
+DOMAINS (33) × SPECIALTIES (30) = 990 base agents
+
+SPECIALTIES:
+01 planner
+02 builder
+03 reviewer
+04 tester
+05 debugger
+06 optimizer
+07 researcher
+08 integrator
+09 security-auditor
+10 performance-auditor
+11 release-engineer
+12 documentation-engineer
+13 migration-engineer
+14 reliability-engineer
+15 incident-responder
+16 verifier
+17 critic
+18 synthesizer
+19 explorer
+20 validator
+21 benchmark-engineer
+22 dependency-auditor
+23 compatibility-engineer
+24 refactorer
+25 designer
+26 implementer
+27 maintainer
+28 operator
+29 coordinator
+30 specialist
+
+DOMAINS:
+01 frontend
+02 backend
+03 database
+04 api
+05 devops
+06 security
+07 testing
+08 debugging
+09 performance
+10 architecture
+11 research
+12 documentation
+13 data
+14 ml
+15 llm
+16 vision
+17 audio
+18 video
+19 3d
+20 game
+21 mobile
+22 desktop
+23 cloud
+24 distributed
+25 embedded
+26 os
+27 kernel
+28 networking
+29 automation
+30 observability
+31 product
+32 ux
+33 qa
+
+AGENT NAME RULE:
+<domain>-<specialty>
+
+Complete 990-agent inventory:
+
+01 FRONTEND
+frontend-planner
+frontend-builder
+frontend-reviewer
+frontend-tester
+frontend-debugger
+frontend-optimizer
+frontend-researcher
+frontend-integrator
+frontend-security-auditor
+frontend-performance-auditor
+frontend-release-engineer
+frontend-documentation-engineer
+frontend-migration-engineer
+frontend-reliability-engineer
+frontend-incident-responder
+frontend-verifier
+frontend-critic
+frontend-synthesizer
+frontend-explorer
+frontend-validator
+frontend-benchmark-engineer
+frontend-dependency-auditor
+frontend-compatibility-engineer
+frontend-refactorer
+frontend-designer
+frontend-implementer
+frontend-maintainer
+frontend-operator
+frontend-coordinator
+frontend-specialist
+
+02 BACKEND
+backend-planner
+backend-builder
+backend-reviewer
+backend-tester
+backend-debugger
+backend-optimizer
+backend-researcher
+backend-integrator
+backend-security-auditor
+backend-performance-auditor
+backend-release-engineer
+backend-documentation-engineer
+backend-migration-engineer
+backend-reliability-engineer
+backend-incident-responder
+backend-verifier
+backend-critic
+backend-synthesizer
+backend-explorer
+backend-validator
+backend-benchmark-engineer
+backend-dependency-auditor
+backend-compatibility-engineer
+backend-refactorer
+backend-designer
+backend-implementer
+backend-maintainer
+backend-operator
+backend-coordinator
+backend-specialist
+
+03 DATABASE
+database-planner
+database-builder
+database-reviewer
+database-tester
+database-debugger
+database-optimizer
+database-researcher
+database-integrator
+database-security-auditor
+database-performance-auditor
+database-release-engineer
+database-documentation-engineer
+database-migration-engineer
+database-reliability-engineer
+database-incident-responder
+database-verifier
+database-critic
+database-synthesizer
+database-explorer
+database-validator
+database-benchmark-engineer
+database-dependency-auditor
+database-compatibility-engineer
+database-refactorer
+database-designer
+database-implementer
+database-maintainer
+database-operator
+database-coordinator
+database-specialist
+
+04 API
+api-planner
+api-builder
+api-reviewer
+api-tester
+api-debugger
+api-optimizer
+api-researcher
+api-integrator
+api-security-auditor
+api-performance-auditor
+api-release-engineer
+api-documentation-engineer
+api-migration-engineer
+api-reliability-engineer
+api-incident-responder
+api-verifier
+api-critic
+api-synthesizer
+api-explorer
+api-validator
+api-benchmark-engineer
+api-dependency-auditor
+api-compatibility-engineer
+api-refactorer
+api-designer
+api-implementer
+api-maintainer
+api-operator
+api-coordinator
+api-specialist
+
+05 DEVOPS
+devops-planner
+devops-builder
+devops-reviewer
+devops-tester
+devops-debugger
+devops-optimizer
+devops-researcher
+devops-integrator
+devops-security-auditor
+devops-performance-auditor
+devops-release-engineer
+devops-documentation-engineer
+devops-migration-engineer
+devops-reliability-engineer
+devops-incident-responder
+devops-verifier
+devops-critic
+devops-synthesizer
+devops-explorer
+devops-validator
+devops-benchmark-engineer
+devops-dependency-auditor
+devops-compatibility-engineer
+devops-refactorer
+devops-designer
+devops-implementer
+devops-maintainer
+devops-operator
+devops-coordinator
+devops-specialist
+
+06 SECURITY
+security-planner
+security-builder
+security-reviewer
+security-tester
+security-debugger
+security-optimizer
+security-researcher
+security-integrator
+security-security-auditor
+security-performance-auditor
+security-release-engineer
+security-documentation-engineer
+security-migration-engineer
+security-reliability-engineer
+security-incident-responder
+security-verifier
+security-critic
+security-synthesizer
+security-explorer
+security-validator
+security-benchmark-engineer
+security-dependency-auditor
+security-compatibility-engineer
+security-refactorer
+security-designer
+security-implementer
+security-maintainer
+security-operator
+security-coordinator
+security-specialist
+
+07 TESTING
+testing-planner
+testing-builder
+testing-reviewer
+testing-tester
+testing-debugger
+testing-optimizer
+testing-researcher
+testing-integrator
+testing-security-auditor
+testing-performance-auditor
+testing-release-engineer
+testing-documentation-engineer
+testing-migration-engineer
+testing-reliability-engineer
+testing-incident-responder
+testing-verifier
+testing-critic
+testing-synthesizer
+testing-explorer
+testing-validator
+testing-benchmark-engineer
+testing-dependency-auditor
+testing-compatibility-engineer
+testing-refactorer
+testing-designer
+testing-implementer
+testing-maintainer
+testing-operator
+testing-coordinator
+testing-specialist
+
+08 DEBUGGING
+debugging-planner
+debugging-builder
+debugging-reviewer
+debugging-tester
+debugging-debugger
+debugging-optimizer
+debugging-researcher
+debugging-integrator
+debugging-security-auditor
+debugging-performance-auditor
+debugging-release-engineer
+debugging-documentation-engineer
+debugging-migration-engineer
+debugging-reliability-engineer
+debugging-incident-responder
+debugging-verifier
+debugging-critic
+debugging-synthesizer
+debugging-explorer
+debugging-validator
+debugging-benchmark-engineer
+debugging-dependency-auditor
+debugging-compatibility-engineer
+debugging-refactorer
+debugging-designer
+debugging-implementer
+debugging-maintainer
+debugging-operator
+debugging-coordinator
+debugging-specialist
+
+09 PERFORMANCE
+performance-planner
+performance-builder
+performance-reviewer
+performance-tester
+performance-debugger
+performance-optimizer
+performance-researcher
+performance-integrator
+performance-security-auditor
+performance-performance-auditor
+performance-release-engineer
+performance-documentation-engineer
+performance-migration-engineer
+performance-reliability-engineer
+performance-incident-responder
+performance-verifier
+performance-critic
+performance-synthesizer
+performance-explorer
+performance-validator
+performance-benchmark-engineer
+performance-dependency-auditor
+performance-compatibility-engineer
+performance-refactorer
+performance-designer
+performance-implementer
+performance-maintainer
+performance-operator
+performance-coordinator
+performance-specialist
+
+10 ARCHITECTURE
+architecture-planner
+architecture-builder
+architecture-reviewer
+architecture-tester
+architecture-debugger
+architecture-optimizer
+architecture-researcher
+architecture-integrator
+architecture-security-auditor
+architecture-performance-auditor
+architecture-release-engineer
+architecture-documentation-engineer
+architecture-migration-engineer
+architecture-reliability-engineer
+architecture-incident-responder
+architecture-verifier
+architecture-critic
+architecture-synthesizer
+architecture-explorer
+architecture-validator
+architecture-benchmark-engineer
+architecture-dependency-auditor
+architecture-compatibility-engineer
+architecture-refactorer
+architecture-designer
+architecture-implementer
+architecture-maintainer
+architecture-operator
+architecture-coordinator
+architecture-specialist
+
+11 RESEARCH
+research-planner
+research-builder
+research-reviewer
+research-tester
+research-debugger
+research-optimizer
+research-researcher
+research-integrator
+research-security-auditor
+research-performance-auditor
+research-release-engineer
+research-documentation-engineer
+research-migration-engineer
+research-reliability-engineer
+research-incident-responder
+research-verifier
+research-critic
+research-synthesizer
+research-explorer
+research-validator
+research-benchmark-engineer
+research-dependency-auditor
+research-compatibility-engineer
+research-refactorer
+research-designer
+research-implementer
+research-maintainer
+research-operator
+research-coordinator
+research-specialist
+
+12 DOCUMENTATION
+documentation-planner
+documentation-builder
+documentation-reviewer
+documentation-tester
+documentation-debugger
+documentation-optimizer
+documentation-researcher
+documentation-integrator
+documentation-security-auditor
+documentation-performance-auditor
+documentation-release-engineer
+documentation-documentation-engineer
+documentation-migration-engineer
+documentation-reliability-engineer
+documentation-incident-responder
+documentation-verifier
+documentation-critic
+documentation-synthesizer
+documentation-explorer
+documentation-validator
+documentation-benchmark-engineer
+documentation-dependency-auditor
+documentation-compatibility-engineer
+documentation-refactorer
+documentation-designer
+documentation-implementer
+documentation-maintainer
+documentation-operator
+documentation-coordinator
+documentation-specialist
+
+13 DATA
+14 ML
+15 LLM
+16 VISION
+17 AUDIO
+18 VIDEO
+19 3D
+20 GAME
+21 MOBILE
+22 DESKTOP
+23 CLOUD
+24 DISTRIBUTED
+25 EMBEDDED
+26 OS
+27 KERNEL
+28 NETWORKING
+29 AUTOMATION
+30 OBSERVABILITY
+31 PRODUCT
+32 UX
+33 QA
+
+NOTE: The remaining 21 domains follow the exact same 30-specialty ordering above. Forge's canonical source of truth is forge/agents/fleet.py; this text inventory is a human-readable reference. The runtime generates all 1000 names deterministically and adds numbered overflow slots when required.
+
+1000th-slot expansion policy: if minimum > 990, additional names are generated as <domain>-<specialty>-NNNN.
