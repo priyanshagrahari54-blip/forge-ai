@@ -6,6 +6,8 @@ from forge.models.oss_fabric import (
 )
 from forge.models.oss_registry import OSSModel
 from forge.models.registry import ModelRegistry
+from forge.models.router import FabricRouter
+from forge.models.request import ModelRequest
 
 
 def test_oss_tags_map_only_to_canonical_capabilities():
@@ -48,6 +50,22 @@ def test_register_and_activate_exact_model():
     assert activated.capabilities == ("coding", "reasoning")
     assert activated.capability_status == {"coding": "verified", "reasoning": "verified"}
     assert activated.metadata["runtime_verified"] is True
+
+
+def test_fabric_routes_to_activated_real_model_only():
+    registry = ModelRegistry()
+    register_oss_catalog(
+        registry,
+        [OSSModel("org/code-model", "org", "huggingface", tags=("coding",))],
+    )
+    router = FabricRouter(registry=registry)
+    request = ModelRequest(capability="coding", required_capabilities=("coding",))
+    assert router.route(request).model is None
+
+    activate_oss_model(registry, "org/code-model", capabilities=("coding",))
+    decision = router.route(request)
+    assert decision.model is not None
+    assert decision.model.name == "org/code-model"
 
 
 def test_activation_never_creates_unknown_model():
