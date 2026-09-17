@@ -26,11 +26,14 @@ def self_evaluation(plane: Any, session: Any) -> dict[str, Any]:
     finished = succeeded + failed
     success_rate = (succeeded / finished) if finished else None
 
-    benchmark = {"passed": 0, "total": 0}
+    benchmark = {"passed": 0, "total": 0, "status": "not_measured"}
     try:
         _results, summary = run_benchmark(plane.fabric)
-        benchmark = {"passed": int(summary["passed"]),
-                     "total": int(summary["total"])}
+        benchmark = {
+            "passed": int(summary["passed"]),
+            "total": int(summary["total"]),
+            "status": "measured" if int(summary["total"]) > 0 else "not_measured",
+        }
     except Exception:
         pass
 
@@ -51,6 +54,7 @@ def self_evaluation(plane: Any, session: Any) -> dict[str, Any]:
         if success_rate is not None else None,
         "benchmark_passed": benchmark["passed"],
         "benchmark_total": benchmark["total"],
+        "benchmark_status": benchmark["status"],
         "hardening_overall": hardening["overall"],
         "secret_hits": secret_hits,
         "distinct_failures": ledger.get("distinct_keys", 0),
@@ -72,5 +76,7 @@ def self_evaluation(plane: Any, session: Any) -> dict[str, Any]:
         "checked_at": time.time(),
         "note": ("Grades are derived from recorded outcomes and live "
                  "audits; unproven means there is no successful-run "
-                 "evidence yet — never a claimed capability."),
+                 "evidence yet — never a claimed capability. "
+                 "Benchmark status explicitly distinguishes not_measured "
+                 "from a measured zero-pass result."),
     }
