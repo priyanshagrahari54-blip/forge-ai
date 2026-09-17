@@ -30,13 +30,31 @@
     $("hf-toggle").setAttribute("aria-pressed", "false");
     status("Microphone off · Tasks already submitted are not cancelled");
   }
+  function recognitionLanguage() {
+    const languages = (navigator.languages || []).map(v => String(v).toLowerCase());
+    const browser = String(navigator.language || "").toLowerCase();
+    if (languages.some(v => v.startsWith("hi")) || browser.startsWith("hi")) return "hi-IN";
+    if (languages.some(v => v === "en-in")) return "en-IN";
+    return "en-IN";
+  }
+  function transcriptScore(text) {
+    const value = String(text || "").trim().toLowerCase();
+    if (!value) return -1;
+    let score = 0;
+    if (/^[0-9+\-*/%.() ×÷ ]+$/.test(value)) score += 100;
+    if (/\b(plus|minus|times|multiplied|divided|over|calculate|compute|what is|what's)\b/.test(value)) score += 50;
+    if (/\b(run tests|commit|review|summarize|check status|update the website)\b/.test(value)) score += 40;
+    return score;
+  }
   function listen() {
     if (!enabled || busy || speaking || recognition || document.hidden) return;
+    if (!Speech) { status("Browser speech is unavailable · Type a command instead"); return; }
     const r = new Speech();
     recognition = r;
-    r.lang = document.documentElement.lang || "en";
+    r.lang = recognitionLanguage();
     r.continuous = true;
     r.interimResults = true;
+    r.maxAlternatives = 3;
     r.onstart = () => {
       if (recognition !== r) return;
       status("Listening · Speak a command");
@@ -46,8 +64,17 @@
       if (recognition !== r || busy || speaking) return;
       let final = "", interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) final += event.results[i][0].transcript + " ";
-        else interim += event.results[i][0].transcript;
+        const result = event.results[i];
+        if (result.isFinal) {
+          let best = result[0] ? result[0].transcript : "";
+          let bestScore = transcriptScore(best);
+          for (let j = 1; j < result.length; j++) {
+            const candidate = result[j].transcript;
+            const score = transcriptScore(candidate);
+            if (score > bestScore) { best = candidate; bestScore = score; }
+          }
+          final += best + " ";
+        } else interim += result[0] ? result[0].transcript : "";
       }
       $("hf-interim").textContent = interim;
       if (final.trim()) submit(final.trim());
@@ -146,7 +173,7 @@
     } catch (err) { $("hf-api").textContent = "Task updates unavailable · " + err.message; }
     finally { polling = false; }
   }
-  $("hf-browser").textContent = Speech ? "Browser speech · available (not local-only)" : "Browser speech · unsupported; type instead";
+  $("hf-browser").textContent = Speech ? "Browser speech · available (Indian English/Hindi)" : "Browser speech · unsupported; type instead";
   $("hf-toggle").disabled = !Speech || !window.isSecureContext;
   if (!window.isSecureContext) status("Microphone requires HTTPS or localhost. Text commands are available.");
   $("hf-toggle").onclick = () => {
