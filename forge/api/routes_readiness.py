@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from forge.api.deps import Authed, authed, get_plane
 from forge.control.control_plane import ControlPlane
 from forge.diagnostics import build_readiness
+from forge.runtime.system import runtime_snapshot
 
 router = APIRouter()
 
@@ -31,5 +32,23 @@ async def readiness(
                 health = None
     return build_readiness(
         provider_health=health,
+        worker_registry=getattr(plane, "worker_registry", None),
+    )
+
+
+@router.get("/runtime")
+async def runtime(
+    current: Authed = Depends(authed),
+    plane: ControlPlane = Depends(get_plane),
+) -> Dict[str, Any]:
+    """Return the complete machine-readable runtime contract.
+
+    This is observational only: it never activates providers, workers, or
+    remote compute and never upgrades a configured/simulated capability to
+    LIVE without runtime evidence.
+    """
+    del current
+    return runtime_snapshot(
+        fabric=getattr(plane, "fabric", None),
         worker_registry=getattr(plane, "worker_registry", None),
     )
