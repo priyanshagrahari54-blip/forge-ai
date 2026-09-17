@@ -14,7 +14,6 @@ def test_stage_events_advance_only_from_observed_lifecycle(tmp_path: Path):
     assert controller.snapshot()["running"] == 1
 
     controller.observe("stage.started", {"stage": "coding"})
-    states = {item["id"]: item["status"] for item in controller.runner.snapshot() and []}
     assert controller.runner.states["planning"].status == "passed"
     assert controller.runner.states["coding"].status == "running"
 
