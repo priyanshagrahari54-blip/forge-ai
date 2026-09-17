@@ -32,15 +32,16 @@ def test_start_next_tries_another_candidate_after_claim_race(tmp_path: Path) -> 
     queue.add("task-a", "first", priority=10)
     queue.add("task-b", "second", priority=1)
 
+    queue.load()
+
     other_worker = PersistentTaskQueue(store=TaskStore(tmp_path / "tasks.db"))
     other_worker.load()
     first = other_worker.start_next()
     assert first is not None
     assert first.id == "task-a"
 
-    # This worker still has a stale in-memory view where task-a is pending.
-    # start_next must skip the lost claim and atomically claim task-b.
-    queue.load()
+    # queue has the stale pending view of task-a. Its atomic claim must fail,
+    # then start_next should claim the next ready candidate instead.
     claimed = queue.start_next()
 
     assert claimed is not None
