@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forge — Home</title>
+<style>
+:root{--bg:#070b12;--panel:#0d1420;--line:#223047;--text:#edf3fb;--muted:#8d9bb0;--accent:#62d8ff;--ok:#55df9b;--warn:#ffc66d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,Segoe UI,sans-serif}button,input{font:inherit}button{border:1px solid var(--line);background:#111b2b;color:var(--text);border-radius:9px;padding:9px 12px;cursor:pointer}button:hover{background:#17243a}.primary{background:#18344a;border-color:#2b617e}.wrap{max-width:1200px;margin:auto;padding:18px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.brand{font-size:20px;font-weight:900;letter-spacing:.12em}.brand b{color:var(--accent)}.sub,.small{color:var(--muted);font-size:12px}.actions{display:flex;gap:7px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:330px minmax(0,1fr);gap:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}.card h2{font-size:14px;margin:0 0 10px}.field{display:grid;gap:5px;margin:10px 0}input{width:100%;background:#080e18;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:9px;outline:0}.voice{display:grid;gap:9px}.mic{display:flex;align-items:center;gap:10px}.orb{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line);background:#101b2c}.orb.live{border-color:var(--ok);box-shadow:0 0 18px #55df9b33}.heard{min-height:52px;padding:10px;border:1px solid var(--line);border-radius:9px;background:#080e18;color:#dce6f5}.city{padding:0;overflow:hidden}.city iframe{display:block;width:100%;height:650px;border:0;background:#050812}.links{display:grid;gap:7px}.links a{color:var(--text);text-decoration:none;padding:10px;border:1px solid var(--line);border-radius:9px;background:#0a111d}.links a:hover{background:#111c2d}@media(max-width:850px){.grid{grid-template-columns:1fr}.city iframe{height:520px}}
+</style>
+</head>
+<body>
+<main class="wrap">
+<header class="top"><div><div class="brand">F<b>◈</b>RGE</div><div class="sub">Simple control center · lightweight for older PCs</div></div><div class="actions"><a href="/" style="color:inherit;text-decoration:none"><button>Full Cockpit</button></a><a href="/city.html" style="color:inherit;text-decoration:none"><button class="primary">Open City</button></a></div></header>
+<section class="grid">
+<aside>
+<div class="card voice"><h2>Voice command</h2><div class="mic"><div id="orb" class="orb">🎙</div><div><b id="state">Ready</b><div id="support" class="small">Checking browser speech…</div></div></div><button id="talk" class="primary" type="button">Hold to talk</button><div class="heard" id="heard">Nothing heard yet.</div><div class="small">Use short commands first: “2 plus 2”, “show status”, “run tests”.</div><div class="field"><label>Language</label><select id="lang" style="background:#080e18;border:1px solid var(--line);color:var(--text);padding:9px;border-radius:8px"><option value="en-IN">English (India)</option><option value="hi-IN">Hindi (India)</option><option value="en-US">English (US)</option></select></div><div class="field"><label>Session/API token</label><input id="token" type="password" placeholder="Paste token if Forge asks for auth"></div><button id="send" type="button">Send heard command</button><div id="result" class="small"></div></div>
+<div class="card"><h2>Quick access</h2><div class="links"><a href="/">Overview & Tasks</a><a href="/city.html">Live AI City</a><a href="/" onclick="location.hash='#/models'">Models & routing</a><a href="/" onclick="location.hash='#/agents'">Agents</a><a href="/" onclick="location.hash='#/security'">Security</a></div></div>
+</aside>
+<section class="card city"><iframe src="/city.html" title="Forge Live City"></iframe></section>
+</section>
+</main>
+<script>
+'use strict';
+const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;let recognition=null,heard='',listening=false;
+const $=id=>document.getElementById(id);
+$('support').textContent=Speech?'Browser speech available':'Browser speech unavailable; use text in Full Cockpit';
+function stop(){if(recognition){try{recognition.abort()}catch(_){}}recognition=null;listening=false;$('orb').classList.remove('live');$('state').textContent='Ready';$('talk').textContent='Hold to talk'}
+function start(){if(!Speech||listening)return;listening=true;$('orb').classList.add('live');$('state').textContent='Listening…';$('talk').textContent='Listening… release to stop';const r=new Speech();recognition=r;r.lang=$('lang').value;r.continuous=false;r.interimResults=true;r.maxAlternatives=5;r.onresult=e=>{let best='';let score=-1;for(let i=e.resultIndex;i<e.results.length;i++){const x=e.results[i];for(let j=0;j<x.length;j++){const t=x[j].transcript.trim();let s=0;if(/[0-9+\-*/().%]/.test(t))s+=20;if(/plus|minus|times|divided|calculate|compute|status|test|stop|resume|run/i.test(t))s+=10;if(s>score){score=s;best=t}}}if(best){heard=best;$('heard').textContent=best}};r.onerror=e=>{$('result').textContent='Speech error: '+e.error};r.onend=stop;recognition=r;try{r.start()}catch(e){stop();$('result').textContent='Could not start microphone: '+e.message}}
+$('talk').addEventListener('mousedown',start);$('talk').addEventListener('mouseup',stop);$('talk').addEventListener('mouseleave',stop);$('talk').addEventListener('touchstart',e=>{e.preventDefault();start()},{passive:false});$('talk').addEventListener('touchend',e=>{e.preventDefault();stop()},{passive:false});
+$('send').onclick=async()=>{const text=heard.trim();if(!text){$('result').textContent='Nothing to send.';return}const token=$('token').value.trim();const h={'Accept':'application/json','Content-Type':'application/json'};if(token)h.Authorization='Bearer '+token;$('result').textContent='Sending…';try{const base='/api/v1';let r=await fetch(base+'/voice/conversations',{method:'POST',headers:h});let d=await r.json();if(!r.ok)throw Error(d.error?.message||d.detail||'Could not create conversation');const id=d.conversation_id;r=await fetch(base+'/voice/conversations/'+encodeURIComponent(id)+'/say',{method:'POST',headers:h,body:JSON.stringify({text,confirm:true})});d=await r.json();if(!r.ok)throw Error(d.error?.message||d.detail||'Command rejected');$('result').textContent=d.spoken||'Command accepted.'}catch(e){$('result').textContent=e.message+'. You can still use the Full Cockpit text command.'}};
+window.addEventListener('mouseup',stop);window.addEventListener('touchcancel',stop);
+</script>
+</body>
+</html>
