@@ -27,6 +27,7 @@ class Task:
     errors: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     lease_id: str = ""
+    lease_heartbeat: float = 0.0
 
 
 class TaskEngine:
@@ -71,6 +72,7 @@ class TaskEngine:
         task = self._find(task_id)
         task.status = TaskStatus.COMPLETED
         task.lease_id = ""
+        task.lease_heartbeat = 0.0
         return task
 
     def fail(self, task_id: str, error: str) -> Task:
@@ -78,6 +80,7 @@ class TaskEngine:
         task.status = TaskStatus.FAILED
         task.errors.append(error)
         task.lease_id = ""
+        task.lease_heartbeat = 0.0
         return task
 
     def set_status(self, task_id: str, status: TaskStatus) -> Task:
@@ -85,6 +88,7 @@ class TaskEngine:
         task.status = status
         if status != TaskStatus.RUNNING:
             task.lease_id = ""
+            task.lease_heartbeat = 0.0
         return task
 
     def _exists(self, task_id: str) -> bool:
