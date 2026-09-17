@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from helpers_a34 import make_fabric, make_plane, make_repo
+from helpers_a34 import (
+    ScriptedProvider,
+    make_fabric,
+    make_plane,
+    make_repo,
+)
 
 from forge.control.approval_persistence import restore_approval_requests
 from forge.control.checkpoint_recovery import restore_available_checkpoints
@@ -28,7 +33,7 @@ def test_approval_request_survives_plane_restart(tmp_path):
     config = ControlConfig(
         db_path=str(tmp_path / "cockpit.db"),
         projects={"demo": str(tmp_path / "demo")},
-        fabric=make_fabric(),
+        fabric=make_fabric(ScriptedProvider()),
     )
     plane2 = ControlPlane(config)
     try:
@@ -60,7 +65,7 @@ def test_checkpoint_snapshot_survives_restart(tmp_path):
     config = ControlConfig(
         db_path=str(tmp_path / "cockpit.db"),
         projects={"demo": str(root)},
-        fabric=make_fabric(),
+        fabric=make_fabric(ScriptedProvider()),
     )
     plane2 = ControlPlane(config)
     try:
