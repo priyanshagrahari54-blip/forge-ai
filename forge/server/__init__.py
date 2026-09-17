@@ -52,6 +52,27 @@ from forge.server.server import PROTOCOL_VERSION, ForgeServer, ServerConfig
 #: Version of the Forge Server component itself.
 SERVER_VERSION = "0.1.0"
 
+# Mount the evidence-backed capability registry on every Forge Server app.
+# This wraps only the app factory; the underlying authenticated gateway and
+# its closed authorization table remain authoritative.
+from forge.capabilities.http import install_capability_route  # noqa: E402
+
+_original_create_app = ForgeServer.create_app
+
+
+def _create_app_with_capabilities(self):
+    app = _original_create_app(self)
+    install_capability_route(
+        app,
+        require=lambda request, operation: app.state.server.authorizer.require(
+            getattr(request.state, "principal", None), operation),
+        server_getter=lambda request: request.app.state.server,
+    )
+    return app
+
+
+ForgeServer.create_app = _create_app_with_capabilities
+
 __all__ = [
     "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",
