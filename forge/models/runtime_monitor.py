@@ -1,15 +1,9 @@
-"""Durable-friendly runtime health monitoring and promotion coordinator.
-
-This module is deliberately independent of HTTP and worker implementations. It
-coordinates an exact-model probe with ConfiguredRuntime state and ModelHealth,
-while allowing the caller (server worker/cron) to persist the returned snapshot.
-No credentials are stored or emitted.
-"""
+"""Durable-friendly runtime health monitoring and promotion coordinator."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from time import time
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 from uuid import uuid4
 
 from forge.models.configured_runtime import ConfiguredRuntime, RuntimeState
@@ -38,13 +32,7 @@ class RuntimeMonitorResult:
 
 
 class RuntimeMonitor:
-    """Apply real probe evidence to configured runtimes.
-
-    A successful probe promotes CONFIGURED -> VERIFIED -> LIVE in one explicit
-    operation. A failed probe makes a runtime non-routable. Existing LIVE
-    runtimes are never silently re-verified as healthy merely because a monitor
-    object was reconstructed; the caller must provide a fresh successful probe.
-    """
+    """Apply fresh exact-model probe evidence to configured runtimes."""
 
     def __init__(self, *, verification_ttl_seconds: float = 300.0) -> None:
         self.verification_ttl_seconds = max(1.0, float(verification_ttl_seconds))
@@ -54,7 +42,7 @@ class RuntimeMonitor:
         runtime: ConfiguredRuntime,
         probe: Callable[[str, str], RuntimeProbeResult],
         *,
-        now: float | None = None,
+        now: Optional[float] = None,
     ) -> RuntimeMonitorResult:
         checked = float(time() if now is None else now)
         result = probe(runtime.provider, runtime.model_id)
@@ -70,6 +58,10 @@ class RuntimeMonitor:
             )
 
         verification_id = str(uuid4())
+        if runtime.state == RuntimeState.UNAVAILABLE.value:
+            # Recovery is explicit: a fresh successful probe is allowed to
+            # re-enter the normal CONFIGURED -> VERIFIED -> LIVE lifecycle.
+            runtime.set_configured(valid=True)
         if runtime.state == RuntimeState.CONFIGURED.value:
             runtime.mark_verified(
                 verification_id=verification_id,
@@ -88,25 +80,26 @@ class RuntimeMonitor:
             runtime.last_checked = checked
         else:
             raise RuntimeError(
-                f"runtime in {runtime.state} cannot be promoted by a probe"
-            )
+                "runtime in %s cannot be promoted by a probe" % runtime.state)
         runtime.last_reason = ""
         return RuntimeMonitorResult(
             runtime.provider, runtime.model_id, runtime.state, result,
             runtime.verification_id, True,
         )
 
-    def stale(self, runtime: ConfiguredRuntime, *, now: float | None = None) -> bool:
+    def stale(self, runtime: ConfiguredRuntime, *, now: Optional[float] = None) -> bool:
         if runtime.state != RuntimeState.LIVE.value:
             return True
         checked = float(time() if now is None else now)
-        return runtime.last_checked <= 0 or checked - runtime.last_checked > self.verification_ttl_seconds
+        return (runtime.last_checked <= 0 or
+                checked - runtime.last_checked > self.verification_ttl_seconds)
 
     @staticmethod
-    def routable(runtimes: Iterable[ConfiguredRuntime]) -> list[ConfiguredRuntime]:
-        """Return only explicitly LIVE runtimes for failover/routing consumers."""
+    def routable(runtimes: Iterable[ConfiguredRuntime]) -> list:
+        """Return only explicitly LIVE runtimes for routing consumers."""
         return [runtime for runtime in runtimes if runtime.routable]
 
     @staticmethod
     def health_status(result: RuntimeProbeResult) -> str:
-        return HealthStatus.HEALTHY.value if result.ok else HealthStatus.UNHEALTHY.value
+        return (HealthStatus.HEALTHY.value if result.ok
+                else HealthStatus.UNHEALTHY.value)
