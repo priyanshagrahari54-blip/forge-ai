@@ -17,47 +17,25 @@ class QueuedTask:
 class PersistentTaskQueue:
     """Persistent priority queue backed by TaskStore."""
 
-    def __init__(
-        self,
-        engine: TaskEngine | None = None,
-        store: TaskStore | None = None,
-    ) -> None:
+    def __init__(self, engine: TaskEngine | None = None, store: TaskStore | None = None) -> None:
         self.engine = engine or TaskEngine()
         self.store = store or TaskStore()
         self._priorities: dict[str, int] = {}
         self._created_at: dict[str, str] = {}
 
-    def add(
-        self,
-        task_id: str,
-        description: str,
-        dependencies: list[str] | None = None,
-        priority: int = 0,
-    ) -> Task:
-        task = self.engine.add(
-            task_id,
-            description,
-            dependencies=dependencies,
-        )
-
+    def add(self, task_id: str, description: str, dependencies: list[str] | None = None, priority: int = 0) -> Task:
+        task = self.engine.add(task_id, description, dependencies=dependencies)
         self._priorities[task_id] = priority
-        self._created_at[task_id] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
+        self._created_at[task_id] = datetime.now(timezone.utc).isoformat()
         self.store.save(task)
         return task
 
     def enqueue(self, task: Task, priority: int = 0) -> Task:
         if any(existing.id == task.id for existing in self.engine.tasks):
             raise ValueError(f"Task already exists: {task.id}")
-
         self.engine.tasks.append(task)
         self._priorities[task.id] = priority
-        self._created_at[task.id] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
+        self._created_at[task.id] = datetime.now(timezone.utc).isoformat()
         self.store.save(task)
         return task
 
@@ -66,51 +44,39 @@ class PersistentTaskQueue:
 
     def load(self) -> list[Task]:
         tasks = self.store.load_all()
-
         self.engine.tasks = list(tasks)
-
         for task in tasks:
             self._priorities.setdefault(task.id, 0)
-            self._created_at.setdefault(
-                task.id,
-                datetime.now(timezone.utc).isoformat(),
-            )
-
+            self._created_at.setdefault(task.id, datetime.now(timezone.utc).isoformat())
         return tasks
 
     def ready(self) -> list[Task]:
-        """Return pending tasks whose dependencies are completed."""
         ready_tasks = [
-            task
-            for task in self.engine.tasks
-            if task.status == TaskStatus.PENDING
-            and self.engine.can_start(task.id)
+            task for task in self.engine.tasks
+            if task.status == TaskStatus.PENDING and self.engine.can_start(task.id)
         ]
-
         return sorted(
             ready_tasks,
-            key=lambda task: (
-                -self._priorities.get(task.id, 0),
-                self._created_at.get(task.id, ""),
-                task.id,
-            ),
+            key=lambda task: (-self._priorities.get(task.id, 0), self._created_at.get(task.id, ""), task.id),
         )
 
     def next(self) -> Task | None:
-        """Return the highest-priority ready task."""
+        """Return the highest-priority ready task without claiming it."""
         tasks = self.ready()
         return tasks[0] if tasks else None
 
     def start_next(self) -> Task | None:
-        """Start and persist the highest-priority ready task."""
-        task = self.next()
-
-        if task is None:
-            return None
-
-        started = self.engine.start(task.id)
-        self.store.save(started)
-        return started
+        """Atomically claim a ready task so multiple workers cannot duplicate it."""
+        for task in self.ready():
+            claimed = self.store.claim(task.id)
+            if claimed is None:
+                continue
+            for index, current in enumerate(self.engine.tasks):
+                if current.id == claimed.id:
+                    self.engine.tasks[index] = claimed
+                    break
+            return claimed
+        return None
 
     def complete(self, task_id: str) -> Task:
         task = self.engine.complete(task_id)
@@ -123,18 +89,10 @@ class PersistentTaskQueue:
         return task
 
     def pending(self) -> list[Task]:
-        return [
-            task
-            for task in self.engine.tasks
-            if task.status == TaskStatus.PENDING
-        ]
+        return [task for task in self.engine.tasks if task.status == TaskStatus.PENDING]
 
     def queued(self) -> list[QueuedTask]:
         return [
-            QueuedTask(
-                task=task,
-                priority=self._priorities.get(task.id, 0),
-                created_at=self._created_at.get(task.id, ""),
-            )
+            QueuedTask(task=task, priority=self._priorities.get(task.id, 0), created_at=self._created_at.get(task.id, ""))
             for task in self.engine.tasks
         ]
