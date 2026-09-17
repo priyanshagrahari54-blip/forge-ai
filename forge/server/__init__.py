@@ -1,45 +1,4 @@
-"""Forge Server (A81): the standalone task backend for Forge AI.
-
-Architecture::
-
-    Client
-      → Authentication   forge.server.auth        (API keys, sessions, bootstrap)
-      → Authorization    forge.server.authorization (scopes + A33 policy bridge)
-      → API Gateway      forge.server.api          (strict, bounded, fail-closed)
-      → Task Queue       forge.server.queue        (persistent SQLite, leased)
-      → Scheduler        forge.server.scheduler    (dispatch loop, caps, backoff)
-      → Workers          forge.server.workers      (background threads)
-      → Agents           forge.server.executor     (Supervisor + agent registry)
-      → Model Runtime    forge.models.fabric       (Model Fabric + native engine)
-      → Verification     forge.security.*          (gates inside the run)
-      → Result Store     forge.server.storage      (tasks/events/logs/results)
-
-Everything durable lives in one SQLite database, so the server survives
-restarts and Forge Desktop clients can disconnect and reconnect later,
-recovering active tasks, progress, logs, results, and pending approval
-requests in a single ``GET /api/v1/recovery`` call.
-
-The API is a task backend, never a remote shell: the operation set is
-closed, no field accepts executable text, and every disk effect flows
-through the A33-gated Supervisor transaction. See
-:mod:`forge.server.authorization`.
-
-Quick start::
-
-    from forge.server import ForgeServer, ServerConfig
-
-    server = ForgeServer(ServerConfig(projects={"demo": "./demo"}))
-    server.start()
-    app = server.create_app()      # FastAPI app (uvicorn/TestClient)
-    # ... later:
-    server.close()
-
-CLI::
-
-    forge server                   # run the server (uvicorn)
-    forge server status            # live status of a running server
-    forge server health            # health report of a running server
-"""
+"""Forge Server (A81): the standalone task backend for Forge AI."""
 from forge.server.models import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
@@ -49,25 +8,25 @@ from forge.server.models import (
 )
 from forge.server.server import PROTOCOL_VERSION, ForgeServer, ServerConfig
 
-#: Version of the Forge Server component itself.
 SERVER_VERSION = "0.1.0"
 
-# Mount the evidence-backed capability registry on every Forge Server app.
-# This wraps only the app factory; the underlying authenticated gateway and
-# its closed authorization table remain authoritative.
 from forge.capabilities.http import install_capability_route  # noqa: E402
+from forge.models.provider_links_http import install_provider_links_route  # noqa: E402
 
 _original_create_app = ForgeServer.create_app
 
 
 def _create_app_with_capabilities(self):
     app = _original_create_app(self)
+    require = lambda request, operation: app.state.server.authorizer.require(
+        getattr(request.state, "principal", None), operation
+    )
     install_capability_route(
         app,
-        require=lambda request, operation: app.state.server.authorizer.require(
-            getattr(request.state, "principal", None), operation),
+        require=require,
         server_getter=lambda request: request.app.state.server,
     )
+    install_provider_links_route(app, require=require)
     return app
 
 
