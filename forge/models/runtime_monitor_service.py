@@ -1,9 +1,4 @@
-"""Background runtime verification loop for Forge Server.
-
-The service is intentionally conservative: configuration is never promoted to
-LIVE without an exact-model probe. State is persisted without credentials, and
-provider adapters that cannot prove exact model identity fail closed.
-"""
+"""Background runtime verification loop for Forge Server."""
 from __future__ import annotations
 
 import json
@@ -24,18 +19,13 @@ from forge.models.runtime_verification import RuntimeProbeResult
 
 
 class RuntimeMonitorService:
-    """Persistent, restart-safe runtime verification coordinator.
-
-    It is driven by the existing Scheduler loop, so Forge does not create a
-    second unmanaged dispatcher thread. A tick is cheap and only probes stale
-    or non-live runtimes.
-    """
+    """Persistent, restart-safe runtime verification coordinator."""
 
     def __init__(
         self,
         fabric: Any,
         *,
-        state_path: str | os.PathLike[str] = ".forge/runtime-monitor.json",
+        state_path: Any = ".forge/runtime-monitor.json",
         interval_seconds: float = 60.0,
         verification_ttl_seconds: float = 300.0,
     ) -> None:
@@ -49,22 +39,25 @@ class RuntimeMonitorService:
         self._lock = threading.RLock()
         self._load()
 
-    def tick(self, *, now: Optional[float] = None, force: bool = False) -> Dict[str, Any]:
+    def tick(self, *, now: Optional[float] = None,
+             force: bool = False) -> Dict[str, Any]:
         """Synchronize configuration and verify due runtimes."""
         checked_at = float(time.time() if now is None else now)
         with self._lock:
-            if not force and checked_at - self._last_tick < self.interval_seconds:
+            if (not force and
+                    checked_at - self._last_tick < self.interval_seconds):
                 return self.snapshot()
             self._last_tick = checked_at
             sync_configured_runtimes(self.fabric, self.registry)
             results = []
-            for runtime in list(self.registry._items.values()):
+            for runtime in self.registry.items():
                 if runtime.state == RuntimeState.REVOKED.value:
                     continue
-                if runtime.state == RuntimeState.LIVE.value and not self.monitor.stale(runtime, now=checked_at):
+                if (runtime.state == RuntimeState.LIVE.value and
+                        not self.monitor.stale(runtime, now=checked_at)):
                     continue
                 try:
-                    result = self.monitor.check(runtime, self._probe)
+                    result = self.monitor.check(runtime, self._probe, now=checked_at)
                     results.append(result.to_dict())
                 except Exception as exc:
                     runtime.mark_unavailable(
@@ -92,7 +85,7 @@ class RuntimeMonitorService:
         }
 
     def _probe(self, provider_name: str, model_id: str) -> RuntimeProbeResult:
-        """Perform an exact model identity check when the provider supports it."""
+        """Perform an exact model identity check when supported."""
         providers = getattr(self.fabric, "providers", None)
         if providers is None:
             return RuntimeProbeResult(
@@ -111,7 +104,8 @@ class RuntimeMonitorService:
             names = set()
             for item in models or []:
                 if isinstance(item, dict):
-                    value = item.get("name") or item.get("id") or item.get("model")
+                    value = (item.get("name") or item.get("id") or
+                             item.get("model"))
                 else:
                     value = item
                 if value:
@@ -120,7 +114,8 @@ class RuntimeMonitorService:
             if model_id not in names:
                 return RuntimeProbeResult(
                     model_id=model_id, ok=False, latency_ms=latency,
-                    status="not_found", reason="exact model is not available")
+                    status="not_found",
+                    reason="exact model is not available")
             return RuntimeProbeResult(
                 model_id=model_id, ok=True, latency_ms=latency,
                 status="healthy", reason="exact model listed by provider")
@@ -160,7 +155,6 @@ class RuntimeMonitorService:
                 last_reason=str(item.get("last_reason") or "")[:500],
                 last_checked=float(item.get("last_checked") or 0.0),
             )
-            key = self.registry.key(provider, model_id)
             if self.registry.maybe_get(provider, model_id) is None:
                 self.registry.register(runtime)
         self._last_tick = float(payload.get("last_tick") or 0.0)
