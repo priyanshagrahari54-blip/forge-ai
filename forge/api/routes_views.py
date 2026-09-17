@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 
 from forge.api.deps import Authed, authed, get_plane
 from forge.control.control_plane import ControlPlane
+from forge.models.provider_links import enrich_provider_info
 
 router = APIRouter()
 
@@ -34,7 +35,9 @@ async def models_readiness(_: Authed = Depends(authed),
 async def list_providers(_: Authed = Depends(authed),
                          plane: ControlPlane = Depends(get_plane)):
     state = plane.get_model_state()
-    return {"providers": state["providers"],
+    providers = [enrich_provider_info(dict(provider))
+                 for provider in state["providers"]]
+    return {"providers": providers,
             "health": state["provider_health"]}
 
 
