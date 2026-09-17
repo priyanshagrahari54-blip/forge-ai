@@ -3,20 +3,11 @@
 Public API surface for capability-aware routing, provider/model registries,
 structured requests/responses, telemetry, router feedback, credential handling,
 and configuration.
-
-:mod:`forge.models.runtime_bridge` is the opt-in adapter that lets the fabric
-request inference through the Forge Native Model Runtime
-(:mod:`forge.runtime.model_runtime`). Nothing is wired up by default.
 """
 from forge.models.capabilities import (
-    AGENTIC_CAPABILITIES,
-    ALL_CAPABILITIES,
-    AUDIO_CAPABILITIES,
-    MULTIMODAL_CAPABILITIES,
-    TEXT_CAPABILITIES,
-    Capability,
-    is_capability,
-    normalize_capability,
+    AGENTIC_CAPABILITIES, ALL_CAPABILITIES, AUDIO_CAPABILITIES,
+    MULTIMODAL_CAPABILITIES, TEXT_CAPABILITIES, Capability,
+    is_capability, normalize_capability,
 )
 from forge.models.config import FabricConfig
 from forge.models.consensus import ConsensusResult, ConsensusStrategy, consensus
@@ -51,10 +42,11 @@ from forge.models.streams import BoundedStream, StreamEvent, join_deltas
 from forge.models.verification import ModelVerifier, VerificationCheck, VerificationResult, fingerprint_artifact
 from forge.models.router import FabricRouter, ModelInfo, ModelRouter, RouteDecision, RoutingDecision
 from forge.models.telemetry import Telemetry, TelemetryEvent
+from forge.models.model_catalog import ModelDescriptor, PROVIDER_ECOSYSTEMS, catalog, catalog_snapshot
 
 __all__ = [
     "Capability", "ALL_CAPABILITIES", "TEXT_CAPABILITIES", "MULTIMODAL_CAPABILITIES", "AUDIO_CAPABILITIES", "AGENTIC_CAPABILITIES", "is_capability", "normalize_capability",
     "Model", "ModelRegistry", "ModelHealth", "HealthStatus", "ModelProvider", "Provider", "ProviderInfo", "ProviderRegistry", "ModelResult", "LocalModelProvider", "OllamaProvider", "OpenAIProvider", "MockProvider", "ModelRequest", "ModelResponse", "ModelInfo", "RoutingDecision", "ModelRouter", "RouteDecision", "FabricRouter", "RoutingPolicy", "DEFAULT_FALLBACK_ORDER", "ReadinessCheck", "ReadinessReport", "check_fabric_readiness", "describe_no_model_error", "fabric_has_real_model", "is_fallback_response", "Telemetry", "TelemetryEvent", "RouterFeedback", "CredentialStore", "CredentialError", "FabricConfig", "FabricError", "ModelUnavailableError", "CapabilityNotSupportedError", "ProviderError", "ConfigurationError", "ModelFabric", "ConsensusStrategy", "ConsensusResult", "consensus", "RuntimeProvider", "attach_runtime",
     "AvailabilityState", "VerificationState", "ModelIdentity", "MemoryRequirements", "IdentityError", "ModelSpoofingError", "Backend", "BackendStatus", "BackendRegistry", "BackendError", "BackendNotReadyError", "RuntimeBackendAdapter", "NativeLocalBackend", "OllamaCompatibleBackend", "LlamaCppCompatibleBackend", "ForgeCustomBackend", "RemoteProviderBackend", "ResourceRequirements", "RemoteHttpBackend", "RemoteProviderConfig", "RemoteProviderStatus", "ReferenceLocalBackend", "ReferenceArtifactWriter", "ReferenceModelConfig", "ModelCatalog", "CatalogError", "DiscoveryReport", "ModelVerifier", "VerificationResult", "VerificationCheck", "fingerprint_artifact", "ModelResidencyCache", "ModelResidencyError", "ResidencyEntry", "RoutingEngine", "RoutingRequest", "RoutingPlan", "RoutingState", "PolicyResult", "ResourceResult", "FallbackLadder", "FallbackPlan", "FallbackStep", "FallbackTier", "TerminalState", "classify_error", "DETERMINISTIC_MODEL_ID", "BoundedStream", "StreamEvent", "join_deltas", "ContextBudgetPlanner", "ContextPlan", "ContextSection", "InferenceFabric", "InferenceResult", "InferenceStreamHandle", "Observation", "build_inference_fabric", "scan_model_output", "InferenceFabricProvider", "attach_inference", "detach_inference", "PATH_HYBRID", "PATH_LEGACY", "PATH_SESSION11", "ExecutionIdentity", "IdentityBoundFabric", "InferencePathConfig", "PathDecision", "Session11Adapter", "decide_path", "provenance_from_response", "ROUTING_EVIDENCE_KINDS", "evidence_to_findings", "summarize_evidence",
-    "ModelStudio", "SpecializationProfile", "TrainingPlan", "TrainingBackend", "ModelArtifact", "ModelProvenance", "DatasetIssue", "DatasetReport", "BenchmarkCase", "BenchmarkResult", "PromotionGate", "build_sft_record", "stable_split", "FORGE_CODING", "FORGE_DEBUG", "FORGE_SECURITY", "FORGE_WEB", "FORGE_GAME3D", "FORGE_PROFILES", "HuggingFacePEFTBackend",
+    "ModelStudio", "SpecializationProfile", "TrainingPlan", "TrainingBackend", "ModelArtifact", "ModelProvenance", "DatasetIssue", "DatasetReport", "BenchmarkCase", "BenchmarkResult", "PromotionGate", "build_sft_record", "stable_split", "FORGE_CODING", "FORGE_DEBUG", "FORGE_SECURITY", "FORGE_WEB", "FORGE_GAME3D", "FORGE_PROFILES", "HuggingFacePEFTBackend", "ModelDescriptor", "PROVIDER_ECOSYSTEMS", "catalog", "catalog_snapshot",
 ]
