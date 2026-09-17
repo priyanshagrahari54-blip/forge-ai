@@ -71,6 +71,27 @@ class PersistentTaskQueue:
             return claimed
         return None
 
+    def renew_lease(self, task_id: str, lease_id: str) -> Task | None:
+        """Refresh a worker lease and mirror the durable heartbeat locally."""
+        task = self.store.renew_lease(task_id, lease_id)
+        if task is None:
+            return None
+        for index, current in enumerate(self.engine.tasks):
+            if current.id == task_id:
+                self.engine.tasks[index] = task
+                break
+        return task
+
+    def recover_stale_running(self, max_idle_seconds: float) -> list[Task]:
+        """Recover only leases that have exceeded the configured idle window."""
+        tasks = self.store.recover_stale_running(max_idle_seconds)
+        recovered_ids = {task.id for task in tasks}
+        if recovered_ids:
+            for index, current in enumerate(self.engine.tasks):
+                if current.id in recovered_ids:
+                    self.engine.tasks[index] = next(task for task in tasks if task.id == current.id)
+        return tasks
+
     def complete(self, task_id: str) -> Task:
         task = self.engine.complete(task_id)
         self.store.save(task)
