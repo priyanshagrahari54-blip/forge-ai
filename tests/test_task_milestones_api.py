@@ -36,9 +36,6 @@ def test_task_milestones_is_authenticated_and_event_backed(tmp_path):
         assert created.status_code == 201, created.text
         task_id = created.json()["task"]["task_id"]
 
-        # The helper drives the existing real task/event machinery; the
-        # projection must report the durable event-derived state rather than
-        # inventing progress in the UI.
         drive_to_terminal(client, headers, task_id)
         response = client.get(
             f"/api/v1/tasks/{task_id}/milestones", headers=headers
@@ -46,25 +43,17 @@ def test_task_milestones_is_authenticated_and_event_backed(tmp_path):
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["task_id"] == task_id
-        assert {item["key"] for item in payload["milestones"]} == EXPECTED_STAGES
-        assert payload["source"] == "durable_task_events"
-        assert payload["latest_seq"] >= 1
+        assert {item["id"] for item in payload["milestones"]} == EXPECTED_STAGES
+        assert payload["milestones"]
+        assert payload["milestones"][-1]["id"] == "completed"
+        assert payload["source"] == "durable-event-projection"
+        assert payload["observed_events"] >= 1
 
 
-def test_task_milestones_rejects_cross_project_task(tmp_path):
+def test_task_milestones_rejects_unknown_task(tmp_path):
     plane, client = _setup(tmp_path)
     with client:
         _, _, headers = login(client)
-        created = client.post(
-            "/api/v1/tasks",
-            headers=headers,
-            json={"requirement": "Project isolation check"},
-        )
-        task_id = created.json()["task"]["task_id"]
-        drive_to_terminal(client, headers, task_id)
-
-        # The authenticated session owns the project; a nonexistent task is
-        # still hidden behind the same 404 contract as other task routes.
         response = client.get(
             "/api/v1/tasks/not-a-real-task/milestones", headers=headers
         )
