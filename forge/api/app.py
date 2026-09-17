@@ -22,7 +22,7 @@ from forge.api import (
     routes_learning, routes_benchmarks, routes_hardening, routes_observability,
     routes_performance, routes_deployments, routes_backups, routes_plugins,
     routes_autonomy, routes_final, routes_staged, routes_engine,
-    routes_milestones,
+    routes_milestones, routes_runtimes,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
@@ -102,13 +102,22 @@ def create_app(plane: ControlPlane,
     async def lifespan(app: FastAPI):
         from forge.control.approval_persistence import restore_approval_requests
         restore_approval_requests(app.state.plane)
+        from forge.models.runtime_monitor_service import RuntimeMonitorService
+        monitor_path = Path(app.state.plane.config.db_path).parent / "runtime-monitor.json"
+        app.state.plane.runtime_monitor = RuntimeMonitorService(
+            app.state.plane.fabric,
+            state_path=monitor_path,
+        )
+        app.state.plane.runtime_monitor.start()
         app.state.plane.start()
         try:
             from forge.staged.autorun import resume_active
             resume_active(app.state.plane)
             yield
         finally:
+            app.state.plane.runtime_monitor.stop(wait=True)
             app.state.plane.stop(wait=False)
+            app.state.plane.runtime_monitor = None
 
     app = FastAPI(title="Forge Cockpit API", version="1.0.0",
                   docs_url="/api/docs", redoc_url="/api/redoc",
@@ -142,7 +151,7 @@ def create_app(plane: ControlPlane,
         routes_deployments.router, routes_backups.router, routes_plugins.router,
         routes_autonomy.router, routes_final.router, routes_staged.router,
         routes_compute.router, routes_engine.router, routes_milestones.router,
-        stream.router,
+        routes_runtimes.router, stream.router,
     ):
         app.include_router(router, prefix="/api/v1")
 
