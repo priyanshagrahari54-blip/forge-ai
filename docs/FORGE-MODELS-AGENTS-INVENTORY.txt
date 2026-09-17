@@ -4,10 +4,9 @@ FORGE AI — AGENTS, MODELS & PROVIDER ECOSYSTEM INVENTORY
 Purpose
 -------
 This document records the current Forge architecture for its specialist-agent
-fleet, model/provider ecosystem, provider links, routing and failover. It is
-intentionally an honest inventory: an entry in the catalog does NOT mean that
-the corresponding provider/model is installed, configured, reachable, paid for,
-or currently live.
+fleet, concrete public model-name reference, provider ecosystem, provider
+links, routing and failover. It is intentionally honest: a model name in an
+inventory is not automatically a live connection.
 
 1. AGENT FLEET
 --------------
@@ -33,11 +32,118 @@ Implementation:
 - DEFAULT_AGENT_FLEET = build_fleet(1000)
 - fleet_snapshot() exposes count/domains/specialties/execution mode
 
-Verification commit:
-- 8a8afe7bd3451608b48ea3562139c75f4df04059 — add 1000-slot specialist agent fleet
-- 38f986b6f00e76387ca47325b8850f33e302eae8 — tests for 1000-agent fleet and provider failover
+2. AGENT -> MODEL ROUTING
+-------------------------
+Forge now has a deterministic routing-contract layer between logical agents
+and Model Fabric.
 
-2. PROVIDER FAILOVER
+Flow:
+
+AgentSlot
+  -> domain/specialty routing requirements
+  -> canonical capabilities
+  -> ModelRequest
+  -> Model Fabric
+  -> verified/configured model
+  -> provider connector
+  -> execution
+
+Implementation:
+- forge/agents/routing.py
+- AgentRouteSpec
+- route_spec()
+- model_request_for_agent()
+- route_snapshot()
+
+The routing layer does NOT invent a model name. Model Fabric remains the
+authority for actual model selection, verification, policy and availability.
+
+3. REAL PUBLIC MODEL NAMES
+--------------------------
+Concrete public model identifiers are now tracked separately from the generic
+provider-family catalog.
+
+The reference list is in:
+- docs/FORGE-REAL-MODEL-NAMES.txt
+
+Examples of documented concrete names include:
+
+OpenAI:
+- gpt-5.6
+- gpt-5.6-sol
+- gpt-5.6-terra
+- gpt-5.6-luna
+
+Anthropic:
+- claude-fable-5
+- claude-opus-5
+- claude-opus-4-8
+- claude-opus-4-7
+- claude-opus-4-6
+- claude-sonnet-5
+- claude-sonnet-4-6
+- claude-haiku-4-5-20251001
+
+Google:
+- gemini-3.8-flash
+- gemini-3.8-live
+- gemini-3.8-live-extended-thinking
+- gemini-3.7-flash
+- gemini-3.6-flash
+- gemini-3.1-pro-preview
+- gemini-3.1-flash-image
+- gemini-omni-1.1-flash
+- gemini-3.5-transcribe
+- gemini-2.5-pro
+
+Mistral:
+- Mistral Medium 3.5
+- Mistral Small 4
+- Mistral Large 3
+- Ministral 3 14B
+- Ministral 3 8B
+- Ministral 3 3B
+- OCR 4.1
+- Voxtral Mini Transcribe 2
+- Voxtral Mini Transcribe Realtime
+
+DeepSeek:
+- deepseek-v4-flash
+- deepseek-v4-pro
+
+xAI:
+- grok-4.6
+
+Cohere:
+- command-a-plus-05-2026
+- command-a-03-2025
+- command-r7b-12-2024
+- command-r-plus
+- command-r
+- north-mini-code-1-0
+- embed-v4.0
+- parse-v5.0
+- cohere-transcribe-03-2026
+
+Hugging Face examples:
+- Qwen/Qwen3.5-0.8B
+- Qwen/Qwen3.5-2B
+- Qwen/Qwen3.5-4B
+- Qwen/Qwen3.5-9B
+- Qwen/Qwen3.5-27B
+- Qwen/Qwen3.5-35B-A3B
+- Qwen/Qwen3.5-122B-A10B
+- Qwen/Qwen3.5-397B-A17B
+
+IMPORTANT:
+Do not add speculative names such as "gpt-6" as live Forge models unless the
+provider officially publishes that exact identifier and runtime discovery or
+configuration verifies it.
+
+A public model name means:
+publicly documented != configured != reachable != verified != LIVE
+
+4. PROVIDER FAILOVER
 --------------------
 Forge has quota-aware provider failover infrastructure.
 
@@ -61,11 +167,7 @@ candidate. It does NOT bypass provider quotas or manufacture capacity.
 Implementation:
 - forge/orchestration/failover.py
 
-Verification commit:
-- 0acdb68da09e1d5248ec40637a759eb5e8fad612 — quota-aware provider failover pool
-- 38f986b6f00e76387ca47325b8850f33e302eae8 — fleet/failover tests
-
-3. PROVIDER ECOSYSTEM CATALOG
+5. PROVIDER ECOSYSTEM CATALOG
 -----------------------------
 Current provider ecosystems represented by Forge's model catalog include:
 
@@ -93,34 +195,9 @@ Current provider ecosystems represented by Forge's model catalog include:
 - Baseten
 - Modal
 
-The catalog currently describes provider-level capability families rather than
-hard-coding every model ID. Concrete model IDs are intended to be discovered or
-configured at runtime and then verified by Model Fabric.
-
-Current capability families include combinations of:
-- reasoning
-- general
-- coding
-- vision
-- audio
-- embeddings
-- retrieval
-- reranking
-- fast-inference
-- multi-provider-routing
-- open-models
-- multimodal
-- image
-- video
-- research
-- search
-- enterprise
-- edge-inference
-- inference
-- custom-deployment
-- serverless
-- custom-inference
-- local
+The generic catalog uses provider-family capability entries. Concrete model IDs
+are maintained as public references and should be discovered/configured at
+runtime before becoming available to Model Fabric.
 
 Implementation:
 - forge/models/model_catalog.py
@@ -129,16 +206,13 @@ Implementation:
 - catalog()
 - catalog_snapshot()
 
-Current model catalog file SHA:
-- 39623728aa3481f2b11b1f49eab5f94582feebc7
-
-4. OFFICIAL PROVIDER LINKS
+6. OFFICIAL PROVIDER LINKS
 --------------------------
-Forge also maintains an official provider resource-link registry. These links
-are navigation/documentation metadata and do not themselves establish an API
+Forge maintains an official provider resource-link registry. These links are
+navigation/documentation metadata and do not themselves establish an API
 connection.
 
-Providers currently represented in provider_links.py include:
+Providers represented include:
 OpenAI, Anthropic, Google, Gemini, Mistral, Cohere, xAI, Groq, DeepSeek,
 OpenRouter, Together, Fireworks, Replicate, Hugging Face, Ollama, LM Studio,
 Perplexity, AI21, NVIDIA, Azure OpenAI, AWS Bedrock, Cloudflare, Baseten, Modal.
@@ -154,14 +228,7 @@ Implementation:
 - forge/models/provider_links.py
 - forge/models/provider_links_http.py
 
-Important commits:
-- 8cac24946f7fbc2f484ebc4fafd775bd70ce533a — provider link registry
-- 662f66c3a366bae766b3e6c60cb74101c9432890 — mount provider-links route
-- 32996ae412e3e79aa665b2a13b1980b06bc500fd — enrich /api/v1/providers
-- 45c98b73324132ead1453b90d565bbce9fe8c333 — cockpit/provider-link test
-- 47b7740cd80057d416e8b61ea50ed76f43ce371e — provider-link endpoint/auth tests
-
-5. CAPABILITY REALITY / HONEST STATUS
+7. CAPABILITY REALITY / HONEST STATUS
 --------------------------------------
 Forge uses explicit capability-truth states:
 - LIVE
@@ -173,34 +240,10 @@ Forge uses explicit capability-truth states:
 - BLOCKED
 - ERROR
 
-Examples from the current reality registry:
-- autonomous-engineering: LIVE
-- persistent-server: LIVE
-- local-compute: LIVE
-- model-fabric: LIVE
-- host-runtime: LIVE
-- ai-city: READY
-- voice: SIMULATED by default
-- vision: SIMULATED by default
-- remote-compute: ARCHITECTURE
-- web-research: ARCHITECTURE
-- training: ARCHITECTURE
-- production-deployment: ARCHITECTURE
-
 Configured does not automatically mean live. Provider/model availability must
 be established through runtime evidence and health/configuration checks.
 
-Important commits:
-- 1e3ab64d1ecdc125d30721184d776bfa441bb58e — capability reality registry
-- a633eb4160bebbe23bc93ba27be1471e7a7d69d6 — expose capability registry
-- 4026eab — capability reality honesty tests
-- 8502228 — runtime evidence adapter
-- 575b04e — runtime capability tests
-- dd5c2aa — authenticated capability-truth route installer
-- 47549f6 — mount capability truth on Forge Server apps
-- 70312b5d764a8eb2fb38ea2fded32962e58a1159 — authenticated endpoint tests
-
-6. MODEL ARCHITECTURE
+8. MODEL ARCHITECTURE
 ---------------------
 The intended flow is:
 
@@ -219,39 +262,24 @@ User task
 A specialist agent is a logical worker identity. Model Fabric decides which
 configured model/provider can perform the required capability.
 
-This makes it possible to scale the number of agent roles independently from
-the number of actual model APIs available.
-
-7. MODEL PLUGIN / CONNECTOR STRATEGY
--------------------------------------
-Each model ecosystem/provider should have its own connector/adapter where
-needed. One connector can support many models from that provider.
+9. MODEL CONNECTOR STRATEGY
+---------------------------
+One provider connector can support many concrete model IDs.
 
 Examples:
-- OpenAI connector -> multiple OpenAI model IDs
-- Anthropic connector -> multiple Claude model IDs
-- Google connector -> Gemini model IDs
-- Mistral connector -> Mistral model IDs
-- Ollama connector -> locally hosted model IDs
-- Hugging Face connector -> supported hosted/open model IDs
+- OpenAI connector -> gpt-5.6 family and future verified OpenAI IDs
+- Anthropic connector -> Claude family
+- Google connector -> Gemini family
+- Mistral connector -> Mistral family
+- DeepSeek connector -> DeepSeek family
+- xAI connector -> Grok family
+- Cohere connector -> Command/North/Embed/etc.
+- Hugging Face connector -> dynamically discovered model IDs
+- Ollama connector -> locally discovered model IDs
 
-Therefore 1000 agents do NOT require 1000 plugins. The scalable structure is:
+Therefore 1000 agents do NOT require 1000 plugins.
 
-1000+ logical agents
-        |
-        v
-specialist routing
-        |
-        v
-Model Fabric
-        |
-        +--> Provider connector A --> many models
-        +--> Provider connector B --> many models
-        +--> Provider connector C --> many models
-        +--> local runtime connectors
-        +--> future provider connectors
-
-8. BACKGROUND / CONTINUOUS EXECUTION
+10. BACKGROUND / CONTINUOUS EXECUTION
 -------------------------------------
 Forge's server architecture is designed for persistent background work. Tasks
 can continue server-side instead of depending on the browser remaining open.
@@ -262,65 +290,52 @@ The G560 should therefore act primarily as a thin client/control surface.
 Heavy AI/model inference should be delegated to configured remote/local server
 resources rather than assuming the G560 itself can run frontier-scale models.
 
-9. AI CITY / LIVE ACTIVITY
---------------------------
+11. AI CITY / LIVE ACTIVITY
+---------------------------
 The cockpit's AI City is intended to visualize actual Forge work. Activity
 should be backed by real backend events/task state rather than animation being
 used as proof that a model or agent is working.
 
-10. NEXT MODEL/AGENT EXPANSION
-------------------------------
-Planned progression:
+12. RUNTIME MODEL DISCOVERY — NEXT STEP
+---------------------------------------
+For each provider Forge should support, where the provider API permits:
 
-A. Provider connector layer
-   - normalize authentication/configuration
-   - request/response adapters
-   - streaming support
-   - health checks
-   - quota/error classification
+- list models
+- get model metadata
+- capabilities/modality
+- context length
+- maximum output
+- pricing when available
+- availability
+- authentication state
+- quota/rate-limit state
+- health check
+- safe verification probe
+- deprecation state
 
-B. Runtime model discovery
-   - provider model listing where APIs support it
-   - capability extraction
-   - context-window metadata
-   - modality metadata
-   - pricing/quota metadata when available
-   - runtime verification
+Only after these checks should Model Fabric classify a model as configured,
+reachable, verified or LIVE.
 
-C. Agent routing
-   - capability matching
-   - task complexity routing
-   - latency/cost policies
-   - provider failover
-   - specialist-agent selection
-
-D. Continuous expansion
-   - new provider connector
-   - model discovery
-   - verification
-   - registry update
-   - health monitoring
-   - automatic availability state
-
-11. HONESTY RULE
+13. HONESTY RULE
 ---------------
 Forge must never claim that a model, provider, agent, tool, or capability is
 LIVE merely because its name exists in a registry or catalog.
 
 Registry entry != installed model
+Public model name != API access
 Configured != reachable
 Reachable != successful inference
 Architecture != implementation
 Simulation != real capability
 
-The runtime truth system exists specifically to preserve this distinction.
-
-12. CURRENT OVERALL STATUS
+14. CURRENT OVERALL STATUS
 --------------------------
 The architecture now has:
 - 1000 logical specialist agent slots
+- agent-to-capability routing contracts
 - provider failover infrastructure
 - provider ecosystem catalog
+- concrete public model-name reference
 - official provider link metadata
 - capability-reality states
 - authenticated capability/provider routes
@@ -328,13 +343,17 @@ The architecture now has:
 - persistent/background execution architecture
 - Model Fabric as the central routing layer
 
-Still provider/configuration dependent:
+Provider/configuration dependent:
 - exact number of live model IDs
-- paid-provider access
+- API keys and paid-provider access
 - API quotas
 - remote compute availability
 - real voice/vision provider connections
 - production deployment resources
 
-This inventory should be updated whenever a new provider connector, model
-family, agent family, or verified runtime capability is added.
+Reference files:
+- docs/FORGE-MODELS-AGENTS-INVENTORY.txt
+- docs/FORGE-REAL-MODEL-NAMES.txt
+- docs/FORGE-1000-AGENT-NAMES.txt
+
+Last updated: 2026-09-17
