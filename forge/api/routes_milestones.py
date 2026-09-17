@@ -17,8 +17,18 @@ async def task_milestones(task_id: str,
                           plane: ControlPlane = Depends(get_plane)):
     """Return milestone progress derived only from persisted task events."""
     task = plane.get_task(current.session, task_id)
-    events, _latest = plane.get_task_events(
+    events, latest = plane.get_task_events(
         current.session, task_id, after=0, limit=500)
-    return {"task_id": task_id,
-            "milestones": project_milestones(events,
-                                               task_status=str(task.status))}
+    projection = project_milestones(events, task_status=str(task.status))
+    return {
+        "task_id": task_id,
+        "milestones": projection["milestones"],
+        "summary": {
+            key: projection[key]
+            for key in ("total", "passed", "running", "failed", "pending")
+        },
+        "task_status": projection["task_status"],
+        "source": projection["source"],
+        "observed_events": projection["observed_events"],
+        "latest_seq": latest,
+    }
