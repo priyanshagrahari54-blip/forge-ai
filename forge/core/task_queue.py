@@ -51,22 +51,15 @@ class PersistentTaskQueue:
         return tasks
 
     def ready(self) -> list[Task]:
-        ready_tasks = [
-            task for task in self.engine.tasks
-            if task.status == TaskStatus.PENDING and self.engine.can_start(task.id)
-        ]
-        return sorted(
-            ready_tasks,
-            key=lambda task: (-self._priorities.get(task.id, 0), self._created_at.get(task.id, ""), task.id),
-        )
+        ready_tasks = [task for task in self.engine.tasks
+                       if task.status == TaskStatus.PENDING and self.engine.can_start(task.id)]
+        return sorted(ready_tasks, key=lambda task: (
+            -self._priorities.get(task.id, 0), self._created_at.get(task.id, ""), task.id))
 
     def next(self) -> Task | None:
-        """Return the highest-priority ready task without claiming it."""
-        tasks = self.ready()
-        return tasks[0] if tasks else None
+        return self.ready()[0] if self.ready() else None
 
     def start_next(self) -> Task | None:
-        """Atomically claim a ready task so multiple workers cannot duplicate it."""
         for task in self.ready():
             claimed = self.store.claim(task.id)
             if claimed is None:
@@ -83,16 +76,35 @@ class PersistentTaskQueue:
         self.store.save(task)
         return task
 
+    def complete_if_owner(self, task_id: str, lease_id: str) -> Task | None:
+        task = self.store.complete_if_owner(task_id, lease_id)
+        if task is None:
+            return None
+        for index, current in enumerate(self.engine.tasks):
+            if current.id == task_id:
+                self.engine.tasks[index] = task
+                break
+        return task
+
     def fail(self, task_id: str, error: str) -> Task:
         task = self.engine.fail(task_id, error)
         self.store.save(task)
+        return task
+
+    def fail_if_owner(self, task_id: str, lease_id: str, error: str) -> Task | None:
+        task = self.store.fail_if_owner(task_id, lease_id, error)
+        if task is None:
+            return None
+        for index, current in enumerate(self.engine.tasks):
+            if current.id == task_id:
+                self.engine.tasks[index] = task
+                break
         return task
 
     def pending(self) -> list[Task]:
         return [task for task in self.engine.tasks if task.status == TaskStatus.PENDING]
 
     def queued(self) -> list[QueuedTask]:
-        return [
-            QueuedTask(task=task, priority=self._priorities.get(task.id, 0), created_at=self._created_at.get(task.id, ""))
-            for task in self.engine.tasks
-        ]
+        return [QueuedTask(task=task, priority=self._priorities.get(task.id, 0),
+                            created_at=self._created_at.get(task.id, ""))
+                for task in self.engine.tasks]
