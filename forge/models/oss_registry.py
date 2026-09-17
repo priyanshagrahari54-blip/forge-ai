@@ -22,8 +22,6 @@ class OSSModel:
     tags: tuple[str, ...] = ()
 
 
-# Concrete IDs intentionally come from public model registries/provider docs.
-# They are names, not claims that Forge currently has access to them.
 VERIFIED_SEEDS: tuple[OSSModel, ...] = (
     OSSModel("deepseek-ai/DeepSeek-V4.1-Flash", "deepseek", "huggingface", tags=("reasoning", "coding", "vision")),
     OSSModel("deepseek-ai/DeepSeek-V4-Pro", "deepseek", "huggingface", tags=("reasoning", "coding")),
@@ -56,19 +54,13 @@ def _normalise(item: dict) -> OSSModel:
         provider=model_id.split("/", 1)[0] if "/" in model_id else "huggingface",
         source="huggingface-api",
         status="discovered",
-        license=item.get("library_name") if False else None,
         tags=tags,
     )
 
 
 def discover_huggingface_models(*, limit: int = 1000, search: str | None = None,
                                 timeout: float = 20.0) -> list[OSSModel]:
-    """Fetch real public Hugging Face model IDs; never invents identifiers.
-
-    The API is queried at runtime, so the registry can grow beyond 1000 as the
-    ecosystem changes. Results are still only catalogued until Model Fabric
-    verifies access/runtime compatibility.
-    """
+    """Fetch real public Hugging Face model IDs; never invents identifiers."""
     if limit < 1 or limit > 5000:
         raise ValueError("limit must be between 1 and 5000")
     params = {"limit": str(limit), "sort": "downloads", "direction": "-1"}
@@ -88,11 +80,8 @@ def discover_huggingface_models(*, limit: int = 1000, search: str | None = None,
     return result
 
 
-def oss_catalog(*, discovered: list[OSSModel] | None = None,
-                minimum: int = 1000) -> list[OSSModel]:
-    """Merge verified seeds with real discovered IDs, deduplicated by ID."""
-    if minimum < 1:
-        raise ValueError("minimum must be positive")
+def oss_catalog(*, discovered: list[OSSModel] | None = None) -> list[OSSModel]:
+    """Merge concrete seed IDs with real discovered IDs, deduplicated by ID."""
     values: list[OSSModel] = []
     seen: set[str] = set()
     for item in (*VERIFIED_SEEDS, *(discovered or ())):
