@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from forge.control.control_plane import ControlConfig, ControlPlane
 from forge.core.dag_scheduler import DAGScheduler, DAGSchedulerError
-from helpers_a34 import make_fabric
+from helpers_a34 import ScriptedProvider, make_fabric
 
 
 def test_dag_adopts_terminal_persisted_task_without_overwriting(tmp_path):
@@ -66,7 +66,7 @@ def test_active_orchestration_is_requeued_on_plane_restart(tmp_path):
     config = ControlConfig(
         db_path=str(db_path),
         projects={"demo": str(root)},
-        fabric=make_fabric(),
+        fabric=make_fabric(ScriptedProvider()),
         max_workers=1,
     )
 
