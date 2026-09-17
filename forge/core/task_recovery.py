@@ -24,16 +24,15 @@ class TaskRecoveryEngine:
         self.policy = policy or RecoveryPolicy()
 
     def recover_interrupted(self) -> list[Task]:
-        """Move RUNNING tasks to RECOVERY after a restart."""
-        tasks = self.store.load_all()
+        """Move RUNNING tasks to RECOVERY after a restart atomically."""
         recovered: list[Task] = []
 
-        for task in tasks:
-            if task.status == TaskStatus.RUNNING:
-                task.status = TaskStatus.RECOVERY
-                task.errors.append("Task interrupted and moved to recovery.")
-                self.store.save(task)
-                recovered.append(task)
+        for task in self.store.load_all():
+            if task.status != TaskStatus.RUNNING:
+                continue
+            claimed = self.store.recover_running(task.id)
+            if claimed is not None:
+                recovered.append(claimed)
 
         return recovered
 
