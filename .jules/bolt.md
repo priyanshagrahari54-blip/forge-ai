@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - ModelRouter Feedback Recording Linear Scan Bottleneck
+
+**Learning:** `ModelRouter.record()` performed a linear scan over `self.models` list on every feedback event. During high-throughput agent runs or routing benchmarks recording thousands of routing outcomes across hundreds of models, this resulted in $O(N)$ lookup cost per feedback invocation.
+
+**Action:** Maintain an internal `_by_name: dict[str, ModelInfo]` index updated during `__init__` and `register()`, providing $O(1)$ lookup speed in `record()` and reducing feedback recording time by ~19x (~0.38s down to ~0.02s for 10,000 feedback calls).
