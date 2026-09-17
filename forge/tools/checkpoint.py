@@ -3,15 +3,15 @@
 Before a change set applies, the checkpoint captures the exact original bytes
 of affected files, records hashes, sizes, and permission bits, and notes
 which declared paths did not exist — enough metadata to restore the candidate
-set exactly. Rollback restores *only* files belonging to the candidate change
-set: it never runs ``git reset --hard``, never deletes unrelated user files,
-and never discards unrelated modifications.
+set exactly. Snapshots live under the project's ``.forge/checkpoints`` tree so
+rollback remains possible after a Forge Server restart.
 """
 from __future__ import annotations
 import hashlib, json, shutil, stat, tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 from forge.tools.git import GitTool
 from forge.security.verification import is_excluded
 
@@ -54,8 +54,17 @@ class CheckpointManager:
         for name in declared or []:
             if name not in files and name not in meta:
                 meta[name] = {"existed": False}
+        # Keep the legacy content-derived id, but avoid collisions between
+        # repeated identical checkpoints by adding a short suffix when needed.
         ident = hashlib.sha256((label + json.dumps(files, sort_keys=True)).encode()).hexdigest()[:16]
-        return Checkpoint(ident, self.root, snapshot, files, meta)
+        persistent_root = self.root / ".forge" / "checkpoints"
+        persistent_root.mkdir(parents=True, exist_ok=True)
+        persistent = persistent_root / ident
+        if persistent.exists():
+            ident = "%s-%s" % (ident, uuid4().hex[:6])
+            persistent = persistent_root / ident
+        shutil.move(str(snapshot), str(persistent))
+        return Checkpoint(ident, self.root, persistent, files, meta)
     def rollback(self, checkpoint: Checkpoint, changed_files: list[str] | None = None) -> None:
         current = {p.relative_to(self.root).as_posix(): p for p in self.root.rglob("*") if p.is_file() and not is_excluded(p.relative_to(self.root).parts)}
         # Restore only declared candidate paths. A caller that does not know its

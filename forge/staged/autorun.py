@@ -123,6 +123,12 @@ def start(plane: Any, session: Any, build_id: str, *, mode: str = "") -> Dict[st
 
 def resume_active(plane: Any) -> Dict[str, Any]:
     """Reconstruct persisted autorunners whose sessions are still active."""
+    from forge.control.checkpoint_recovery import restore_available_checkpoints
+
+    # Restore rollback material before any resumed stage can create or consume
+    # new checkpoints. A missing/tampered snapshot is marked unavailable and
+    # never loaded as an arbitrary filesystem path.
+    restore_available_checkpoints(plane)
     _ensure_store(plane)
     rows = plane._db.query(
         "SELECT * FROM staged_autoruns WHERE active = 1 "
