@@ -681,6 +681,7 @@ class ControlPlane:
         self._dispatcher = threading.Thread(
             target=self._dispatch_loop, name="forge-dispatch", daemon=True)
         self._dispatcher.start()
+        self._resume_orchestrations()
 
     def _submit_tracked(self, fn, *args):
         """Submit background work, tracking it so stop() can cancel it.
@@ -712,6 +713,54 @@ class ControlPlane:
     @property
     def running(self) -> bool:
         return self._executor is not None
+
+    def _resume_orchestrations(self) -> None:
+        """Requeue durable A38 orchestrations after a backend restart.
+
+        Only still-active sessions are resumed. QUEUED/RUNNING/
+        WAITING_APPROVAL records are moved back to a single durable
+        QUEUED boundary and dispatched once; the persisted DAG ledger
+        prevents already-finished steps from being executed again.
+        """
+        try:
+            rows = self._db.query(
+                "SELECT * FROM orchestrations "
+                "WHERE status IN ('QUEUED', 'RUNNING', 'WAITING_APPROVAL') "
+                "ORDER BY created_at ASC")
+        except Exception:
+            return
+        for row in rows:
+            try:
+                record = self.orchestrations._from_row(row)
+                session = self.sessions.get(record.session_id)
+                if session is None or not session.active:
+                    self.orchestrations.compare_and_set(
+                        record.id, record.version,
+                        status=OrchestrationStatus.FAILED,
+                        stage="failed",
+                        error="Session inactive; orchestration not resumed after restart.",
+                        finished_at=time.time())
+                    continue
+                stored_plan = record.plan()
+                chain = bool(stored_plan.get("chain", False))
+                updated = self.orchestrations.compare_and_set(
+                    record.id, record.version,
+                    status=OrchestrationStatus.QUEUED,
+                    stage="recovered",
+                    started_at=None,
+                    finished_at=None,
+                    error="")
+                if updated is None:
+                    continue
+                self._submit_tracked(
+                    self._execute_orchestration, record.id, chain)
+            except Exception as exc:
+                try:
+                    self._audit(
+                        "forge", "orchestration", "resume", False,
+                        task_id=str(row[0]), reason=str(exc)[:300])
+                except Exception:
+                    pass
 
     def _recover_interrupted(self) -> None:
         """Fail closed on runs left active by a previous process."""
@@ -6293,6 +6342,10 @@ class ControlPlane:
         record = self.orchestrations.create(
             session_id=session.id, project_id=project.id,
             requirement=requirement, actor=session.actor)
+        # Persist the execution mode before any worker can start. A queued
+        # orchestration can therefore recover its original chain semantics.
+        record = self.orchestrations.mutate(
+            record.id, plan_json=json.dumps({"chain": bool(chain)})) or record
         self._emit(record.id, record.project_id, "orchestration.created",
                    {"chain": bool(chain), "actor": session.actor,
                     "requirement_chars": len(requirement)})
@@ -6546,10 +6599,35 @@ class ControlPlane:
                 store_path=str(
                     Path(project.root) / ".forge" / "tasks" /
                     (record.id + ".db")))
-            plan = orchestrator.build_plan(record.requirement, chain=chain)
+            stored_plan = record.plan()
+            stored_chain = bool(stored_plan.get("chain", chain))
+            stored_steps = stored_plan.get("steps")
+            if isinstance(stored_steps, list) and stored_steps:
+                from forge.core.orchestrator import OrchestrationPlan, OrchestrationStep
+                restored_steps = []
+                for raw in stored_steps:
+                    if not isinstance(raw, dict):
+                        raise ValueError("malformed persisted orchestration step")
+                    restored_steps.append(OrchestrationStep(
+                        id=str(raw.get("id", "")),
+                        agent=str(raw.get("agent", "")),
+                        role=str(raw.get("role", "")),
+                        capability=str(raw.get("capability", "")),
+                        instructions=str(raw.get("instructions", "")),
+                        depends_on=tuple(str(item) for item in (raw.get("depends_on") or ())),
+                    ))
+                plan = OrchestrationPlan(
+                    requirement=str(stored_plan.get("requirement") or record.requirement),
+                    steps=tuple(restored_steps),
+                )
+                plan.validate(registry)
+            else:
+                plan = orchestrator.build_plan(record.requirement, chain=stored_chain)
+            plan_payload = plan.to_dict()
+            plan_payload["chain"] = stored_chain
             self.orchestrations.mutate(
                 record.id, stage="running",
-                plan_json=json.dumps(plan.to_dict(), default=str))
+                plan_json=json.dumps(plan_payload, default=str))
             report = orchestrator.execute(plan)
             status_map = {
                 ReportStatus.SUCCEEDED: OrchestrationStatus.SUCCEEDED,

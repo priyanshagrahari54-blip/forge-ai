@@ -358,6 +358,14 @@ class DAGScheduler:
                  depends_on: Sequence[str] = (), timeout: Optional[float] = None,
                  max_attempts: int = 1, resources: Sequence[str] = (),
                  priority: int = 0, metadata: Optional[dict] = None) -> ScheduledTask:
+        """Add a graph node, adopting an existing durable definition safely.
+
+        Multi-agent orchestration rebuilds the deterministic graph after a
+        process restart. A persisted task id therefore means "resume this
+        exact node", not "overwrite its durable state with a fresh QUEUED row".
+        Static task configuration must match; persisted lifecycle state is
+        recovered with the same fail-closed rules used by ``_recover()``.
+        """
         task_id = str(task_id or "").strip()
         if not task_id:
             raise DAGSchedulerError("task_id must be non-empty")
@@ -367,20 +375,115 @@ class DAGScheduler:
         if any(d == task_id for d in deps):
             raise DAGSchedulerError(
                 "task %s depends on itself" % task_id)
-        for dep in deps:
-            if dep not in self._tasks:
-                raise DAGSchedulerError(
-                    "task %s depends on unknown task %s" % (task_id, dep))
         if max_attempts < 1:
             raise DAGSchedulerError("max_attempts must be >= 1")
         if timeout is not None and timeout <= 0:
             raise DAGSchedulerError("timeout must be positive")
+        resources_tuple = tuple(str(r) for r in (resources or ()))
+        description_text = str(description or "")
+        priority_value = int(priority)
+
+        # Durable persisted-task adoption for restart-safe graph reconstruction.
+        persisted = None
+        if self._conn is not None:
+            with self._db_lock:
+                persisted = self._conn.execute(
+                    "SELECT task_id, description, dependencies, timeout, "
+                    "max_attempts, resources, priority, state, attempts, "
+                    "error, output, created_at FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+        if persisted is not None:
+            try:
+                persisted_deps = tuple(
+                    str(item) for item in json.loads(
+                        persisted["dependencies"] or "[]"))
+                persisted_resources = tuple(
+                    str(item) for item in json.loads(
+                        persisted["resources"] or "[]"))
+                persisted_timeout = persisted["timeout"]
+                persisted_timeout = (
+                    float(persisted_timeout)
+                    if persisted_timeout is not None else None)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise DAGSchedulerError(
+                    "corrupt persisted task definition: %s" % exc) from None
+
+            definition_matches = (
+                str(persisted["description"] or "") == description_text
+                and persisted_deps == deps
+                and persisted_timeout == timeout
+                and int(persisted["max_attempts"] or 1) == int(max_attempts)
+                and persisted_resources == resources_tuple
+                and int(persisted["priority"] or 0) == priority_value
+            )
+            if not definition_matches:
+                raise DAGSchedulerError(
+                    "persisted task definition mismatch: %s" % task_id)
+            for dep in persisted_deps:
+                if dep not in self._tasks:
+                    raise DAGSchedulerError(
+                        "task %s depends on unknown task %s" % (task_id, dep))
+
+            persisted_state = str(persisted["state"] or "").strip()
+            attempts = int(persisted["attempts"] or 0)
+            persisted_max_attempts = int(persisted["max_attempts"] or 1)
+            reason = str(persisted["error"] or "")
+            if persisted_state in TERMINAL_STATES:
+                recovered_state = persisted_state
+            elif persisted_state == QUEUED:
+                recovered_state = QUEUED
+            elif persisted_state == CANCELLING:
+                recovered_state = CANCELLED
+                reason = "worker lost during cancellation (restart)"
+            elif persisted_state == RUNNING:
+                if attempts < persisted_max_attempts:
+                    recovered_state = QUEUED
+                    reason = "interrupted at generation %d; re-queued" % (
+                        attempts + 1)
+                else:
+                    recovered_state = FAILED
+                    reason = "interrupted by restart; attempts exhausted"
+            else:
+                recovered_state = FAILED
+                reason = "unknown persisted task state: %s" % (
+                    persisted_state or "<empty>")
+
+            task = ScheduledTask(
+                task_id=task_id,
+                description=description_text,
+                depends_on=persisted_deps,
+                timeout=persisted_timeout,
+                max_attempts=persisted_max_attempts,
+                resources=persisted_resources,
+                priority=int(persisted["priority"] or 0),
+                metadata=dict(metadata or {}),
+                state=recovered_state,
+                attempts_used=attempts,
+                error=reason[:MAX_TASK_ERROR],
+                output=str(persisted["output"] or "")[:4000],
+                created_at=float(persisted["created_at"] or time.time()),
+            )
+            self._tasks[task_id] = task
+            if recovered_state != persisted_state or reason != str(persisted["error"] or ""):
+                self._persist_task(task)
+                self._record_event(
+                    task_id, "-", attempts, recovered_state,
+                    "recovered persisted task from %s" % (
+                        persisted_state or "unknown"),
+                )
+            return task
+
+        for dep in deps:
+            if dep not in self._tasks:
+                raise DAGSchedulerError(
+                    "task %s depends on unknown task %s" % (task_id, dep))
         task = ScheduledTask(
-            task_id=task_id, description=str(description or ""),
+            task_id=task_id, description=description_text,
             depends_on=deps, timeout=timeout,
             max_attempts=int(max_attempts),
-            resources=tuple(str(r) for r in (resources or ())),
-            priority=int(priority),
+            resources=resources_tuple,
+            priority=priority_value,
             metadata=dict(metadata or {}))
         self._tasks[task_id] = task
         # Optimization: Full graph cycle detection is deferred to run() or manual check.
