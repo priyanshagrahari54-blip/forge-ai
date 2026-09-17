@@ -1,41 +1,29 @@
 """The scheduler: leases queued work to background workers (A81).
 
-One dispatcher thread turns the persistent queue into running tasks:
-
-* per-project concurrency is capped (``max_tasks_per_project``), so one
-  project can never starve another or double-run a repository;
-* global concurrency is capped by the worker pool;
-* leases carry the server's ``boot_id``, which is what makes restart
-  fencing possible (a lease from a dead boot never validates);
-* retry backoff is honored through the queue's ``available_at``;
-* housekeeping (session expiry, approval expiry) piggybacks on the
-  loop — no extra threads, no timers to leak on Windows.
-
-The scheduler wakes on demand (submit/cancel/resume/finish) and polls
-slowly otherwise, so dispatch latency is milliseconds while idle CPU
-cost stays near zero.
+One dispatcher thread turns the persistent queue into running tasks. It also
+owns lightweight runtime verification housekeeping so model health continues
+without a browser/client connection.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from forge.server.models import TaskStatus
 
-#: Slow poll when idle; wake() makes dispatch effectively immediate.
 DEFAULT_POLL_INTERVAL = 0.25
-
-#: Housekeeping cadence (seconds).
 HOUSEKEEPING_INTERVAL = 30.0
 
 
 class Scheduler:
     """Dispatch loop: queue leases → worker pool submissions."""
 
-    def __init__(self, server: Any, *,
-                 poll_interval: float = DEFAULT_POLL_INTERVAL) -> None:
+    def __init__(self, server: Any,
+                 *, poll_interval: float = DEFAULT_POLL_INTERVAL) -> None:
         self.server = server
         self.poll_interval = max(0.05, float(poll_interval))
         self._thread: Optional[threading.Thread] = None
@@ -44,6 +32,16 @@ class Scheduler:
         self._active: Dict[str, int] = {}
         self._active_lock = threading.Lock()
         self._last_housekeeping = 0.0
+        from forge.models.runtime_monitor_service import RuntimeMonitorService
+        runtime_root = Path(server.config.db_path).parent.parent
+        interval = _env_float("FORGE_RUNTIME_MONITOR_INTERVAL", 60.0)
+        ttl = _env_float("FORGE_RUNTIME_VERIFICATION_TTL", 300.0)
+        self.runtime_monitor = RuntimeMonitorService(
+            server.fabric,
+            state_path=runtime_root / "runtime-monitor.json",
+            interval_seconds=interval,
+            verification_ttl_seconds=ttl,
+        )
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -70,7 +68,7 @@ class Scheduler:
     def wake(self) -> None:
         self._wake.set()
 
-    # -- accounting ----------------------------------------------------------------
+    # -- accounting ------------------------------------------------------------
 
     def active_count(self, project_id: str = "") -> int:
         with self._active_lock:
@@ -103,7 +101,7 @@ class Scheduler:
             try:
                 self.dispatch_once()
             except Exception:
-                pass  # a bad tick must never kill the dispatcher
+                pass
             try:
                 self._housekeeping()
             except Exception:
@@ -118,6 +116,12 @@ class Scheduler:
         self._last_housekeeping = now
         self.server.sessions.prune()
         self.server.approvals.expire_stale()
+        try:
+            self.runtime_monitor.tick(now=now)
+        except Exception:
+            # Runtime verification is fail-closed and must never kill task
+            # dispatch. Detailed state is persisted by the service itself.
+            pass
 
     def dispatch_once(self) -> int:
         """One dispatch pass; returns the number of tasks submitted."""
@@ -134,7 +138,7 @@ class Scheduler:
                         >= max(1, int(config.max_tasks_per_project))):
                     continue
             if server.pool.busy >= server.pool.max_workers:
-                break  # globally saturated; retry on the next tick
+                break
             owner = "%s:worker:%s" % (server.boot_id, uuid4().hex[:8])
             task_id = server.queue.lease_next(project_id, owner)
             if task_id is None:
@@ -144,7 +148,6 @@ class Scheduler:
                 server.queue.release(task_id)
                 continue
             if task.status != TaskStatus.QUEUED:
-                # Paused/cancelled after enqueue: give the slot back.
                 server.queue.requeue(task_id)
                 continue
             with self._active_lock:
@@ -152,7 +155,6 @@ class Scheduler:
                     self._active.get(project_id, 0) + 1
             try:
                 from forge.server.workers import run_task
-
                 server.pool.submit(run_task, server, task_id, owner,
                                    project_id)
                 submitted += 1
@@ -165,3 +167,10 @@ class Scheduler:
                            "Dispatch failed: %s" % exc,
                            level="error", source="scheduler")
         return submitted
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
