@@ -19,7 +19,11 @@ from forge.models.runtime_verification import RuntimeProbeResult
 
 
 class RuntimeMonitorService:
-    """Persistent, restart-safe runtime verification coordinator."""
+    """Persistent, restart-safe runtime verification coordinator.
+
+    The service owns one bounded daemon loop. It is started and stopped by
+    the Forge application lifecycle, never by a browser request.
+    """
 
     def __init__(
         self,
@@ -37,7 +41,46 @@ class RuntimeMonitorService:
         self.registry = ConfiguredRuntimeRegistry()
         self._last_tick = 0.0
         self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
         self._load()
+
+    def start(self) -> None:
+        """Start the persistent monitor loop idempotently."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="forge-runtime-monitor",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self, *, wait: bool = True) -> None:
+        """Stop the monitor loop without cancelling Forge worker tasks."""
+        with self._lock:
+            thread = self._thread
+            self._thread = None
+            self._stop.set()
+        if thread is not None and wait:
+            thread.join(timeout=max(1.0, self.interval_seconds + 1.0))
+
+    @property
+    def running(self) -> bool:
+        thread = self._thread
+        return bool(thread is not None and thread.is_alive())
+
+    def _run(self) -> None:
+        # Verify once immediately, then wait between checks. Failures are
+        # contained so one broken provider cannot kill the monitor forever.
+        while not self._stop.is_set():
+            try:
+                self.tick(force=True)
+            except Exception:
+                pass
+            self._stop.wait(self.interval_seconds)
 
     def tick(self, *, now: Optional[float] = None,
              force: bool = False) -> Dict[str, Any]:
@@ -76,6 +119,7 @@ class RuntimeMonitorService:
         counts = self.registry.counts()
         return {
             "schema_version": 1,
+            "running": self.running,
             "last_tick": self._last_tick,
             "interval_seconds": self.interval_seconds,
             "verification_ttl_seconds": self.monitor.verification_ttl_seconds,
