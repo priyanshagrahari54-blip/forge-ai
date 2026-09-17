@@ -199,4 +199,5 @@ class TaskStore:
             errors=row["errors"].splitlines() if row["errors"] else [],
             dependencies=row["dependencies"].splitlines() if row["dependencies"] else [],
             lease_id=row["lease_id"] if "lease_id" in row.keys() else "",
+            lease_heartbeat=float(row["lease_heartbeat"] or 0.0) if "lease_heartbeat" in row.keys() else 0.0,
         )
