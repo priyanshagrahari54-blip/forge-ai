@@ -13,8 +13,14 @@ class Providers:
         return Provider() if name == "fake" else None
 
 
+class Registry:
+    def snapshot(self):
+        return [{"name": "model-a", "provider": "fake"}]
+
+
 class Fabric:
     providers = Providers()
+    registry = Registry()
 
 
 def test_runtime_monitor_start_stop_and_persist(tmp_path):
@@ -23,7 +29,7 @@ def test_runtime_monitor_start_stop_and_persist(tmp_path):
         Fabric(), state_path=path, interval_seconds=60)
 
     service.tick(force=True, now=100.0)
-    assert service.snapshot()["counts"]["CONFIGURED"] == 1
+    assert service.snapshot()["counts"]["LIVE"] == 1
     service.start()
     assert service.running
     service.stop(wait=True)
