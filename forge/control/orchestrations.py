@@ -152,17 +152,31 @@ class OrchestrationStore:
                         **updates: Any) -> Orchestration | None:
         """Optimistic update; returns the updated record or ``None``."""
         if not updates:
-            record = self.get(orchestration_id)
-            return record
+            return self.get(orchestration_id)
         fields = [column for column in self._COLUMNS if column in updates]
         if not fields:
             return self.get(orchestration_id)
-        values = [updates[column] for column in fields]
+        normalized: dict[str, Any] = {}
+        for column in fields:
+            value = updates[column]
+            if column == "status":
+                value = (value.value if isinstance(value, OrchestrationStatus)
+                         else str(value or "").strip())
+                try:
+                    value = OrchestrationStatus(value).value
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid orchestration status: {value!r}") from None
+            elif column in ("stage", "actor", "error", "session_id", "project_id",
+                            "requirement", "plan_json", "report_json"):
+                value = str(value)
+            normalized[column] = value
+        values = [normalized[column] for column in fields]
         assignments = ", ".join(
             f"{column} = ?" for column in fields) + ", updated_at = ?"
-        params = (*values, time.time(), orchestration_id, version)
+        params = (*values, time.time(), orchestration_id, int(version))
         cursor = self._db.execute(
-            f"UPDATE orchestrations SET {assignments}"
+            f"UPDATE orchestrations SET {assignments}, version = version + 1"
             " WHERE id = ? AND version = ?", params)
         if cursor.rowcount == 0:
             return None
@@ -182,12 +196,25 @@ class OrchestrationStore:
                    "started_at", "finished_at", "plan_json", "report_json",
                    "error")
         values = dict(zip(columns, row))
+        raw_status = str(values["status"] or "").strip()
+        if not raw_status:
+            # Legacy/corrupt rows without a lifecycle state must remain
+            # inspectable and resumable from the durable queued boundary.
+            raw_status = OrchestrationStatus.QUEUED.value
+        try:
+            status = OrchestrationStatus(raw_status)
+        except ValueError:
+            # Never interpret an unknown persisted state as executable.
+            status = OrchestrationStatus.FAILED
+            values["error"] = ((str(values.get("error") or "").strip() + " "
+                                "Unknown persisted orchestration status.")
+                               .strip())
         return Orchestration(
             id=values["id"], session_id=values["session_id"],
             project_id=values["project_id"],
             requirement=values["requirement"],
-            status=OrchestrationStatus(values["status"]),
-            stage=values["stage"], version=values["version"],
+            status=status,
+            stage=values["stage"], version=int(values["version"] or 1),
             actor=values["actor"], created_at=values["created_at"],
             updated_at=values["updated_at"],
             started_at=values["started_at"],
