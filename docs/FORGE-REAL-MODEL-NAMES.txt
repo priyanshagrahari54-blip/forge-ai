@@ -1,0 +1,205 @@
+FORGE AI — REAL PUBLIC MODEL NAME REFERENCE
+============================================
+
+Purpose
+-------
+This file contains concrete model names published by providers or model
+registries. These names are REAL PUBLIC MODEL IDENTIFIERS, not placeholders
+such as "openai:runtime-discovery".
+
+IMPORTANT STATUS RULE
+---------------------
+A name in this file means the model name is publicly documented/observed.
+It does NOT mean Forge currently has an API key, paid access, quota, or a
+successful runtime connection to that model.
+
+Forge runtime truth remains:
+
+PUBLIC MODEL NAME -> configured? -> reachable? -> verified? -> LIVE
+
+Never promote a public reference directly to LIVE.
+
+1. OPENAI
+---------
+Verified official model names from the OpenAI model documentation:
+
+- gpt-5.6
+- gpt-5.6-sol
+- gpt-5.6-terra
+- gpt-5.6-luna
+
+Note:
+Do not invent "gpt-6" as a live Forge model unless an official provider
+source publishes that exact model ID and Forge discovers/verifies it.
+
+2. ANTHROPIC / CLAUDE
+---------------------
+Current public API names listed by Anthropic include:
+
+- claude-fable-5
+- claude-opus-5
+- claude-opus-4-8
+- claude-opus-4-7
+- claude-opus-4-6
+- claude-opus-4-5-20251101
+- claude-sonnet-5
+- claude-sonnet-4-6
+- claude-sonnet-4-5-20250929
+- claude-haiku-4-5-20251001
+
+3. GOOGLE GEMINI
+----------------
+Current Google Gemini API documentation includes:
+
+- gemini-3.8-flash
+- gemini-3.8-live
+- gemini-3.8-live-extended-thinking
+- gemini-3.7-flash
+- gemini-3.6-flash
+- gemini-3.5-flash
+- gemini-3.5-flash-lite
+- gemini-3.1-pro-preview
+- gemini-3.1-flash-lite
+- gemini-3.1-flash-image
+- gemini-3-pro-image
+- gemini-omni-1.1-flash
+- gemini-3.5-transcribe
+- gemini-3.5-transcribe-live
+- gemini-2.5-pro
+- gemini-embedding-001
+- gemini-robotics-er-2-preview
+- gemini-robotics-er-1.6-preview
+
+4. MISTRAL
+----------
+Current Mistral documentation includes:
+
+- Mistral Medium 3.5
+- Mistral Small 4
+- Mistral Large 3
+- Ministral 3 14B
+- Ministral 3 8B
+- Ministral 3 3B
+- OCR 4.1
+- Voxtral Mini Transcribe 2
+- Voxtral Mini Transcribe Realtime
+- Z.ai GLM 5.2 (third-party model listed by Mistral)
+
+5. DEEPSEEK
+-----------
+Current DeepSeek API documentation includes:
+
+- deepseek-v4-flash
+- deepseek-v4-pro
+
+Legacy names such as deepseek-chat and deepseek-reasoner are documented as
+compatibility/deprecation aliases and should not be treated as new primary
+model entries.
+
+6. XAI / GROK
+-------------
+Current xAI API documentation exposes model discovery through /v1/models and
+currently documents:
+
+- grok-4.6
+
+Forge should use the authenticated xAI model-list API for the complete account-
+specific list rather than hard-coding every available model.
+
+7. COHERE
+---------
+Current Cohere documentation includes:
+
+- command-a-plus-05-2026
+- command-a-03-2025
+- command-r7b-12-2024
+- command-r-plus
+- command-r
+- north-small-translate-1-0
+- north-mini-code-1-0
+- embed-v4.0
+- embed-english-v3.0
+- embed-english-light-v3.0
+- embed-multilingual-v3.0
+- parse-v5.0
+- cohere-transcribe-03-2026
+- cohere-transcribe-arabic-07-2026
+- tiny-aya-global
+- tiny-aya-earth
+- tiny-aya-fire
+- tiny-aya-water
+
+8. HUGGING FACE / OPEN MODELS
+-----------------------------
+Hugging Face contains a very large and continuously changing model registry.
+Forge should NOT copy the entire registry into a static file and call it live.
+Instead, the Hugging Face connector should discover model IDs dynamically.
+
+Examples of concrete public model IDs currently visible include:
+
+- Qwen/Qwen3.5-0.8B
+- Qwen/Qwen3.5-2B
+- Qwen/Qwen3.5-4B
+- Qwen/Qwen3.5-9B
+- Qwen/Qwen3.5-27B
+- Qwen/Qwen3.5-35B-A3B
+- Qwen/Qwen3.5-122B-A10B
+- Qwen/Qwen3.5-397B-A17B
+
+Hugging Face also contains thousands of community fine-tunes, quantizations,
+distillations and derivatives. These should be dynamically discovered and
+verified before Forge marks them available.
+
+9. WHY THIS IS DIFFERENT FROM THE 1000 AGENTS
+----------------------------------------------
+1000 AGENTS = logical specialist workers.
+
+REAL MODEL NAMES = concrete model targets supplied by providers/model hosts.
+
+They are connected through Model Fabric:
+
+1000+ Agent Slots
+       |
+       v
+Agent Routing Requirements
+       |
+       v
+Model Fabric
+       |
+       +--> OpenAI connector ------> gpt-5.6 / gpt-5.6-sol / ...
+       +--> Anthropic connector ---> claude-opus-5 / claude-fable-5 / ...
+       +--> Google connector ------> gemini-3.8-flash / ...
+       +--> Mistral connector -----> Mistral Medium 3.5 / ...
+       +--> DeepSeek connector ----> deepseek-v4-pro / ...
+       +--> xAI connector ---------> grok-4.6 / ...
+       +--> Cohere connector -------> command-a-plus-05-2026 / ...
+       +--> Hugging Face -----------> dynamically discovered open models
+       +--> Ollama -----------------> locally discovered models
+       +--> Other provider connectors
+
+10. RUNTIME DISCOVERY REQUIREMENT
+---------------------------------
+For each provider, Forge should eventually support:
+
+- list models
+- get model metadata
+- capabilities/modality
+- context length
+- maximum output
+- pricing when available
+- availability
+- authentication state
+- quota/rate-limit state
+- health check
+- verification probe where safe
+- deprecation state
+
+Only after these checks should Model Fabric classify a model as configured,
+reachable, verified or LIVE.
+
+11. SOURCE POLICY
+-----------------
+Official provider documentation is preferred for proprietary model names.
+Model registries such as Hugging Face are used for open/community model IDs.
+
+Last researched: 2026-09-17.
