@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,29 +31,34 @@ class TaskStore:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     errors TEXT NOT NULL DEFAULT '',
                     dependencies TEXT NOT NULL DEFAULT '',
-                    lease_id TEXT NOT NULL DEFAULT ''
+                    lease_id TEXT NOT NULL DEFAULT '',
+                    lease_heartbeat REAL NOT NULL DEFAULT 0
                 )
             """)
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
             if "lease_id" not in columns:
                 connection.execute("ALTER TABLE tasks ADD COLUMN lease_id TEXT NOT NULL DEFAULT ''")
+            if "lease_heartbeat" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN lease_heartbeat REAL NOT NULL DEFAULT 0")
 
     def save(self, task: Task) -> None:
         errors = "\n".join(task.errors)
         dependencies = "\n".join(task.dependencies)
+        heartbeat = getattr(task, "lease_heartbeat", 0.0)
         with self._connect() as connection:
             connection.execute("""
-                INSERT INTO tasks (id, description, status, attempts, errors, dependencies, lease_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (id, description, status, attempts, errors, dependencies, lease_id, lease_heartbeat)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     description = excluded.description,
                     status = excluded.status,
                     attempts = excluded.attempts,
                     errors = excluded.errors,
                     dependencies = excluded.dependencies,
-                    lease_id = excluded.lease_id
+                    lease_id = excluded.lease_id,
+                    lease_heartbeat = excluded.lease_heartbeat
             """, (task.id, task.description, task.status.value, task.attempts,
-                  errors, dependencies, task.lease_id))
+                  errors, dependencies, task.lease_id, heartbeat))
 
     def save_all(self, tasks: list[Task]) -> None:
         for task in tasks:
@@ -73,22 +79,64 @@ class TaskStore:
     def claim(self, task_id: str) -> Task | None:
         """Atomically claim a pending task and issue a unique worker lease."""
         lease_id = uuid4().hex
+        heartbeat = time.time()
         with self._connect() as connection:
             cursor = connection.execute("""
                 UPDATE tasks
-                SET status = ?, attempts = attempts + 1, lease_id = ?
+                SET status = ?, attempts = attempts + 1, lease_id = ?, lease_heartbeat = ?
                 WHERE id = ? AND status = ?
-            """, (TaskStatus.RUNNING.value, lease_id, task_id, TaskStatus.PENDING.value))
+            """, (TaskStatus.RUNNING.value, lease_id, heartbeat,
+                  task_id, TaskStatus.PENDING.value))
             if cursor.rowcount == 0:
                 return None
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return self._row_to_task(row) if row is not None else None
 
+    def renew_lease(self, task_id: str, lease_id: str) -> Task | None:
+        """Refresh a lease only when the caller still owns the RUNNING task."""
+        heartbeat = time.time()
+        with self._connect() as connection:
+            cursor = connection.execute("""
+                UPDATE tasks SET lease_heartbeat = ?
+                WHERE id = ? AND status = ? AND lease_id = ?
+            """, (heartbeat, task_id, TaskStatus.RUNNING.value, lease_id))
+            if cursor.rowcount == 0:
+                return None
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(row) if row is not None else None
+
+    def recover_stale_running(self, max_idle_seconds: float) -> list[Task]:
+        """Atomically move only expired RUNNING leases into recovery."""
+        if max_idle_seconds <= 0:
+            raise ValueError("max_idle_seconds must be greater than zero")
+        cutoff = time.time() - max_idle_seconds
+        recovered: list[Task] = []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM tasks WHERE status = ? AND lease_heartbeat > 0 AND lease_heartbeat < ?",
+                (TaskStatus.RUNNING.value, cutoff)).fetchall()
+            for row in rows:
+                cursor = connection.execute("""
+                    UPDATE tasks
+                    SET status = ?, lease_id = '', lease_heartbeat = 0,
+                        errors = CASE WHEN errors = '' THEN ? ELSE errors || char(10) || ? END
+                    WHERE id = ? AND status = ? AND lease_heartbeat < ?
+                """, (TaskStatus.RECOVERY.value,
+                      "Task lease expired and moved to recovery.",
+                      "Task lease expired and moved to recovery.",
+                      row["id"], TaskStatus.RUNNING.value, cutoff))
+                if cursor.rowcount:
+                    recovered_row = connection.execute(
+                        "SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
+                    if recovered_row is not None:
+                        recovered.append(self._row_to_task(recovered_row))
+        return recovered
+
     def complete_if_owner(self, task_id: str, lease_id: str) -> Task | None:
         """Complete only if this worker still owns the task lease."""
         with self._connect() as connection:
             cursor = connection.execute("""
-                UPDATE tasks SET status = ?, lease_id = ''
+                UPDATE tasks SET status = ?, lease_id = '', lease_heartbeat = 0
                 WHERE id = ? AND status = ? AND lease_id = ?
             """, (TaskStatus.COMPLETED.value, task_id, TaskStatus.RUNNING.value, lease_id))
             if cursor.rowcount == 0:
@@ -106,7 +154,7 @@ class TaskStore:
             errors = row["errors"]
             errors = f"{errors}\n{error}" if errors else error
             cursor = connection.execute("""
-                UPDATE tasks SET status = ?, errors = ?, lease_id = ''
+                UPDATE tasks SET status = ?, errors = ?, lease_id = '', lease_heartbeat = 0
                 WHERE id = ? AND status = ? AND lease_id = ?
             """, (TaskStatus.FAILED.value, errors, task_id, TaskStatus.RUNNING.value, lease_id))
             if cursor.rowcount == 0:
@@ -119,7 +167,7 @@ class TaskStore:
         with self._connect() as connection:
             cursor = connection.execute("""
                 UPDATE tasks
-                SET status = ?, lease_id = '',
+                SET status = ?, lease_id = '', lease_heartbeat = 0,
                     errors = CASE WHEN errors = '' THEN ? ELSE errors || char(10) || ? END
                 WHERE id = ? AND status = ?
             """, (TaskStatus.RECOVERY.value,
