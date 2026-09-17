@@ -80,7 +80,7 @@ class _RequestContextMiddleware(BaseHTTPMiddleware):
                 "default-src 'self'; script-src 'self'; style-src 'self'; "
                 "connect-src 'self'; img-src 'self' data:; "
                 "media-src 'self' blob:; base-uri 'self'; form-action 'self'")
-        if not request.url.path.startswith("/api/"):
+        if not request.scope.get("path", "").startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -135,6 +135,12 @@ def create_app(plane: ControlPlane,
     async def lifespan(app: FastAPI):
         app.state.plane.start()
         try:
+            # Reconstruct any staged Run-All missions that were explicitly
+            # left active before a clean/unclean server restart. Sessions are
+            # re-validated inside resume_active; expired sessions are never
+            # executed automatically.
+            from forge.staged.autorun import resume_active
+            resume_active(app.state.plane)
             yield
         finally:
             app.state.plane.stop(wait=False)
