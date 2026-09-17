@@ -1,6 +1,8 @@
 """Restart recovery regressions for A38 orchestration and DAG state."""
 from __future__ import annotations
 
+import threading
+
 from forge.control.control_plane import ControlConfig, ControlPlane
 from forge.core.dag_scheduler import DAGScheduler, DAGSchedulerError
 from helpers_a34 import ScriptedProvider, make_fabric
@@ -83,11 +85,16 @@ def test_active_orchestration_is_requeued_on_plane_restart(tmp_path):
 
     resumed = ControlPlane(config)
     calls = []
-    resumed._execute_orchestration = lambda orchestration_id, chain=False: calls.append(
-        (orchestration_id, chain)
-    )
+    started = threading.Event()
+
+    def fake_execute(orchestration_id, chain=False):
+        calls.append((orchestration_id, chain))
+        started.set()
+
+    resumed._execute_orchestration = fake_execute
     resumed.start()
     try:
+        assert started.wait(timeout=5), "orchestration was not redispatched"
         assert calls == [(record.id, True)]
         recovered = resumed.orchestrations.get(record.id)
         assert recovered is not None
