@@ -20,7 +20,6 @@ _TAG_CAPABILITIES = {
     "audio": "audio",
     "speech-to-text": "speech_to_text",
     "text-to-speech": "text_to_speech",
-    "embeddings": "structured_output",
     "retrieval": "research",
     "research": "research",
 }
@@ -44,16 +43,17 @@ def model_from_oss(
     local: bool = False,
 ) -> Model:
     """Convert a real catalog entry to a Fabric model without claiming liveness."""
+    capabilities = capabilities_for_oss_model(model)
     return Model(
         name=model.model_id,
         provider=runtime_provider,
-        capabilities=capabilities_for_oss_model(model),
+        capabilities=capabilities,
         context_window=4096,
         max_output_tokens=2048,
         free=True,
         local=local,
         available=available,
-        capability_status={capability: "declared" for capability in capabilities_for_oss_model(model)},
+        capability_status={capability: "declared" for capability in capabilities},
         metadata={
             "source": model.source,
             "catalog_status": model.status,
