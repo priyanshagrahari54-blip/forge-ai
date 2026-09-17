@@ -1,9 +1,8 @@
 """Bridge provider/model configuration into explicit runtime state.
 
-This module separates configured from verified/live runtime. It inspects the
-already-constructed provider/model registries; it never reads, prints, or
-persists provider credentials. Verification remains a separate real runtime
-operation owned by ``runtime_verification``.
+Configuration is evidence that an operator supplied a usable configuration;
+it is never evidence that a model is reachable or verified. Verification
+remains a separate real runtime operation.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from forge.models.configured_runtime import ConfiguredRuntime, ConfiguredRuntime
 
 def sync_configured_runtimes(
     fabric: Any,
-    registry: ConfiguredRuntimeRegistry | None = None,
+    registry: ConfiguredRuntimeRegistry = None,
 ) -> ConfiguredRuntimeRegistry:
     """Synchronize configured provider/model pairs from a ModelFabric.
 
@@ -33,8 +32,7 @@ def sync_configured_runtimes(
             model_id = str(getattr(model, "name", "") or "")
             if not model_id:
                 continue
-            key = f"{provider_name}:{model_id}"
-            runtime = target.maybe_get(key)
+            runtime = target.maybe_get(provider_name, model_id)
             if runtime is None:
                 runtime = ConfiguredRuntime(
                     provider=provider_name,
@@ -43,9 +41,10 @@ def sync_configured_runtimes(
                     capabilities=tuple(getattr(model, "capabilities", ()) or ()),
                     metadata={"local": bool(getattr(info, "local", False))},
                 )
-                target.register(key, runtime)
-            if runtime.state.value in {"UNCONFIGURED", "CONFIGURED"}:
-                runtime.set_configured(valid=True, reason="provider and model are registered")
+                target.register(runtime)
+            if runtime.state in {"UNCONFIGURED", "CONFIGURED"}:
+                runtime.set_configured(
+                    valid=True, reason="provider and model are registered")
     return target
 
 
@@ -58,10 +57,11 @@ def _models_for_provider(model_registry: Any, provider_name: str) -> list[Any]:
     names = sorted({
         str(item.get("name", ""))
         for item in snapshot
-        if isinstance(item, dict) and str(item.get("provider", "")) == provider_name
+        if isinstance(item, dict)
+        and str(item.get("provider", "")) == provider_name
         and item.get("name")
     })
-    result: list[Any] = []
+    result = []
     for name in names:
         try:
             result.append(model_registry.get(name))
@@ -72,7 +72,7 @@ def _models_for_provider(model_registry: Any, provider_name: str) -> list[Any]:
 
 def configured_runtime_snapshot(
     fabric: Any,
-    registry: ConfiguredRuntimeRegistry | None = None,
+    registry: ConfiguredRuntimeRegistry = None,
 ) -> dict[str, Any]:
     """Return bounded, secret-free configured-runtime state."""
     return sync_configured_runtimes(fabric, registry).snapshot()
