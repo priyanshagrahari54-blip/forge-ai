@@ -96,13 +96,7 @@ class TaskStore:
         return [self._row_to_task(row) for row in rows]
 
     def claim(self, task_id: str) -> Task | None:
-        """Atomically claim a pending task for one worker.
-
-        The conditional UPDATE is the cross-process ownership boundary: if
-        another worker has already claimed the task, this call returns None
-        and the caller must choose another candidate. Attempts are incremented
-        only by the worker that wins the claim.
-        """
+        """Atomically claim a pending task for one worker."""
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -114,6 +108,42 @@ class TaskStore:
                     TaskStatus.RUNNING.value,
                     task_id,
                     TaskStatus.PENDING.value,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+
+        return self._row_to_task(row) if row is not None else None
+
+    def recover_running(self, task_id: str) -> Task | None:
+        """Atomically move one interrupted RUNNING task into RECOVERY.
+
+        Only the process that changes RUNNING -> RECOVERY owns the recovery
+        transition. A second recovery worker sees zero affected rows and
+        cannot append a duplicate interruption marker.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?,
+                    errors = CASE
+                        WHEN errors = '' THEN ?
+                        ELSE errors || char(10) || ?
+                    END
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    TaskStatus.RECOVERY.value,
+                    "Task interrupted and moved to recovery.",
+                    "Task interrupted and moved to recovery.",
+                    task_id,
+                    TaskStatus.RUNNING.value,
                 ),
             )
             if cursor.rowcount == 0:
