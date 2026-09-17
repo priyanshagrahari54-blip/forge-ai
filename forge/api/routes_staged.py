@@ -22,7 +22,11 @@ from forge.api.schemas import (
     StagedStagesAddRequest,
 )
 from forge.control.control_plane import ControlPlane
-from forge.staged.autorun import start as start_autorun, status as autorun_status
+from forge.staged.autorun import (
+    forget as forget_autorun,
+    start as start_autorun,
+    status as autorun_status,
+)
 from forge.staged.service import StagedBuilds
 
 router = APIRouter()
@@ -122,7 +126,8 @@ async def run_all(build_id: str, body: Optional[StagedRunRequest] = None,
 
     The browser is not part of the execution lifecycle. Closing the tab does
     not cancel the runner; each stage is started only after the previous one
-    has reached verified completion.
+    has reached verified completion. The runner intent is persisted so an
+    active mission can be reconstructed after a Forge Server restart.
     """
     return start_autorun(
         plane, current.session, build_id,
@@ -134,6 +139,15 @@ async def run_all_status(build_id: str,
                          current: Authed = Depends(authed),
                          plane: ControlPlane = Depends(get_plane)):
     return autorun_status(plane, current.session, build_id)
+
+
+@router.post("/builds/{build_id}/run-all/forget",
+             dependencies=[rate_limit("task_create")])
+async def run_all_forget(build_id: str,
+                         current: Authed = Depends(authed_mutation),
+                         plane: ControlPlane = Depends(get_plane)):
+    """Clear persistent Run-All restart intent without killing live work."""
+    return forget_autorun(plane, current.session, build_id)
 
 
 @router.post("/builds/{build_id}/stages/{position}/run",
