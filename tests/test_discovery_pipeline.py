@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import List
 
 from forge.models.discovery_pipeline import RealModelDiscoveryPipeline
 from forge.models.oss_registry import OSSModel
@@ -6,7 +7,7 @@ from forge.models.registry import ModelRegistry
 from forge.models.runtime_verification import RuntimeProbeResult
 
 
-def _inventory() -> list[OSSModel]:
+def _inventory() -> List[OSSModel]:
     return [
         OSSModel("org/model-a", "org", "huggingface", tags=("coding",)),
         OSSModel("org/model-b", "org", "huggingface", tags=("reasoning",)),
