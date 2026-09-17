@@ -1,11 +1,8 @@
-"""Voice command foundation (A33).
+"""Voice command foundation (A33) with safe deterministic query handling.
 
-Voice is just another request source: a :class:`VoiceCommand` is parsed into
-a :class:`VoiceIntent`, evaluated against the normal permission system, and
-approved when policy requires it. Voice can never bypass permissions.
-
-Only deterministic template matching exists here. Real speech recognition,
-wake-word detection, and audio handling are explicitly out of scope.
+Voice remains a policy-gated request source. Informational arithmetic is
+handled locally with an AST allow-list; executable actions still require the
+normal permission system.
 """
 from __future__ import annotations
 
@@ -17,6 +14,7 @@ from forge.security.approvals import ApprovalRequest, ApprovalStore, enforce_wit
 from forge.security.audit import AuditLog
 from forge.security.policy import PermissionPolicy, PermissionRequest, Resource
 from forge.security.policy_gate import PolicyDecision
+from forge.voice.math import MathExpressionError, calculate, format_result
 
 
 @dataclass(frozen=True)
@@ -89,6 +87,7 @@ _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (r"commit(?: the)? changes", "commit", ()),
     (r"review (.+)", "review", ("target",)),
     (r"check status", "status", ()),
+    (r"(?:calculate|compute|what is|what's) (.+)", "calculate", ("expression",)),
 )
 
 
@@ -98,15 +97,18 @@ class VoiceInterface:
     def __init__(self, policy: PermissionPolicy | None = None,
                  store: ApprovalStore | None = None,
                  audit: AuditLog | None = None) -> None:
-        # No policy means no authorization: fail closed.
+        # No policy means no authorization: fail closed for actions.
         self.policy = policy if policy is not None else PermissionPolicy()
         self.store = store
         self.audit = audit
 
     def parse(self, command: VoiceCommand) -> VoiceIntent:
-        """Match a command against the deterministic templates."""
+        """Match a command against deterministic templates."""
         text = re.sub(r"^forge[,\s]+", "", command.text.strip().lower())
         text = re.sub(r"[.?!]+$", "", text).strip()
+        # Bare arithmetic is a safe, side-effect-free query.
+        if re.fullmatch(r"[0-9+\-*/%.() ×÷ ]+", text):
+            return VoiceIntent("calculate", {"expression": text}, 1.0, command.text)
         for pattern, name, slots in _TEMPLATES:
             match = re.fullmatch(pattern, text)
             if match:
@@ -143,7 +145,7 @@ class VoiceInterface:
     def handle(self, command: VoiceCommand, *,
                task_factory: Callable[[VoiceIntent], dict[str, Any]] | None = None,
                approval_token_id: str = "") -> VoiceCommandResult:
-        """Parse, authorize, and (when allowed) turn a command into a task."""
+        """Parse, authorize, and execute a safe query or create a task."""
         intent, permission = self.check(command)
         if not intent.known:
             return VoiceCommandResult(False, intent,
@@ -163,6 +165,18 @@ class VoiceInterface:
                 False, intent,
                 permission.reason or "Voice command not permitted.",
                 permission=permission)
+        if intent.name == "calculate":
+            try:
+                value = calculate(intent.slots.get("expression", ""))
+            except MathExpressionError as exc:
+                return VoiceCommandResult(False, intent, str(exc),
+                                          permission=permission)
+            expression = intent.slots.get("expression", "")
+            result = format_result(value)
+            return VoiceCommandResult(
+                True, intent, f"The answer is {result}.",
+                task={"kind": "reply", "text": result,
+                      "expression": expression}, permission=permission)
         factory = task_factory or (lambda item: {
             "id": f"voice-{abs(hash(item.name)) % 10_000:04d}",
             "description": item.raw or item.name,
