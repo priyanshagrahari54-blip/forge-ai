@@ -22,11 +22,13 @@ from forge.api import (
     routes_learning, routes_benchmarks, routes_hardening, routes_observability,
     routes_performance, routes_deployments, routes_backups, routes_plugins,
     routes_autonomy, routes_final, routes_staged, routes_engine,
-    routes_milestones, routes_runtimes, routes_workers,
+    routes_milestones, routes_runtimes, routes_workers, routes_readiness,
 )
 from forge.api.deps import RateLimiter
 from forge.api.errors import error_body, install_handlers
 from forge.control.control_plane import ControlPlane
+from forge.workers.heartbeat_service import WorkerHeartbeatService
+from forge.workers.persistence import WorkerStore
 from forge.workers.registry import WorkerRegistry
 
 
@@ -110,15 +112,27 @@ def create_app(plane: ControlPlane,
             state_path=monitor_path,
         )
         app.state.plane.runtime_monitor.start()
+
+        registry = app.state.plane.worker_registry
+        store = WorkerStore(
+            str(Path(app.state.plane.config.db_path).parent / "workers.db"))
+        app.state.plane.worker_store = store
+        store.restore(registry)
+        heartbeat_service = WorkerHeartbeatService(registry)
+        app.state.plane.worker_heartbeat_service = heartbeat_service
+        heartbeat_service.start()
+
         app.state.plane.start()
         try:
             from forge.staged.autorun import resume_active
             resume_active(app.state.plane)
             yield
         finally:
+            heartbeat_service.stop(wait=True)
             app.state.plane.runtime_monitor.stop(wait=True)
             app.state.plane.stop(wait=False)
             app.state.plane.runtime_monitor = None
+            app.state.plane.worker_heartbeat_service = None
 
     app = FastAPI(title="Forge Cockpit API", version="1.0.0",
                   docs_url="/api/docs", redoc_url="/api/redoc",
@@ -154,7 +168,8 @@ def create_app(plane: ControlPlane,
         routes_deployments.router, routes_backups.router, routes_plugins.router,
         routes_autonomy.router, routes_final.router, routes_staged.router,
         routes_compute.router, routes_engine.router, routes_milestones.router,
-        routes_runtimes.router, routes_workers.router, stream.router,
+        routes_runtimes.router, routes_workers.router, routes_readiness.router,
+        stream.router,
     ):
         app.include_router(router, prefix="/api/v1")
 
