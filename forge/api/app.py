@@ -133,6 +133,10 @@ def create_app(plane: ControlPlane,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Restore durable approvals before any worker/recovery logic can
+        # inspect or wait on approval state left by a previous process.
+        from forge.control.approval_persistence import restore_approval_requests
+        restore_approval_requests(app.state.plane)
         app.state.plane.start()
         try:
             # Reconstruct any staged Run-All missions that were explicitly
