@@ -1670,6 +1670,9 @@ class ControlPlane:
                           "changes.",
         "summarize": "Summarize {target}.",
         "review": "Review {target} and report findings.",
+        "send_email": "Send an email as requested in the voice message.",
+        "send_whatsapp": "Send a WhatsApp message as requested in the voice message.",
+        "make_call": "Place a phone call as requested in the voice message.",
     }
 
     def _voice_stack(self) -> Any:
