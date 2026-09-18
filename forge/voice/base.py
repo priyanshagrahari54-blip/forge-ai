@@ -79,15 +79,23 @@ class VoiceCommandResult:
         }
 
 
-#: Deterministic command templates: (pattern, intent, slot names).
+#: Natural-language command templates.  Voice is intentionally
+#: tolerant about conversational phrasing while execution remains
+#: permission-gated.  Each entry is (pattern, intent, slot names).
 _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (r"update the website", "update_website", ()),
-    (r"summarize (.+)", "summarize", ("target",)),
-    (r"run (?:the )?tests", "run_tests", ()),
-    (r"commit(?: the)? changes", "commit", ()),
-    (r"review (.+)", "review", ("target",)),
-    (r"check status", "status", ()),
+    (r"(?:hey )?forge(?:,)? (?:update|change|modify) (?:the )?website", "update_website", ()),
+    (r"(?:please )?(?:summarize|summary of|give me a summary of) (.+)", "summarize", ("target",)),
+    (r"(?:please )?(?:run|execute) (?:the )?(?:full )?tests?(?: suite)?", "run_tests", ()),
+    (r"(?:please )?(?:commit|save) (?:the )?(?:current )?changes", "commit", ()),
+    (r"(?:please )?(?:review|check) (.+)", "review", ("target",)),
+    (r"(?:what(?:'s| is) )?(?:the )?status|how(?:'s| is) (?:forge|the project) doing", "status", ()),
+    (r"(?:help|what can you do|what can forge do|show me what you can do)", "help", ()),
+    (r"(?:hello|hi|hey|good morning|good afternoon|good evening)(?: forge)?", "greeting", ()),
+    (r"(?:cancel|never mind|forget it)", "cancel", ()),
     (r"(?:calculate|compute|what is|what's) (.+)", "calculate", ("expression",)),
+    (r"(?:send|write|draft) (?:an )?email(?: to)? (.+)", "send_email", ("target",)),
+    (r"(?:send|message) (?:a )?(?:whatsapp|whats app)(?: message)?(?: to)? (.+)", "send_whatsapp", ("target",)),
+    (r"(?:call|phone) (.+)", "make_call", ("target",)),
 )
 
 
@@ -149,7 +157,7 @@ class VoiceInterface:
         intent, permission = self.check(command)
         if not intent.known:
             return VoiceCommandResult(False, intent,
-                                      "Unknown voice command; no action taken.",
+                                      "I heard you, but I need a little more detail to know what you want me to do.",
                                       permission=permission)
         if permission.decision == PolicyDecision.REQUIRE_APPROVAL and approval_token_id:
             probe = PermissionRequest(
@@ -165,6 +173,17 @@ class VoiceInterface:
                 False, intent,
                 permission.reason or "Voice command not permitted.",
                 permission=permission)
+        if intent.name in ("greeting", "help", "cancel"):
+            replies = {
+                "greeting": "Hi! I’m Forge. I’m listening. Tell me what you want to do.",
+                "help": "You can talk naturally. Ask me to run tests, review or update the project, check status, or ask a question.",
+                "cancel": "Okay, cancelled. Nothing was executed.",
+            }
+            return VoiceCommandResult(
+                True, intent, replies[intent.name],
+                task={"kind": "reply", "text": replies[intent.name]},
+                permission=permission)
+
         if intent.name == "calculate":
             try:
                 value = calculate(intent.slots.get("expression", ""))
