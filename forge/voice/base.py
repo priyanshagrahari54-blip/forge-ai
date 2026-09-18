@@ -98,6 +98,16 @@ _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (r"(?:call|phone) (.+)", "make_call", ("target",)),
     # Common Hindi / Hinglish speech-recognition variants.
     (r"(?:namaste|namaskar|pranam)(?: forge)?", "greeting", ()),
+    # Devanagari output from hi-IN browser speech recognition.
+    (r"(?:हेलो|हैलो|नमस्ते|नमस्कार)(?: फोर्ज| फोर्स)?", "greeting", ()),
+    (r"(?:हेलो|हैलो|नमस्ते|नमस्कार)(?: फोर्ज| फोर्स)? (?:क्या हाल-चाल|क्या हाल चाल|कैसे हो|कैसा चल रहा है)", "how_are_you", ()),
+    (r"(?:क्या हाल-चाल|क्या हाल चाल|कैसे हो|कैसा चल रहा है)(?: फोर्ज| फोर्स)?", "how_are_you", ()),
+    (r"(?:तुम कौन हो|आप कौन हो|तुम क्या कर रहे हो|आप क्या कर रहे हो)", "identity", ()),
+    (r"(?:तुम क्या कर सकते हो|आप क्या कर सकते हो|मैं क्या बोलूँ|मुझे बताओ क्या कर सकते हो)", "help", ()),
+    (r"(?:स्टेटस बताओ|प्रोजेक्ट का स्टेटस बताओ|फोर्ज का स्टेटस बताओ)", "status", ()),
+    (r"(?:टेस्ट चलाओ|टेस्ट रन करो)", "run_tests", ()),
+    (r"(?:कोड रिव्यू करो|कोड को रिव्यू करो)", "review", ("target",)),
+    (r"(?:वेबसाइट अपडेट करो|वेबसाइट को अपडेट करो|वेबसाइट बदलो|वेबसाइट चेंज करो)", "update_website", ()),
     (r"(?:kaise ho|kaisa ho|kya haal hai|kaise chal raha hai)(?: forge)?", "how_are_you", ()),
     (r"(?:tum kaun ho|aap kaun ho|who are you)(?: forge)?", "identity", ()),
     (r"(?:tum kya kar rahe ho|aap kya kar rahe ho|what are you doing)(?: forge)?", "activity", ()),
@@ -124,7 +134,7 @@ class VoiceInterface:
     def parse(self, command: VoiceCommand) -> VoiceIntent:
         """Match a command against deterministic templates."""
         text = re.sub(r"^forge[,\s]+", "", command.text.strip().lower())
-        text = re.sub(r"[.?!]+$", "", text).strip()
+        text = re.sub(r"[.?!।]+$", "", text).strip()
         # Bare arithmetic is a safe, side-effect-free query.
         if re.fullmatch(r"[0-9+\-*/%.() ×÷ ]+", text):
             return VoiceIntent("calculate", {"expression": text}, 1.0, command.text)
