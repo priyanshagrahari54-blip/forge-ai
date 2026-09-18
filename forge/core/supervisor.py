@@ -294,6 +294,13 @@ class Supervisor:
                 AgentRegistration("tester", "testing", TesterAgent(str(self.root)), ("testing",)),
                 AgentRegistration("security", "security", build_security_executor(str(self.root)), ("security",)),
             ])
+            # Add the lightweight 1,000+ specialist fleet. These are logical
+            # agents sharing the same ModelFabric; no 1,000 model processes
+            # are spawned. Core safety-critical agents above remain canonical.
+            if fabric is not None:
+                from forge.agents.frontier_fleet import extend_registry_with_frontier_fleet
+                extend_registry_with_frontier_fleet(registry, fabric, minimum_size=1000)
+                event("frontier_fleet_ready", {"registered_agents": len(registry), "logical_fleet": True})
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
