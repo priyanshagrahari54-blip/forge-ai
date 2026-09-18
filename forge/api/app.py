@@ -125,9 +125,16 @@ def create_app(plane: ControlPlane,
         app.state.plane.start()
         try:
             from forge.staged.autorun import resume_active
+            from forge.staged.scheduler import start_scheduler
             resume_active(app.state.plane)
+            scheduler = start_scheduler(app.state.plane)
+            app.state.plane.stage_scheduler = scheduler
             yield
         finally:
+            scheduler = getattr(app.state.plane, "stage_scheduler", None)
+            if scheduler is not None:
+                scheduler.stop(wait=True)
+                app.state.plane.stage_scheduler = None
             heartbeat_service.stop(wait=True)
             app.state.plane.runtime_monitor.stop(wait=True)
             app.state.plane.stop(wait=False)
@@ -138,6 +145,22 @@ def create_app(plane: ControlPlane,
                   docs_url="/api/docs", redoc_url="/api/redoc",
                   openapi_url="/api/openapi.json", lifespan=lifespan)
     app.state.plane = plane
+
+    @app.post("/internal/scheduler-tick")
+    async def internal_scheduler_tick(request: Request):
+        """Authenticated server-to-server wake-up for the five-minute watchdog."""
+        import os
+        expected = os.environ.get("FORGE_SCHEDULER_KEY", "").strip()
+        supplied = request.headers.get("x-forge-scheduler-key", "").strip()
+        if not expected or supplied != expected:
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        scheduler = getattr(request.app.state.plane, "stage_scheduler", None)
+        if scheduler is None:
+            from forge.staged.scheduler import start_scheduler
+            scheduler = start_scheduler(request.app.state.plane)
+            request.app.state.plane.stage_scheduler = scheduler
+        return scheduler.tick()
+
     app.state.limiter = RateLimiter()
     app.state.secure_cookies = config.secure_cookies
     if getattr(plane, "worker_registry", None) is None:
