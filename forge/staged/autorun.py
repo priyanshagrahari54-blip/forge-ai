@@ -19,7 +19,6 @@ from typing import Any, Dict
 from forge.staged.models import StageStatus
 from forge.staged.service import StagedBuilds
 
-DEFAULT_STAGE_COOLDOWN_SECONDS = 300.0
 _LOCK_ATTR = "_forge_city_autorun_lock"
 _RUNS_ATTR = "_forge_city_autoruns"
 _TABLE_READY_ATTR = "_forge_city_autorun_table_ready"
@@ -191,11 +190,6 @@ def _notify_complete(plane: Any, session: Any, build_id: str, board: Dict[str, A
 def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
     service = StagedBuilds(plane)
     key = _key(session, build_id)
-    cooldown = max(
-        0.0,
-        float(getattr(plane.config, "stage_cooldown_seconds",
-                     DEFAULT_STAGE_COOLDOWN_SECONDS)),
-    )
     try:
         while True:
             board = service.get_board(session, build_id)
@@ -216,23 +210,6 @@ def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
             if current_stage and current_stage.get("status") == StageStatus.RUNNING.value:
                 time.sleep(1.0)
                 continue
-
-            # The previous stage is verified/passed here. Wait five minutes
-            # before advancing, so the server has a stable checkpoint boundary
-            # and the next stage starts automatically without user input.
-            if current_stage and current_stage.get("status") == StageStatus.PASSED.value:
-                time.sleep(cooldown)
-                board = service.get_board(session, build_id)
-                if board.get("all_complete"):
-                    _persist_stop(plane, session, build_id)
-                    _notify_complete(plane, session, build_id, board)
-                    return
-                current = board.get("current_position")
-                current_stage = next(
-                    (item for item in (board.get("stages") or [])
-                     if item.get("position") == current), None)
-                if current_stage and current_stage.get("status") != StageStatus.PASSED.value:
-                    continue
 
             try:
                 service.run_next(session, build_id, mode=mode)
