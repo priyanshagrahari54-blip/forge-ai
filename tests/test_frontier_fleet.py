@@ -9,7 +9,11 @@ class _FakeFabric:
 
     def generate(self, request):
         self.calls.append(request)
-        return AgentResponse(success=True, output="ok", agent="fake")
+        return type(
+            "Response",
+            (),
+            {"success": True, "text": "ok", "model": "fake-model", "provider": "fake", "metadata": {}},
+        )()
 
 
 def test_frontier_fleet_registers_1000_plus_executable_specialists():
@@ -30,5 +34,10 @@ def test_frontier_fleet_registers_1000_plus_executable_specialists():
     assert response.success is True
     assert response.output == "ok"
     assert fabric.calls
-    assert fabric.calls[-1].metadata["agent"] == "planner-01-0001"
-    assert fabric.calls[-1].metadata["preferred_model"]
+    request = fabric.calls[-1]
+    assert request.metadata["agent"] == "planner-01-0001"
+    assert request.metadata["fleet"] == "frontier-1000-plus"
+    assert request.capability == "planning"
+    assert request.required_capabilities == ("planning", "reasoning")
+    assert request.caller == "frontier-agent:planner-01-0001"
+    assert request.metadata["preferred_model"]
