@@ -96,6 +96,17 @@ _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (r"(?:send|write|draft) (?:an )?email(?: to)? (.+)", "send_email", ("target",)),
     (r"(?:send|message) (?:a )?(?:whatsapp|whats app)(?: message)?(?: to)? (.+)", "send_whatsapp", ("target",)),
     (r"(?:call|phone) (.+)", "make_call", ("target",)),
+    # Common Hindi / Hinglish speech-recognition variants.
+    (r"(?:namaste|namaskar|pranam)(?: forge)?", "greeting", ()),
+    (r"(?:kaise ho|kaisa ho|kya haal hai|kaise chal raha hai)(?: forge)?", "how_are_you", ()),
+    (r"(?:tum kaun ho|aap kaun ho|who are you)(?: forge)?", "identity", ()),
+    (r"(?:tum kya kar rahe ho|aap kya kar rahe ho|what are you doing)(?: forge)?", "activity", ()),
+    (r"(?:kya kar sakte ho|tum kya kar sakte ho|aap kya kar sakte ho|main kya bolu|mujhe batao kya kar sakte ho)", "help", ()),
+    (r"(?:status batao|project ka status batao|forge ka status batao)", "status", ()),
+    (r"(?:tests? chalao|test chalao|tests? run karo)", "run_tests", ()),
+    (r"(?:code review karo|code ko review karo|review karo)", "review", ("target",)),
+    (r"(?:website update karo|website ko update karo|website badlo|website change karo)", "update_website", ()),
+    (r"(?:changes commit karo|changes save karo|commit kar do)", "commit", ()),
 )
 
 
@@ -173,11 +184,14 @@ class VoiceInterface:
                 False, intent,
                 permission.reason or "Voice command not permitted.",
                 permission=permission)
-        if intent.name in ("greeting", "help", "cancel"):
+        if intent.name in ("greeting", "help", "cancel", "how_are_you", "identity", "activity"):
             replies = {
-                "greeting": "Hi! I’m Forge. I’m listening. Tell me what you want to do.",
-                "help": "You can talk naturally. Ask me to run tests, review or update the project, check status, or ask a question.",
+                "greeting": "Hi! I’m Forge. I’m listening. Tell me naturally what you want to do.",
+                "help": "You can talk naturally. Ask me to run tests, review or update the project, check status, calculate something, or ask me a question.",
                 "cancel": "Okay, cancelled. Nothing was executed.",
+                "how_are_you": "I’m doing well and I’m ready to work. Tell me what you want me to do.",
+                "identity": "I’m Forge, your server-side AI system. I can understand requests, route work to specialist agents, and execute approved tasks.",
+                "activity": "I’m ready and listening. Give me a task or ask me a question.",
             }
             return VoiceCommandResult(
                 True, intent, replies[intent.name],
