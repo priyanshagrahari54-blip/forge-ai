@@ -52,7 +52,6 @@ class Model:
                 raise ValueError(
                     f"Model {self.name!r} records status for unknown capability {capability!r}"
                 )
-        # Pre-compute set of capabilities for O(1) set operations during routing.
         self._capabilities_set = set(self.capabilities)
 
     def capability_status_for(self, capability: str) -> str:
@@ -160,7 +159,6 @@ class ModelRegistry:
 
     def __init__(self, models: Iterable[Model] | None = None) -> None:
         self._models: dict[str, Model] = {}
-        # Fast capability-to-model-name index for O(1) capability set lookups
         self._capability_index: dict[str, set[str]] = {}
         for model in models or ():
             self.register(model)
@@ -222,7 +220,7 @@ class ModelRegistry:
     def by_capability(self, capability: str) -> list[Model]:
         names = self._capability_index.get(capability, set())
         return sorted(
-            (self._models[name] for name in names),
+            (self._models[name] for name in names if name in self._models),
             key=lambda model: model.name,
         )
 
@@ -233,7 +231,7 @@ class ModelRegistry:
         sets = [self._capability_index.get(cap, set()) for cap in required]
         common = set.intersection(*sets) if sets else set()
         return sorted(
-            (self._models[name] for name in common),
+            (self._models[name] for name in common if name in self._models),
             key=lambda model: model.name,
         )
 
