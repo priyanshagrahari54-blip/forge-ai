@@ -133,8 +133,23 @@ class VoiceInterface:
 
     def parse(self, command: VoiceCommand) -> VoiceIntent:
         """Match a command against deterministic templates."""
-        text = re.sub(r"^forge[,\s]+", "", command.text.strip().lower())
+        text = command.text.strip().lower()
+        # Speech recognition can emit commas/dashes/dandas and inconsistent
+        # whitespace. Normalize those before deterministic intent matching.
+        text = re.sub(r"[，,]+", " ", text)
+        text = re.sub(r"[–—−]", "-", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"^(?:forge|फोर्ज|फोर्स)[,\s]+", "", text).strip()
         text = re.sub(r"[.?!।]+$", "", text).strip()
+        # Common Hindi conversational speech should not depend on one exact
+        # transcription variant. Keep this deterministic and side-effect free.
+        if (
+            re.search(r"(?:हेलो|हैलो|नमस्ते|नमस्कार)", text)
+            and re.search(r"(?:क्या हाल(?:-?चाल)?|कैसे हो|कैसा चल रहा है)", text)
+        ) or re.fullmatch(r"(?:क्या हाल(?:-?चाल)?|कैसे हो|कैसा चल रहा है)", text):
+            return VoiceIntent("how_are_you", {}, 1.0, command.text)
+        if re.search(r"(?:तुम कौन हो|आप कौन हो)", text):
+            return VoiceIntent("identity", {}, 1.0, command.text)
         # Bare arithmetic is a safe, side-effect-free query.
         if re.fullmatch(r"[0-9+\-*/%.() ×÷ ]+", text):
             return VoiceIntent("calculate", {"expression": text}, 1.0, command.text)
