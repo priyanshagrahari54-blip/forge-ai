@@ -101,6 +101,16 @@
     speaking = true;
     status("Speaking · Microphone paused");
     const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
+    utterance.lang = recognitionLanguage();
+    utterance.rate = 0.96;
+    utterance.pitch = 1.06;
+    utterance.volume = 1.0;
+    const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
+    const lang = utterance.lang.toLowerCase();
+    const preferred = voices.find(v => String(v.lang || "").toLowerCase() === lang)
+      || voices.find(v => String(v.lang || "").toLowerCase().startsWith(lang.slice(0,2)))
+      || voices.find(v => /female|zira|samantha|google.*english|natural/i.test(String(v.name || "")));
+    if (preferred) utterance.voice = preferred;
     utterance.onend = utterance.onerror = () => { speaking = false; listen(); };
     window.speechSynthesis.speak(utterance);
   }
@@ -124,7 +134,7 @@
         log("System", created.simulation ? "Backend voice intent stack: simulation. Browser transcription is real." : "Backend voice stack connected.");
       }
       const result = await api(`/api/v1/voice/conversations/${encodeURIComponent(conversation)}/say`,
-        {method: "POST", body: {text, confirm: true}});
+        {method: "POST", body: {text, confirm: false}});
       if (version !== generation) return;
       $("hf-api").textContent = "Control plane · connected /api/v1";
       message = result.spoken || "No spoken result returned.";
