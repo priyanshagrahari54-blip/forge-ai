@@ -94,26 +94,69 @@
     };
     try { r.start(); } catch (_) { stop(); status("Could not start microphone. Try again or type a command."); }
   }
-  function reply(text) {
-    log("Forge", text);
-    if (!enabled || !$("hf-sound").checked || !window.speechSynthesis) { listen(); return; }
-    pause();
-    speaking = true;
-    status("Speaking · Microphone paused");
-    const utterance = new SpeechSynthesisUtterance(text.slice(0, 2000));
+  function speakReply(text) {
+    const synth = window.speechSynthesis;
+    if (!synth) throw new Error("Browser text-to-speech is unavailable.");
+    const utterance = new SpeechSynthesisUtterance(String(text || "").slice(0, 2000));
     utterance.lang = recognitionLanguage();
     utterance.rate = 0.96;
     utterance.pitch = 1.06;
     utterance.volume = 1.0;
-    const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
-    const lang = utterance.lang.toLowerCase();
-    const preferred = voices.find(v => String(v.lang || "").toLowerCase() === lang)
-      || voices.find(v => String(v.lang || "").toLowerCase().startsWith(lang.slice(0,2)))
-      || voices.find(v => /female|zira|samantha|google.*english|natural/i.test(String(v.name || "")));
-    if (preferred) utterance.voice = preferred;
-    utterance.onend = utterance.onerror = () => { speaking = false; listen(); };
-    window.speechSynthesis.speak(utterance);
+    const pickVoice = () => {
+      const voices = synth.getVoices ? synth.getVoices() : [];
+      const lang = utterance.lang.toLowerCase();
+      const preferred = voices.find(v => String(v.lang || "").toLowerCase() === lang)
+        || voices.find(v => String(v.lang || "").toLowerCase().startsWith(lang.slice(0, 2)))
+        || voices.find(v => /natural|neural|google|microsoft|zira|samantha/i.test(String(v.name || "")));
+      if (preferred) utterance.voice = preferred;
+    };
+    pickVoice();
+    // Chrome often populates the voice list asynchronously.
+    if (!utterance.voice && synth.addEventListener) {
+      const refresh = () => { pickVoice(); synth.removeEventListener("voiceschanged", refresh); };
+      synth.addEventListener("voiceschanged", refresh, { once: true });
+    }
+    return new Promise((resolve, reject) => {
+      utterance.onstart = () => {
+        speaking = true;
+        status("Speaking · Microphone paused");
+      };
+      utterance.onend = () => { speaking = false; resolve(); };
+      utterance.onerror = event => {
+        speaking = false;
+        reject(new Error("Browser speech synthesis failed: " + (event.error || "unknown error")));
+      };
+      synth.cancel();
+      synth.speak(utterance);
+      // Some Chromium builds need one event-loop turn after cancel().
+      setTimeout(() => {
+        if (!synth.speaking && !synth.pending) {
+          try { synth.speak(utterance); } catch (_) {}
+        }
+      }, 120);
+    });
   }
+
+  async function reply(text) {
+    log("Forge", text);
+    const sound = $("hf-sound");
+    if (!enabled || !sound || !sound.checked) {
+      if (enabled) status("Reply received · Spoken replies are off");
+      listen();
+      return;
+    }
+    pause();
+    try {
+      await speakReply(text);
+    } catch (err) {
+      status(err.message + " · Reply is visible in the transcript");
+      log("System", err.message);
+    } finally {
+      speaking = false;
+      if (enabled) listen();
+    }
+  }
+
   async function submit(text) {
     syncSession();
     if (/^stop listening[.!?]?$/i.test(text)) { stop(); return; }
