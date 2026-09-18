@@ -1,0 +1,23 @@
+name: Forge five-minute heartbeat
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake Forge server
+        run: |
+          python - <<'PY'
+          import urllib.request
+          url = "https://forge-ai-server.onrender.com/ping"
+          try:
+              with urllib.request.urlopen(url, timeout=60) as response:
+                  print(response.status, response.read().decode()[:500])
+          except Exception as exc:
+              print("Forge heartbeat:", exc)
+          PY
