@@ -5,8 +5,10 @@ The runner's intent is persisted in the control-plane SQLite database so a
 server restart can reconstruct the runner when its session is still active.
 The actual stage work still runs through the existing ControlPlane pipeline;
 this module only advances the next stage after the previous stage is verified.
-It deliberately stops on a failed stage so a bad stage cannot cause the
-remaining stages to run blindly.
+
+Ordinary stages auto-advance after a configurable cooldown (five minutes by
+default). Completion notification is best-effort and never changes execution
+success/failure.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from typing import Any, Dict
 from forge.staged.models import StageStatus
 from forge.staged.service import StagedBuilds
 
-
+DEFAULT_STAGE_COOLDOWN_SECONDS = 300.0
 _LOCK_ATTR = "_forge_city_autorun_lock"
 _RUNS_ATTR = "_forge_city_autoruns"
 _TABLE_READY_ATTR = "_forge_city_autorun_table_ready"
@@ -125,9 +127,6 @@ def resume_active(plane: Any) -> Dict[str, Any]:
     """Reconstruct persisted autorunners whose sessions are still active."""
     from forge.control.checkpoint_recovery import restore_available_checkpoints
 
-    # Restore rollback material before any resumed stage can create or consume
-    # new checkpoints. A missing/tampered snapshot is marked unavailable and
-    # never loaded as an arbitrary filesystem path.
     restore_available_checkpoints(plane)
     _ensure_store(plane)
     rows = plane._db.query(
@@ -154,8 +153,6 @@ def resume_active(plane: Any) -> Dict[str, Any]:
             if result.get("started") or result.get("status") == "already_running":
                 resumed.append(row["build_id"])
         except Exception:
-            # Keep the intent durable. Invalid project/build/session state is
-            # never executed blindly and can be surfaced for manual recovery.
             skipped.append(row["build_id"])
     return {"resumed": resumed, "skipped": skipped}
 
@@ -176,14 +173,35 @@ def status(plane: Any, session: Any, build_id: str) -> Dict[str, Any]:
                 "persistent": bool(row and row["active"])}
 
 
+def _notify_complete(plane: Any, session: Any, build_id: str, board: Dict[str, Any]) -> None:
+    """Send an optional completion email without affecting the run."""
+    try:
+        from forge.notifications.email import notify_build_complete
+        notify_build_complete(
+            project_id=session.project_id,
+            build_id=build_id,
+            stages=board.get("stages") or [],
+        )
+    except Exception:
+        # Notification is auxiliary. Never turn a successful build into a
+        # failed build because email configuration is absent or unavailable.
+        return
+
+
 def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
     service = StagedBuilds(plane)
     key = _key(session, build_id)
+    cooldown = max(
+        0.0,
+        float(getattr(plane.config, "stage_cooldown_seconds",
+                     DEFAULT_STAGE_COOLDOWN_SECONDS)),
+    )
     try:
         while True:
             board = service.get_board(session, build_id)
             if board.get("all_complete"):
                 _persist_stop(plane, session, build_id)
+                _notify_complete(plane, session, build_id, board)
                 return
             current = board.get("current_position")
             if current is None:
@@ -198,6 +216,24 @@ def _loop(plane: Any, session: Any, build_id: str, mode: str) -> None:
             if current_stage and current_stage.get("status") == StageStatus.RUNNING.value:
                 time.sleep(1.0)
                 continue
+
+            # The previous stage is verified/passed here. Wait five minutes
+            # before advancing, so the server has a stable checkpoint boundary
+            # and the next stage starts automatically without user input.
+            if current_stage and current_stage.get("status") == StageStatus.PASSED.value:
+                time.sleep(cooldown)
+                board = service.get_board(session, build_id)
+                if board.get("all_complete"):
+                    _persist_stop(plane, session, build_id)
+                    _notify_complete(plane, session, build_id, board)
+                    return
+                current = board.get("current_position")
+                current_stage = next(
+                    (item for item in (board.get("stages") or [])
+                     if item.get("position") == current), None)
+                if current_stage and current_stage.get("status") != StageStatus.PASSED.value:
+                    continue
+
             try:
                 service.run_next(session, build_id, mode=mode)
             except Exception:
