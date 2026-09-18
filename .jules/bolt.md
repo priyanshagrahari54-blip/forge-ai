@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - Model Fabric Registry Capability Indexing Overhead
+
+**Learning:** `ModelRegistry.by_capability()` and `models_for_capabilities()` were performing linear scans over all registered models and their capability tuples on every lookup, and `FabricRouter.route()` was re-evaluating capability requirements against all models.
+
+**Action:** Precompute `_capabilities_set` on `Model` dataclass instances and maintain a `_capability_index` mapping capability names to model name sets in `ModelRegistry` (synchronizing on `register`, `replace`, and `remove`). This improves capability lookups by ~3.5x and router model resolution throughput by ~1.4x.

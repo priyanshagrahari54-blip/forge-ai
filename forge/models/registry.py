@@ -39,6 +39,7 @@ class Model:
     capability_status: dict[str, str] = field(default_factory=dict)
     health: ModelHealth = field(default_factory=ModelHealth)
     metadata: dict[str, Any] = field(default_factory=dict)
+    _capabilities_set: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         for capability in self.capabilities:
@@ -51,6 +52,8 @@ class Model:
                 raise ValueError(
                     f"Model {self.name!r} records status for unknown capability {capability!r}"
                 )
+        # Pre-compute set of capabilities for O(1) set operations during routing.
+        self._capabilities_set = set(self.capabilities)
 
     def capability_status_for(self, capability: str) -> str:
         """Return the verification level for a capability.
@@ -61,10 +64,10 @@ class Model:
         return self.capability_status.get(capability, "declared")
 
     def supports(self, capability: str) -> bool:
-        return capability in self.capabilities
+        return capability in self._capabilities_set
 
     def supports_all(self, capabilities: Iterable[str]) -> bool:
-        return all(capability in self.capabilities for capability in capabilities)
+        return self._capabilities_set.issuperset(capabilities)
 
     # Derived, declarative capability checks. These never hard-code provider
     # assumptions: they read from the model's declared capability tuple.
@@ -157,6 +160,8 @@ class ModelRegistry:
 
     def __init__(self, models: Iterable[Model] | None = None) -> None:
         self._models: dict[str, Model] = {}
+        # Fast capability-to-model-name index for O(1) capability set lookups
+        self._capability_index: dict[str, set[str]] = {}
         for model in models or ():
             self.register(model)
 
@@ -170,12 +175,25 @@ class ModelRegistry:
         if model.name in self._models:
             raise ValueError(f"Model already registered: {model.name}")
         self._models[model.name] = model
+        for capability in model.capabilities:
+            if capability not in self._capability_index:
+                self._capability_index[capability] = set()
+            self._capability_index[capability].add(model.name)
 
     def replace(self, model: Model) -> None:
         """Register or overwrite a model by name."""
         if not model.name or not model.provider:
             raise ValueError("Model name and provider cannot be empty")
+        if model.name in self._models:
+            old_model = self._models[model.name]
+            for capability in old_model.capabilities:
+                if capability in self._capability_index:
+                    self._capability_index[capability].discard(model.name)
         self._models[model.name] = model
+        for capability in model.capabilities:
+            if capability not in self._capability_index:
+                self._capability_index[capability] = set()
+            self._capability_index[capability].add(model.name)
 
     def get(self, name: str) -> Model:
         try:
@@ -186,6 +204,10 @@ class ModelRegistry:
     def remove(self, name: str) -> None:
         if name not in self._models:
             raise KeyError(f"Unknown model: {name}")
+        model = self._models[name]
+        for capability in model.capabilities:
+            if capability in self._capability_index:
+                self._capability_index[capability].discard(name)
         del self._models[name]
 
     def has(self, name: str) -> bool:
@@ -198,15 +220,20 @@ class ModelRegistry:
         return sorted(self._models.values(), key=lambda model: model.name)
 
     def by_capability(self, capability: str) -> list[Model]:
+        names = self._capability_index.get(capability, set())
         return sorted(
-            (model for model in self._models.values() if model.supports(capability)),
+            (self._models[name] for name in names),
             key=lambda model: model.name,
         )
 
     def models_for_capabilities(self, capabilities: Iterable[str]) -> list[Model]:
-        required = tuple(capabilities)
+        required = list(capabilities)
+        if not required:
+            return self.list()
+        sets = [self._capability_index.get(cap, set()) for cap in required]
+        common = set.intersection(*sets) if sets else set()
         return sorted(
-            (model for model in self._models.values() if model.supports_all(required)),
+            (self._models[name] for name in common),
             key=lambda model: model.name,
         )
 
