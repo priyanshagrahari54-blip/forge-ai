@@ -6,8 +6,7 @@ real provider/model can serve many specialists on demand.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.agents.registry import AgentRegistration, AgentRegistry
@@ -79,10 +78,18 @@ SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 class FrontierModelAgentExecutor(AgentExecutor):
     """Routes one specialist persona through the shared ModelFabric."""
 
-    def __init__(self, name: str, role: str, model_name: str, fabric: Any) -> None:
+    def __init__(
+        self,
+        name: str,
+        role: str,
+        model_name: str,
+        capabilities: tuple[str, ...],
+        fabric: Any,
+    ) -> None:
         self.name = name
         self.role = role
         self.model_name = model_name
+        self.capabilities = capabilities
         self.fabric = fabric
 
     def execute(self, request: AgentRequest) -> AgentResponse:
@@ -92,25 +99,43 @@ class FrontierModelAgentExecutor(AgentExecutor):
                 f"{item.path}: {item.content}"
                 for item in getattr(request.context, "items", ())
             )
+
         prompt = request.instructions or request.task.description
         prompt = (
             f"You are Forge specialist {self.name} ({self.role}). "
-            f"Route through the shared ModelFabric. Preferred model: {self.model_name}. "
+            f"Your declared capabilities are: {', '.join(self.capabilities)}. "
+            f"Preferred model target: {self.model_name}. "
+            "Route through the shared ModelFabric. "
             "Do not claim tool execution you did not perform.\n\n"
             + prompt
         )
+
         model_request = ModelRequest(
             prompt=prompt,
             task=self.role,
+            caller=f"frontier-agent:{self.name}",
             context=context,
-            capability="reasoning",
-            metadata={"agent": self.name, "preferred_model": self.model_name},
+            capability=self.capabilities[0],
+            required_capabilities=self.capabilities,
+            complexity=max(1.0, float(getattr(request.task, "attempts", 0) + 1)),
+            metadata={
+                "agent": self.name,
+                "role": self.role,
+                "preferred_model": self.model_name,
+                "fleet": "frontier-1000-plus",
+            },
         )
         response = self.fabric.generate(model_request)
+
         metadata = dict(getattr(response, "metadata", {}) or {})
-        metadata["preferred_model"] = self.model_name
-        metadata["routed_model"] = getattr(response, "model", "")
-        metadata["routed_provider"] = getattr(response, "provider", "")
+        metadata.update({
+            "preferred_model": self.model_name,
+            "routed_model": getattr(response, "model", ""),
+            "routed_provider": getattr(response, "provider", ""),
+            "agent_role": self.role,
+            "agent_capabilities": ",".join(self.capabilities),
+            "fleet": "frontier-1000-plus",
+        })
         return AgentResponse(
             success=bool(getattr(response, "success", False)),
             output=str(getattr(response, "text", "") or ""),
@@ -144,7 +169,9 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
                     AgentRegistration(
                         name,
                         role,
-                        FrontierModelAgentExecutor(name, role, model_name, fabric),
+                        FrontierModelAgentExecutor(
+                            name, role, model_name, tuple(capabilities), fabric
+                        ),
                         tuple(capabilities),
                     )
                 )
