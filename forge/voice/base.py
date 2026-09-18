@@ -143,10 +143,12 @@ class VoiceInterface:
         text = re.sub(r"[.?!।]+$", "", text).strip()
         # Common Hindi conversational speech should not depend on one exact
         # transcription variant. Keep this deterministic and side-effect free.
+        # Hindi conversational matching is keyword-based after normalization,
+        # because browser STT may omit punctuation or split compound words.
         if (
             re.search(r"(?:हेलो|हैलो|नमस्ते|नमस्कार)", text)
-            and re.search(r"(?:क्या हाल(?:-?चाल)?|कैसे हो|कैसा चल रहा है)", text)
-        ) or re.fullmatch(r"(?:क्या हाल(?:-?चाल)?|कैसे हो|कैसा चल रहा है)", text):
+            and re.search(r"(?:हाल|कैसे हो|कैसा चल रहा)", text)
+        ) or re.search(r"(?:^| )(?:क्या हाल|कैसे हो|कैसा चल रहा)(?: |$)", text):
             return VoiceIntent("how_are_you", {}, 1.0, command.text)
         if re.search(r"(?:तुम कौन हो|आप कौन हो)", text):
             return VoiceIntent("identity", {}, 1.0, command.text)
