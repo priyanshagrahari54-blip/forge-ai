@@ -125,16 +125,9 @@ def create_app(plane: ControlPlane,
         app.state.plane.start()
         try:
             from forge.staged.autorun import resume_active
-            from forge.staged.scheduler import start_scheduler
             resume_active(app.state.plane)
-            scheduler = start_scheduler(app.state.plane)
-            app.state.plane.stage_scheduler = scheduler
             yield
         finally:
-            scheduler = getattr(app.state.plane, "stage_scheduler", None)
-            if scheduler is not None:
-                scheduler.stop(wait=True)
-                app.state.plane.stage_scheduler = None
             heartbeat_service.stop(wait=True)
             app.state.plane.runtime_monitor.stop(wait=True)
             app.state.plane.stop(wait=False)
