@@ -2751,9 +2751,95 @@ class ControlPlane:
                 return "I don't have anything remembered for you yet."
             notes = [entry.get("content", "") for entry in entries[:5]]
             return "I remember: " + " | ".join(notes)[:800]
+        # Open-ended speech: deterministic templates are the fast path, but
+        # they are not the only conversational intelligence. When a
+        # runtime-verified live model is attached, it answers — and the reply
+        # carries that provenance. Otherwise the deterministic channel says
+        # honestly that it has no answer, instead of fabricating one.
+        model_reply = self._model_conversation_reply(session, question)
+        if model_reply is not None:
+            return model_reply
         return ("I don't have a real answer for that. I can analyze "
                 "this repository, report task status, and recall what "
                 "you asked me to remember.")
+
+    def _conversationalist(self):
+        """Lazily build the live-model conversation channel (bounded)."""
+        conversationalist = getattr(self, "_model_conversationalist", None)
+        if conversationalist is None:
+            from forge.conversation.model_reply import ModelConversationalist
+            conversationalist = ModelConversationalist(self.fabric)
+            self._model_conversationalist = conversationalist
+        return conversationalist
+
+    def conversation_capability(self) -> dict[str, Any]:
+        """Report which engine will answer open-ended conversation."""
+        try:
+            return self._conversationalist().status()
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"path": "deterministic", "available": False,
+                    "reason": f"conversation status unavailable: {exc}",
+                    "models": [], "last_error": ""}
+
+    def _conversation_state_summary(self, session: Session) -> str:
+        """Real Forge state handed to the conversational model."""
+        lines = [f"project: {session.project_id}",
+                 f"actor: {session.actor}"]
+        try:
+            counts = self.dashboard(session)["tasks"]
+            lines.append(
+                "tasks: %s running, %s waiting for approval, %s failed, "
+                "%s completed" % (counts.get("running", 0),
+                                  counts.get("waiting_approval", 0),
+                                  counts.get("failed", 0),
+                                  counts.get("completed", 0)))
+        except Exception:
+            lines.append("tasks: status unavailable")
+        try:
+            from forge.conversation.model_reply import (
+                live_model_candidates)
+            registered = len(self.fabric.registry.list())
+            live = live_model_candidates(self.fabric)
+            lines.append("models: %d registered, %d runtime-verified live (%s)"
+                         % (registered, len(live),
+                            ", ".join(str(getattr(model, "name", "?"))
+                                      for model in live[:5]) or "none"))
+        except Exception:
+            lines.append("models: status unavailable")
+        return "\n".join(lines)
+
+    def _model_conversation_reply(self, session: Session,
+                                  question: str) -> dict[str, Any] | None:
+        """Answer open-ended speech with a live model, or return None."""
+        conversationalist = self._conversationalist()
+        if not conversationalist.available():
+            return None
+        try:
+            history = self._conversation_engines.get(session.id)
+        except Exception:
+            history = None
+        turns = getattr(history, "history", None) or []
+        try:
+            reply = conversationalist.reply(
+                question, history=turns,
+                state=self._conversation_state_summary(session))
+        except Exception as exc:
+            self._audit(session.actor, "conversation", "model_error", False,
+                        reason=f"{type(exc).__name__}")
+            return None
+        if reply is None:
+            return None
+        self._audit(session.actor, "conversation", "model_reply", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"model={reply.model} provider={reply.provider}")
+        return {
+            "text": reply.text,
+            "engine": f"model:{reply.model}",
+            "model": reply.model,
+            "provider": reply.provider,
+            "live_model": True,
+            "latency_ms": reply.latency_ms,
+        }
 
     def _conversation_remember(self, session: Session,
                                message: str) -> bool:
@@ -5610,14 +5696,16 @@ class ControlPlane:
             session.id, [])
         if len(owned) >= 4:
             raise Conflict("A session may hold at most 4 conversations")
-        conversation = new_conversation(self._voice_stack().voice)
+        conversation = new_conversation(
+            self._voice_stack().voice, self._conversationalist())
         self._voice_conversations[conversation.id] = conversation
         owned.append(conversation.id)
         self._audit(session.actor, "voice", "conversation_start", True,
                     task_id=session.active_task or session.id,
                     reason=f"conversation {conversation.id}")
         return {"conversation_id": conversation.id,
-                "simulation": self._voice_stack().simulation}
+                "simulation": self._voice_stack().simulation,
+                "conversation_path": self.conversation_capability()["path"]}
 
     def _voice_conversation(self, session: Session,
                             conversation_id: str):

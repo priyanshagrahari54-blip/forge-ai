@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from starlette.requests import Request
+
 from forge.capabilities.runtime import runtime_capability_snapshot
 
 
@@ -26,7 +28,10 @@ def install_capability_route(app: Any, *, prefix: str = "/api/v1",
         raise ValueError("require and server_getter callbacks are required")
 
     @app.get(prefix.rstrip("/") + "/capabilities")
-    def capabilities(request: Any) -> Dict[str, Any]:
+    #: ``Request`` (not ``Any``) matters: annotating the parameter as ``Any``
+    #: makes FastAPI treat it as a *required query parameter* named
+    #: ``request``, so the route answered 400 to every real caller.
+    def capabilities(request: Request) -> Dict[str, Any]:
         require(request, "models.status")
         server = server_getter(request)
         fabric = getattr(server, "fabric", None)

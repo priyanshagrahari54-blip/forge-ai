@@ -1,0 +1,100 @@
+{
+  "artifacts": {
+    "directory": ".forge/models/documentation-1789837969",
+    "gguf_adapter": {
+      "bytes": 1851520,
+      "file": "adapter.gguf",
+      "sha256": "6180ee0d5373a5db129249e2b73881ceabc8281bbc1b99d6d4f8083b297455c4"
+    },
+    "safetensors": {
+      "bytes": 1854424,
+      "file": "adapter_model.safetensors",
+      "sha256": "e2ecef3ce07c670f723f4e1ed192b21ac336efd4b345625a7a9178f185cccf65"
+    },
+    "training_report": "training.json"
+  },
+  "command": ".venv/bin/python scripts/finetune_specialists.py --dataset docs/evidence/fleet-real-run-2026-09-19.json --specialization documentation --steps 24",
+  "dataset": {
+    "duplicates_removed": 142,
+    "examples_used": 758,
+    "note": "only real model outputs are used; the 100 capability-blocked specialists contribute nothing because they produced no answer",
+    "rejected": 0,
+    "secret_bearing_rejected": 0,
+    "source": "docs/evidence/fleet-real-run-2026-09-19.json"
+  },
+  "honest_limits": [
+    "A held-out loss of 0.87 on 76 examples is a small-sample signal; the promotion gate (ModelStudio.promote + benchmarks) is the next step before an adapter is treated as an improvement.",
+    "Only attention q/v projections carry adapters (rank 8, 460,800 params): this adapts style and phrasing, not knowledge.",
+    "The base model is 135M parameters. The pipeline is model-size agnostic; a stronger base needs a stronger machine, not a code change."
+  ],
+  "runtime_acceptance": {
+    "forge_generation": {
+      "capability": "documentation",
+      "endpoint": "http://127.0.0.1:8099",
+      "provider": "local-openai",
+      "success": true
+    },
+    "how": "llama-server --model <base>.gguf --lora <adapter.gguf>; the runtime's own GET /lora-adapters response is the evidence",
+    "lora_endpoint_response": [
+      {
+        "id": 0,
+        "path": "/home/user/forge-ai/.forge/models/documentation-1789837969/adapter.gguf",
+        "prompt_prefix": "",
+        "scale": 1.0,
+        "task_name": ""
+      }
+    ]
+  },
+  "training": {
+    "alpha": 16,
+    "base_model": "/home/user/models/SmolLM2-135M-Instruct.Q4_1.gguf",
+    "base_model_sha256": "b179c9523d0e6a0f98a330c7562b682750a6f8c8c15e5bc70ea373728110db53",
+    "final_loss": 0.503,
+    "hardware": "2 vCPU, no GPU (CPU training)",
+    "held_out_loss": 0.8687,
+    "initial_loss": 3.5239,
+    "learning_rate": 0.003,
+    "loss_curve": [
+      {
+        "loss": 2.6249,
+        "step": 1
+      },
+      {
+        "loss": 2.7852,
+        "step": 4
+      },
+      {
+        "loss": 1.0152,
+        "step": 8
+      },
+      {
+        "loss": 0.8918,
+        "step": 12
+      },
+      {
+        "loss": 0.6379,
+        "step": 16
+      },
+      {
+        "loss": 0.7349,
+        "step": 20
+      },
+      {
+        "loss": 0.3009,
+        "step": 24
+      }
+    ],
+    "method": "lora",
+    "rank": 8,
+    "seconds": 47.2,
+    "steps": 24,
+    "targets": [
+      "attn_q",
+      "attn_v"
+    ],
+    "trainable_parameters": 460800,
+    "trainer": "gguf-lora"
+  },
+  "what": "A real LoRA fine-tune of the served GGUF, trained by Forge's own pipeline on Forge's own execution evidence, and loaded by llama.cpp's runtime.",
+  "when_utc": "2026-09-19"
+}

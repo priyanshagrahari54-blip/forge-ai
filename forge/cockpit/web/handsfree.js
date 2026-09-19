@@ -24,15 +24,19 @@
   function stop() {
     enabled = false;
     pause();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    // Playback lives in voice-playback.js so every Forge surface speaks
+    // through one implementation.
+    if (window.ForgeVoicePlayback) window.ForgeVoicePlayback.cancel();
+    else if (window.speechSynthesis) window.speechSynthesis.cancel();
     speaking = false;
     $("hf-toggle").textContent = "Enable hands-free";
     $("hf-toggle").setAttribute("aria-pressed", "false");
     status("Microphone off · Tasks already submitted are not cancelled");
   }
   function recognitionLanguage() {
-    const languages = (navigator.languages || []).map(v => String(v).toLowerCase());
-    const browser = String(navigator.language || "").toLowerCase();
+    const nav = (typeof navigator !== "undefined" && navigator) || window.navigator || {};
+    const languages = (nav.languages || []).map(v => String(v).toLowerCase());
+    const browser = String(nav.language || "").toLowerCase();
     if (languages.some(v => v.startsWith("hi")) || browser.startsWith("hi")) return "hi-IN";
     if (languages.some(v => v === "en-in")) return "en-IN";
     return "en-IN";
@@ -95,45 +99,14 @@
     try { r.start(); } catch (_) { stop(); status("Could not start microphone. Try again or type a command."); }
   }
   function speakReply(text) {
-    const synth = window.speechSynthesis;
-    if (!synth) throw new Error("Browser text-to-speech is unavailable.");
-    const utterance = new SpeechSynthesisUtterance(String(text || "").slice(0, 2000));
-    utterance.lang = recognitionLanguage();
-    utterance.rate = 0.96;
-    utterance.pitch = 1.06;
-    utterance.volume = 1.0;
-    const pickVoice = () => {
-      const voices = synth.getVoices ? synth.getVoices() : [];
-      const lang = utterance.lang.toLowerCase();
-      const preferred = voices.find(v => String(v.lang || "").toLowerCase() === lang)
-        || voices.find(v => String(v.lang || "").toLowerCase().startsWith(lang.slice(0, 2)))
-        || voices.find(v => /natural|neural|google|microsoft|zira|samantha/i.test(String(v.name || "")));
-      if (preferred) utterance.voice = preferred;
-    };
-    pickVoice();
-    // Chrome often populates the voice list asynchronously.
-    if (!utterance.voice && synth.addEventListener) {
-      const refresh = () => { pickVoice(); synth.removeEventListener("voiceschanged", refresh); };
-      synth.addEventListener("voiceschanged", refresh, { once: true });
+    const playback = window.ForgeVoicePlayback;
+    if (!playback || !playback.supported()) {
+      throw new Error("Browser text-to-speech is unavailable.");
     }
-    return new Promise((resolve, reject) => {
-      utterance.onstart = () => {
-        speaking = true;
-        status("Speaking · Microphone paused");
-      };
-      utterance.onend = () => { speaking = false; resolve(); };
-      utterance.onerror = event => {
-        speaking = false;
-        reject(new Error("Browser speech synthesis failed: " + (event.error || "unknown error")));
-      };
-      synth.cancel();
-      synth.speak(utterance);
-      // Some Chromium builds need one event-loop turn after cancel().
-      setTimeout(() => {
-        if (!synth.speaking && !synth.pending) {
-          try { synth.speak(utterance); } catch (_) {}
-        }
-      }, 120);
+    return playback.speak(text, {
+      lang: recognitionLanguage(),
+      onStart: () => { speaking = true; status("Speaking · Microphone paused"); },
+      onEnd: () => { speaking = false; },
     });
   }
 
@@ -176,8 +149,11 @@
         conversation = created.conversation_id;
         log("System", created.simulation ? "Backend voice intent stack: simulation. Browser transcription is real." : "Backend voice stack connected.");
       }
+      // confirm: true keeps the A42 confirm-before-execute contract: the
+      // control plane asks ("Shall I …?"), speaks the question, and only
+      // acts on the next affirmative utterance.
       const result = await api(`/api/v1/voice/conversations/${encodeURIComponent(conversation)}/say`,
-        {method: "POST", body: {text, confirm: false}});
+        {method: "POST", body: {text, confirm: true}});
       if (version !== generation) return;
       $("hf-api").textContent = "Control plane · connected /api/v1";
       message = result.spoken || "No spoken result returned.";
@@ -233,6 +209,11 @@
     syncSession();
     if (enabled) return stop();
     enabled = true;
+    // Spend the click on speech output: browsers refuse speech synthesis
+    // that was not authorized by a user gesture (autoplay policy).
+    if (window.ForgeVoicePlayback && window.ForgeVoicePlayback.supported()) {
+      window.ForgeVoicePlayback.prime();
+    }
     $("hf-toggle").textContent = "Stop listening";
     $("hf-toggle").setAttribute("aria-pressed", "true");
     listen();

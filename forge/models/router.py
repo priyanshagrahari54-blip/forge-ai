@@ -137,6 +137,19 @@ class RouteDecision:
         }
 
 
+def tier_of(model: Model) -> int:
+    """Declared relative power of a model (0 = undeclared).
+
+    Kept in model metadata rather than as a dataclass field so every existing
+    registry entry keeps its exact shape; unknown or malformed values are
+    treated as undeclared instead of raising mid-route.
+    """
+    try:
+        return int((getattr(model, "metadata", None) or {}).get("tier") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class FabricRouter:
     """Capability/context/complexity-aware router over a ``ModelRegistry``.
 
@@ -247,7 +260,13 @@ class FabricRouter:
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
-            return (-_score, 0 if model.free else 1, 0 if model.local else 1, model.name)
+            #: Declared power comes first: when an operator runs a stronger
+            #: model on their own server, "equally capable" must not silently
+            #: mean "the cheaper one". ``tier`` defaults to 0 for every model
+            #: that does not declare one, so registries without tiers order
+            #: exactly as before.
+            return (-tier_of(model), -_score, 0 if model.free else 1,
+                    0 if model.local else 1, model.name)
 
         scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
         scored.sort(key=rank)
@@ -263,6 +282,7 @@ class FabricRouter:
             chain.extend(entry for _, entry in fallback_scored)
 
         factors = {
+            "tier": tier_of(model),
             "reliability": model.reliability,
             "latency_ms": model.latency_ms,
             "cost_per_token": model.cost_per_token,

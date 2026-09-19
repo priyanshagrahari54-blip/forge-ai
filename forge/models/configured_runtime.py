@@ -100,10 +100,32 @@ class ConfiguredRuntimeRegistry:
         return runtime
 
     def get(self, provider: str, model_id: str = "") -> ConfiguredRuntime:
-        return self._items[self.key(provider, model_id)]
+        resolved = self.resolve_key(provider, model_id)
+        return self._items[resolved]
 
     def maybe_get(self, provider: str, model_id: str = "") -> Optional[ConfiguredRuntime]:
-        return self._items.get(self.key(provider, model_id))
+        return self._items.get(self.resolve_key(provider, model_id))
+
+    @classmethod
+    def resolve_key(cls, provider: str, model_id: str = "") -> str:
+        """Resolve a lookup to a registry key.
+
+        Two call styles are supported and unambiguous:
+
+        * ``resolve_key("fake", "model-a")`` / ``resolve_key("fake")`` — the
+          explicit ``provider``/``model_id`` form, where the empty
+          ``model_id`` addresses the provider-wide entry (``"fake:"``).
+        * ``resolve_key("fake:model-a")`` — the composite form used by the
+          rest of the runtime API (snapshots, logs, API responses). A bare
+          ``provider:model`` string with no explicit ``model_id`` addresses
+          that exact recording.
+
+        A literal key always wins, so nothing that used to resolve stops
+        resolving.
+        """
+        if model_id or ":" not in str(provider):
+            return cls.key(provider, model_id)
+        return str(provider).strip()
 
     def items(self) -> list:
         return [self._items[key] for key in sorted(self._items)]
