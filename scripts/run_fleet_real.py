@@ -35,6 +35,7 @@ from forge.core.task_engine import TaskEngine, TaskStatus         # noqa: E402
 from forge.models.config import FabricConfig                      # noqa: E402
 from forge.models.configured_runtime_bridge import (              # noqa: E402
     sync_configured_runtimes)
+from forge.models.request import ModelRequest                     # noqa: E402
 from forge.models.fabric import ModelFabric                       # noqa: E402
 from forge.models.runtime_monitor_service import (                # noqa: E402
     RuntimeMonitorService)
@@ -104,6 +105,10 @@ def main() -> int:
     print(f"runtime state   : {state}"
           f" (runtime_verified={model.metadata.get('runtime_verified')}, "
           f"probed_this_run={bool(probed)})")
+    if state == "LIVE" and not model.metadata.get("runtime_verified"):
+        print("                  LIVE is the runtime monitor's verdict from a "
+              "real probe of this model id; a runtime still inside its "
+              "verification TTL is not re-probed on every run.")
     if not verified:
         reason = probed[0].get("error") if probed else \
             getattr(runtime, "last_reason", "")
@@ -111,6 +116,25 @@ def main() -> int:
               f"({reason or 'no probe evidence'}); refusing to report "
               f"model work.")
         return 3
+
+    # A probe proves the endpoint lists this model; it does not prove the model
+    # answers. Generate once, before spending a whole fleet run on it.
+    declared = tuple(getattr(model, "capabilities", ()) or ())
+    smoke = fabric.generate(ModelRequest(
+        prompt="Reply with the single word: ready",
+        capability=declared[0] if declared else "",
+        max_output_tokens=16,
+        temperature=0.0,
+        caller="fleet-real-run:smoke",
+    ))
+    smoke_text = str(getattr(smoke, "text", "") or "").strip()
+    if not getattr(smoke, "success", False) or not smoke_text:
+        error = str(getattr(smoke, "error", "") or "empty completion")
+        print(f"BLOCKED: the endpoint does not answer for {args.model} "
+              f"({error}); refusing to report model work.")
+        return 3
+    print(f"smoke generation: {smoke_text[:80]!r} via "
+          f"{getattr(smoke, 'provider', '')}")
 
     registry = build_frontier_fleet(
         fabric, minimum_size=1000, max_output_tokens=args.max_tokens,

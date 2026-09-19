@@ -1,6 +1,6 @@
 # Forge AI — production readiness report
 
-Date: 2026-09-19 · Branch: `arena/01a0b955-forge-ai` (commit `3ad4a27`) · PR #46
+Date: 2026-09-19 · Branch: `arena/01a0b955-forge-ai` (commit `46ae18b`) · PR #46
 
 Everything below was observed in this checkout or against the live service.
 Nothing is claimed from a summary; states are the ones the runtime itself
@@ -17,8 +17,22 @@ reports. Reproduce with the commands in the last section.
 | Live service `/api/v1/health` | `{"status":"ok","auth_mode":"production","worker":true,"projects":1}` — **service is up** |
 | Live service `/city.html` | 200 (already deployed) |
 | Live service `/voice-playback.js` | 404 — **this commit is not deployed yet** |
+| Real model execution | **900/1000 specialists produced real model output** (0 exceptions, 0 empty, 51,047 tokens, 515 s); the other 100 need capabilities no configured model provides. Evidence: `docs/evidence/fleet-real-run-2026-09-19.json` |
 
 ## 2. Implementations
+
+**Real local model path** (`forge/models/local_openai.py`, `docs/SELF-HOSTED-MODEL.md`)
+- A self-hosted OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM,
+  Ollama `/v1`, TGI, LM Studio) can be registered from
+  `FORGE_LOCAL_MODEL_URL` / `FORGE_LOCAL_MODEL_NAME` with no credential; it is
+  registered as CONFIGURED and only the runtime monitor's real `/models` probe
+  moves it to LIVE.
+- `scripts/run_fleet_real.py` executes every registered specialist through the
+  fabric, refuses to report when no runtime-verified model exists, smoke-tests
+  one real generation before starting, and records per-specialist output.
+- Specialist requests carry a bounded output budget and a low temperature, and
+  the model-facing prompt contains the role and the job only — routing
+  metadata stays in the request/result metadata.
 
 **Runtime truth** (`forge/models/runtime_verification.py`,
 `runtime_monitor.py`, `runtime_monitor_service.py`, `configured_runtime*.py`)
@@ -76,9 +90,18 @@ reports. Reproduce with the commands in the last section.
 | `local` (deterministic fallback) | registered, `available=True`, not runtime-verified | fabric snapshot |
 | `ollama` | registered; endpoint unreachable here → capability state **BLOCKED** | fabric snapshot |
 | `openai`, web research | **ARCHITECTURE** — no credential present | capability snapshot |
+| `local-openai` → `SmolLM2-135M-Instruct.Q4_1.gguf` on `127.0.0.1:8080` | **LIVE**, `runtime_verified = True` | real probe of `/models` + real generation; see §4 |
 
-Runtime-verified models: **0** in this environment. The fleet therefore routes
-through the fabric but cannot call a real remote model here.
+No cloud credential exists in this environment, so a real instruct model was
+**self-hosted instead**: llama.cpp `llama-server` serving a 135M-parameter
+instruct GGUF that Forge routes to through the same fabric path a cloud model
+would use (`forge/models/local_openai.py`, configured with
+`FORGE_LOCAL_MODEL_URL` / `FORGE_LOCAL_MODEL_NAME`; no credentials involved).
+Setup and swap instructions: `docs/SELF-HOSTED-MODEL.md`.
+
+This provider is endpoint-agnostic: pointing it at a larger hosted endpoint (or
+setting a cloud credential) changes which model answers, not whether the fleet
+can execute.
 
 ## 4. Registered agents and executed representatives
 
@@ -98,7 +121,7 @@ through the fabric but cannot call a real remote model here.
 | Routable (request is satisfiable)? | **1000/1000** | every specialist's required capabilities are canonical and met by a capability-complete model |
 | Executable end-to-end? | **1000/1000** in 0.09 s | all 1,000 executed through a real `ModelFabric` with a recording provider (1,000 provider calls) |
 | Executable on *this* deployment's fabric? | **900/1000** | the other **100** require `vision`, `audio`, `browser` or `computer_use` (25 each) and no configured model provides those capabilities — they fail loudly, they are never rerouted to a model that cannot do the job |
-| Producing real work right now? | **No** | with no runtime-verified live model, the 900 “successful” calls route to the deterministic `local` stub, whose output is literally *“No safe local synthesis engine is configured”* — provenance says `routed_provider=local`, so this is visible, not hidden |
+| Producing real work right now? | **Yes — 900/1000**, all from a real model | full fleet sweep against the self-hosted instruct model: **900 real outputs, 0 exceptions, 0 empty outputs, 51,047 output tokens, 515 s**, every one routed `provider=local-openai`; artifact `docs/evidence/fleet-real-run-2026-09-19.json` (model SHA-256, per-specialist output, blocked reasons) |
 | Selectable by the planner? | **All 10 requirement capabilities staffed** | coding, testing, debugging, review, security, documentation, research, architecture, performance, git each resolve to a real specialist, and core tool-using agents (coder/debugger/reviewer/tester/security) win ties for their own capabilities |
 | Selectable when a capability is missing? | **Reported, not hidden** | `AgentPlan.unmet` and the `agents_selected` event carry `unmet_capabilities` |
 
@@ -121,6 +144,50 @@ Representatives: **40/40** (one per specialization) routed through a real
 `ModelFabric` with an in-process **SIMULATED** provider — plumbing proven, not
 a live remote model call.
 
+### Observed real execution (2026-09-19)
+
+Command (reproducible; the harness refuses to report when no runtime-verified
+model exists):
+
+```
+FORGE_LOCAL_MODEL_URL=http://127.0.0.1:8080 \
+FORGE_LOCAL_MODEL_NAME=SmolLM2-135M-Instruct.Q4_1.gguf \
+.venv/bin/python scripts/run_fleet_real.py --workers 2 --max-tokens 64 \
+    --temperature 0.2 --out /tmp/fleet-real-run2.json
+```
+
+| Measurement | Result |
+| --- | --- |
+| Specialists executed | **1000/1000** |
+| Real model outputs | **900**, `provider=local-openai`, 0 exceptions, 0 empty |
+| Output tokens generated | **51,047** |
+| Wall time | **515 s** on 2 vCPU |
+| Roles covered | 36 of the 40 roles produced output; the other 4 (vision, audio, browser, computer-use) are the blocked ones |
+| Correctly refused | **100** = `audio` 25, `browser` 25, `computer_use` 25, `vision` 25 — each with a real error (`no registered model supports capabilities ['audio']`) |
+| Output quality | fluent English that addresses the brief; **21.3 %** of answers fall into repetition or a generic “ready to assist” (measured, not hidden) |
+
+Every specialist receives the same brief (a production-readiness scenario) and
+answers as its own specialization; two representative outputs per role are
+recorded in the evidence artifact.
+
+Two defects found by actually running it, both fixed:
+
+1. **No output budget.** Each of the 1,000 calls let the runtime generate to its
+   own ceiling (512 tokens) — the sweep was going to take hours. Requests now
+   carry `DEFAULT_MAX_OUTPUT_TOKENS` (512, overridable, floor 16) and a
+   deterministic-by-default temperature (0.2; greedy collapsed to one repeated
+   phrase on this model).
+2. **Routing metadata was addressed to the model.** The rendered constraint
+   block (`required capabilities: coding`, `maximum output tokens: 48`,
+   `prefer local provider`) plus `Route through the shared ModelFabric` and
+   `Preferred model target: …` dominated the prompt, and the model echoed it
+   instead of answering — e.g. `orchestration-01-0038` before →
+   *“CONSTRAINTS defined capabilities: planning maximum output tokens: 48”*,
+   after → *“To create a web service that can handle ten times its current
+   traffic, I would take the following steps: …”*. Limits now travel in the
+   API's native fields, the block is recorded in the result metadata (not
+   silently dropped), and the model-facing prompt is the role and the job.
+
 ## 5. Background execution and persistence
 
 - Worker identity and capabilities survive a restart; restored workers are
@@ -133,22 +200,32 @@ a live remote model call.
 
 ## 6. Blocked external dependencies
 
-**1. Real model execution** — BLOCKED (this is why the 900 “executing”
-specialists still produce no real work)
-- *Reason*: no provider credential or reachable model endpoint exists in this
-  environment.
+**1. Cloud model credential on the deployed service** — BLOCKED (locally
+resolved by self-hosting a real model)
+- *Reason*: no provider credential exists in this environment. This is no
+  longer a blocker for real execution — a real instruct model was self-hosted
+  and Forge routes to it (`local-openai`, LIVE, `runtime_verified = True`) — but
+  the **deployed** Render service has no model endpoint of its own, so it still
+  answers from the deterministic stub until one is configured there.
 - *Already implemented*: ModelFabric routing, capability matching, runtime
-  verification gate, failover chain, provenance on every result.
-- *Exact requirement*: set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, or a
-  reachable `OLLAMA_BASE_URL`, then re-run
-  `scripts/verify_production_readiness.py`; the state flips from CONFIGURED to
-  LIVE only when a model is runtime-verified.
+  verification gate, failover chain, provenance on every result, and the
+  endpoint-agnostic `local-openai` provider.
+- *Exact requirement*: set `FORGE_LOCAL_MODEL_URL` + `FORGE_LOCAL_MODEL_NAME`
+  to a reachable endpoint from the service (a self-hosted runtime on the same
+  network, or a managed OpenAI-compatible endpoint) **or** set
+  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`; then re-run
+  `scripts/verify_production_readiness.py` and
+  `scripts/run_fleet_real.py`. The state flips from CONFIGURED to LIVE only
+  when a model is runtime-verified.
 
 **1b. Vision / audio / browser / computer-use specialists (100 of 1000)** —
 BLOCKED
-- *Reason*: the configured models declare coding, debugging, documentation,
-  planning, reasoning, research, review, security, structured_output and
-  testing — none declares `vision`, `audio`, `browser` or `computer_use`.
+- *Reason*: the live self-hosted model is a **text** instruct model; it declares
+  coding, debugging, documentation, planning, reasoning, research, review,
+  security, structured_output and testing. No configured model declares
+  `vision`, `audio`, `browser` or `computer_use`, so those 100 specialists stop
+  with `no registered model supports capabilities ['vision']` (25 each) — they
+  are never served by a model that cannot do the job.
 - *Already implemented*: those 25+25+25+25 specialists are registered, routed
   and executable the moment a model advertising the capability is configured;
   they currently fail with an explicit capability error instead of being
@@ -170,6 +247,27 @@ BLOCKED
   confirm `/voice-playback.js` returns 200 and `/api/v1/health` still reports
   `status: ok`.
 
+**2b. Model quality: only a 135M-parameter model is reachable from this
+environment** — BLOCKED (quality, not plumbing)
+- *Reason*: the sandbox reaches PyPI and GitHub only; HuggingFace,
+  `media.githubusercontent.com` and the Ollama registry are unreachable
+  (verified: HTTP 000), and every larger instruct GGUF found in a GitHub repo is
+  a Git-LFS pointer (`version https://git-lfs.github.com/spec/v1`) whose content
+  lives on the blocked media host. PyPI bundles exactly one instruct GGUF
+  (`llm-smollm2`, 135M — `llm-qwen`, `llm-gemma`, `llm-phi`, `llm-smollm2-360m`
+  do not exist).
+- *Already implemented*: the endpoint-agnostic `local-openai` provider, the
+  env-configured model slot, real runtime verification, and the fleet harness —
+  the 900 routable specialists answer through whichever model is configured.
+  Measured quality: fluent and on-brief, **21.3 %** degenerate (repetition or a
+  generic "ready to assist"), 51,047 tokens across 900 answers.
+- *Exact requirement*: either allowlist a model host (`huggingface.co`,
+  `media.githubusercontent.com`/LFS) so a 0.5B-1.5B instruct GGUF can be
+  fetched, or set a cloud model credential (`OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY`) on this service. Then set `FORGE_LOCAL_MODEL_URL/NAME`
+  (or the cloud config) and re-run `scripts/run_fleet_real.py`; no code change
+  is needed.
+
 **3. WhatsApp / email / phone calls** — MISSING (not implemented)
 - *Reason*: no adapter exists anywhere in the codebase (`grep -ri whatsapp`
   finds only the voice intent and its task-description string).
@@ -183,8 +281,15 @@ BLOCKED
 ## 7. Reproduce
 
 ```bash
-.venv/bin/python -m pytest -q                       # 3246 passed, 6 skipped
+.venv/bin/python -m pytest -q                       # full suite
 node --test tests/web/*.test.cjs                    # 11 passed
 .venv/bin/python scripts/verify_production_readiness.py
 .venv/bin/python scripts/verify_production_readiness.py --json | jq .
+
+# real model execution (requires the self-hosted runtime, see
+# docs/SELF-HOSTED-MODEL.md; refuses to report without a verified model)
+FORGE_LOCAL_MODEL_URL=http://127.0.0.1:8080 \
+FORGE_LOCAL_MODEL_NAME=SmolLM2-135M-Instruct.Q4_1.gguf \
+.venv/bin/python scripts/run_fleet_real.py --workers 2 --max-tokens 64 \
+    --temperature 0.2 --out /tmp/fleet-real-run.json
 ```
