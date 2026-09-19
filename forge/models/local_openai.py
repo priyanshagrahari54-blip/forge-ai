@@ -24,9 +24,39 @@ import json
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Sequence
 
+from forge.models.endpoints import LocalEndpoint
+from forge.models.errors import ProviderExhaustedError
 from forge.models.provider import ModelResult
+from forge.models.quota import (
+    DEFAULT_COOLDOWN_SECONDS,
+    ExhaustionTracker,
+    QuotaSignal,
+    classify_exhaustion,
+)
+
+
+def _retry_after_header(exc: urllib.error.HTTPError) -> float | None:
+    """The delay an endpoint stated, in seconds, when it stated one."""
+    for header in ("Retry-After", "retry-after", "X-RateLimit-Reset"):
+        raw = None
+        try:
+            raw = exc.headers.get(header) if exc.headers else None
+        except Exception:                                     # noqa: BLE001
+            raw = None
+        if not raw:
+            continue
+        try:
+            value = float(str(raw).strip())
+        except ValueError:
+            continue
+        # X-RateLimit-Reset is commonly an epoch timestamp, not a delay.
+        if value > 1_000_000_000:
+            import time as _time
+            value = max(0.0, value - _time.time())
+        return max(0.0, value)
+    return None
 
 
 class LocalOpenAIProvider:
@@ -34,20 +64,48 @@ class LocalOpenAIProvider:
 
     name = "local-openai"
 
-    def __init__(self, model: str, url: str, *, api_key: str = "",
+    def __init__(self, model: str, url: str = "", *, api_key: str = "",
                  timeout: float = 120.0,
                  capabilities: tuple[str, ...] = (),
-                 send_constraints: bool = False) -> None:
+                 send_constraints: bool = False,
+                 endpoints: Sequence[LocalEndpoint] | None = None,
+                 cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+                 exhaustion: ExhaustionTracker | None = None) -> None:
         if not model:
             raise ValueError("a local model name is required")
-        if not url:
+        #: One provider can front several of the operator's servers for the
+        #: same model. A request that finds an endpoint spent (HTTP 429, quota
+        #: or rate limit) is retried on the next one *within this call*, and
+        #: only if every endpoint is spent does the provider raise
+        #: ProviderExhaustedError for the fabric to fail over to another model.
+        pool: list[LocalEndpoint] = []
+        if str(url).strip():
+            pool.append(LocalEndpoint(url=url, model=model, api_key=api_key,
+                                      timeout=timeout,
+                                      capabilities=tuple(capabilities)))
+        if endpoints:
+            pool = [LocalEndpoint(
+                url=entry.url, model=entry.model or model,
+                capabilities=tuple(entry.capabilities or capabilities),
+                context_window=entry.context_window,
+                timeout=entry.timeout or timeout,
+                api_key=entry.api_key or api_key,
+                tier=entry.tier, label=entry.label,
+                metadata=dict(entry.metadata),
+            ) for entry in endpoints]
+        if not pool or not pool[0].url:
             raise ValueError("a local endpoint url is required")
         self.model = model
-        self.base_url = _normalize_base(url)
+        self.endpoints = tuple(pool)
+        self.base_url = _normalize_base(pool[0].url)
         self.url = self.base_url + "/chat/completions"
-        self.api_key = api_key
-        self.timeout = max(1.0, float(timeout))
+        self.api_key = pool[0].api_key
+        self.timeout = max(1.0, float(pool[0].timeout or timeout))
         self.capabilities = tuple(capabilities)
+        #: Per-endpoint cooldowns, shared with the fabric when supplied so a
+        #: spent endpoint is skipped by every caller, not just this provider.
+        self.exhaustion = exhaustion if exhaustion is not None else \
+            ExhaustionTracker(cooldown_seconds=cooldown_seconds)
         #: Forge renders its routing/generation constraints as an instruction
         #: block. That block is operator metadata ("required capabilities:
         #: coding", "maximum output tokens: 512", "prefer local provider"): a
@@ -61,20 +119,28 @@ class LocalOpenAIProvider:
 
     # -- transport ---------------------------------------------------------
 
-    def _headers(self) -> dict[str, str]:
+    @staticmethod
+    def _headers_for(endpoint: LocalEndpoint) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if endpoint.api_key:
+            headers["Authorization"] = f"Bearer {endpoint.api_key}"
         return headers
 
+    def _headers(self) -> dict[str, str]:
+        return self._headers_for(self.endpoints[0])
+
     def _post(self, path: str, body: dict[str, Any],
-              timeout: float | None = None) -> dict[str, Any]:
+              timeout: float | None = None,
+              endpoint: LocalEndpoint | None = None) -> dict[str, Any]:
+        target = endpoint or self.endpoints[0]
+        base_url = _normalize_base(target.url)
         request = urllib.request.Request(
-            self.base_url + path, json.dumps(body).encode(),
-            self._headers())
+            base_url + path, json.dumps(body).encode(),
+            self._headers_for(target))
         try:
             with urllib.request.urlopen(
-                    request, timeout=timeout or self.timeout) as response:
+                    request, timeout=timeout or target.timeout
+                    or self.timeout) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             detail = ""
@@ -82,13 +148,65 @@ class LocalOpenAIProvider:
                 detail = exc.read().decode()[:300]
             except Exception:                                 # noqa: BLE001
                 pass
-            raise RuntimeError(
-                f"local model {self.model!r} at {self.base_url} returned "
-                f"HTTP {exc.code}: {detail}") from exc
+            message = (f"local model {self.model!r} at {base_url} returned "
+                       f"HTTP {exc.code}: {detail}")
+            retry_after = _retry_after_header(exc)
+            #: Classify the endpoint's own words, never a pre-typed wrapper:
+            #: wrapping first would make every HTTP error look exhausted.
+            signal = classify_exhaustion(message)
+            if exc.code in (402, 429):
+                signal = QuotaSignal(True, retry_after=retry_after,
+                                     reason=message, status=exc.code)
+            if signal.exhausted:
+                #: The endpoint is spent, not broken: say so, with the delay
+                #: it asked for, so routing can move to another server.
+                raise ProviderExhaustedError(
+                    message, provider=self.name, model=self.model,
+                    retry_after=retry_after, status=exc.code) from exc
+            raise RuntimeError(message) from exc
+        except ProviderExhaustedError:
+            raise
         except Exception as exc:                              # noqa: BLE001
             raise RuntimeError(
                 f"local model {self.model!r} is unreachable at "
-                f"{self.base_url}: {exc}") from exc
+                f"{base_url}: {exc}") from exc
+
+    def _post_across_pool(self, path: str, body: dict[str, Any],
+                          timeout: float | None = None
+                          ) -> tuple[dict[str, Any], LocalEndpoint, list[str]]:
+        """POST to the pool, skipping endpoints whose quota is spent.
+
+        Rotation is immediate and within the same request: an exhausted
+        endpoint costs this call nothing but the error that revealed it. When
+        every endpoint is spent the provider raises ``ProviderExhaustedError``
+        — with the shortest stated retry delay — so the fabric fails over to a
+        different model instead of hammering a wall.
+        """
+        rotated: list[str] = []
+        last_signal: QuotaSignal | None = None
+        for endpoint in self.endpoints:
+            if self.exhaustion.is_exhausted(self.name, endpoint.url):
+                rotated.append(endpoint.display)
+                continue
+            try:
+                data = self._post(path, body, timeout=timeout, endpoint=endpoint)
+            except ProviderExhaustedError as exc:
+                signal = QuotaSignal(True, retry_after=exc.retry_after,
+                                     reason=str(exc), status=exc.status)
+                self.exhaustion.record(self.name, endpoint.url, signal)
+                last_signal = signal
+                rotated.append(endpoint.display)
+                continue
+            self.exhaustion.clear(self.name, endpoint.url)
+            return data, endpoint, rotated
+        retry_after = last_signal.retry_after if last_signal else None
+        detail = last_signal.reason if last_signal else ""
+        raise ProviderExhaustedError(
+            f"every configured endpoint for model {self.model!r} is "
+            f"exhausted or spent ({'; '.join(rotated) or 'none reachable'})"
+            + (f": {detail}" if detail else ""),
+            provider=self.name, model=self.model, retry_after=retry_after,
+            status=last_signal.status if last_signal else None)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
@@ -130,10 +248,17 @@ class LocalOpenAIProvider:
             body["max_tokens"] = int(max_output_tokens)
         if temperature is not None:
             body["temperature"] = float(temperature)
-        data = self._post("/chat/completions", body)
+        data, target, rotated = self._post_across_pool("/chat/completions", body)
         text = self._extract_text(data)
         usage = data.get("usage") or {}
         metadata: dict[str, Any] = {}
+        metadata["endpoint_used"] = target.url
+        if target.label:
+            metadata["endpoint_label"] = target.label
+        if rotated:
+            #: Rotation across the operator's servers is provenance: a caller
+            #: can see the first endpoint was spent and which one answered.
+            metadata["endpoints_skipped_exhausted"] = rotated
         if not self.send_constraints and instructions and instructions.strip():
             #: Not silently dropped: routing constraints are recorded on the
             #: result (and merged into the fabric response metadata), they are
@@ -148,12 +273,30 @@ class LocalOpenAIProvider:
         )
 
     def list_models(self) -> list[str]:
-        """Real probe: ask the endpoint which models it is serving."""
-        request = urllib.request.Request(self.base_url + "/models",
-                                         headers=self._headers())
+        """Real probe: ask each endpoint which models it is serving.
+
+        One answering endpoint is enough — a probe is evidence that the model
+        is being served, and an exhausted endpoint still lists it. Only when
+        none answers is the provider reported unreachable.
+        """
+        last_error: Exception | None = None
+        for endpoint in self.endpoints:
+            try:
+                return self._probe_models(endpoint)
+            except Exception as exc:                          # noqa: BLE001
+                last_error = exc
+                continue
+        raise RuntimeError(
+            f"no configured endpoint answered a model-list probe: {last_error}")
+
+    def _probe_models(self, endpoint: LocalEndpoint) -> list[str]:
+        base_url = _normalize_base(endpoint.url)
+        request = urllib.request.Request(base_url + "/models",
+                                         headers=self._headers_for(endpoint))
         try:
             with urllib.request.urlopen(
-                    request, timeout=min(20.0, self.timeout)) as response:
+                    request, timeout=min(20.0, endpoint.timeout
+                                         or self.timeout)) as response:
                 data = json.loads(response.read().decode())
         except Exception as exc:                              # noqa: BLE001
             raise RuntimeError(

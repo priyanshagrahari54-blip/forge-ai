@@ -10,7 +10,7 @@ reports. Reproduce with the commands in the last section.
 
 | Check | Result |
 | --- | --- |
-| `python -m pytest -q` | **3246 passed, 6 skipped, 0 failed** (764 s) — baseline before this work was 112 failures |
+| `python -m pytest -q` | **3263 passed, 6 skipped, 0 failed** (1,240 s, run alongside the model sweep on 2 vCPU) — baseline before this work was 112 failures |
 | `node --test tests/web/*.test.cjs` | **11 passed, 0 failed** (4 of them failed at `HEAD`) |
 | `scripts/verify_production_readiness.py` | 1000 registered specialists / 40 roles (25 each), 40/40 representatives routed through a real `ModelFabric`, worker identity + capabilities survive restart with `live_count = 0` before a heartbeat |
 | Runtime capability states | LIVE 5 · READY 1 · SIMULATED 2 · BLOCKED 1 · ARCHITECTURE 6 (details below) |
@@ -18,6 +18,10 @@ reports. Reproduce with the commands in the last section.
 | Live service `/city.html` | 200 (already deployed) |
 | Live service `/voice-playback.js` | 404 — **this commit is not deployed yet** |
 | Real model execution | **900/1000 specialists produced real model output** (0 exceptions, 0 empty, 51,047 tokens, 515 s); the other 100 need capabilities no configured model provides. Evidence: `docs/evidence/fleet-real-run-2026-09-19.json` |
+| Provider quota failover | exhausted-provider classification, same-model endpoint rotation, cooldown skip and recovery: **19 tests**, incl. real HTTP 429/500 servers |
+| Multi-server routing | numbered env / JSON endpoint lists parsed and deduped; same model pools, different models get their own providers and tiers (**8 tests**) |
+| Fine-tuning | a **real LoRA fine-tune** ran against the served GGUF: 758 examples, 24 steps, **loss 3.52 → 0.50** (held-out 0.87), 460,800 trainable params, 47 s, `adapter.gguf` + `adapter_model.safetensors` + loss curve written. Evidence: `docs/evidence/finetune-lora-2026-09-19.json` |
+| Serving the fine-tuned adapter | **verified by the runtime itself**: `llama-server --lora adapter.gguf` started and `GET /lora-adapters` returned `{"id": 0, "path": ".../adapter.gguf", "scale": 1.0}`; Forge then answered a documentation task through that endpoint (`provider=local-openai`, success) |
 
 ## 2. Implementations
 
@@ -33,6 +37,41 @@ reports. Reproduce with the commands in the last section.
 - Specialist requests carry a bounded output budget and a low temperature, and
   the model-facing prompt contains the role and the job only — routing
   metadata stays in the request/result metadata.
+
+**Provider failover and multi-server pools** (`forge/models/endpoints.py`,
+`quota.py`, `local_openai.py`, `config.py`, `fabric.py`, `router.py`, `errors.py`)
+- One provider can front several of your servers for the same model: a spent
+  endpoint is rotated to within the same request, and if every endpoint of that
+  model is spent the request fails over to another model.
+- Exhaustion is *classified*, not guessed: HTTP 402/429/503 and provider wording
+  (`insufficient_quota`, rate limit, credits, capacity) start a cooldown; a 500
+  or an unreachable host never does — a broken endpoint must not be mistaken
+  for a full one.
+- The cooldown is bounded (default 60 s, stated `Retry-After` honoured, capped
+  at 900 s) and expires by itself: a spent provider is skipped, never
+  blacklisted, and any successful call clears it.
+- Endpoints are declared with numbered env vars, a JSON list, or the original
+  single-endpoint variables (unchanged). Same model → pooled; different models
+  → separate models, ordered by declared `tier` so a stronger server is
+  preferred among models that can equally do the job. Capability requirements
+  are never relaxed, so power never overrides fitness.
+- Visibility: `quota_snapshot()`, `provider_exhausted` /
+  `provider_skipped_exhausted` telemetry, and a `failover` section in the
+  readiness report.
+
+**Fine-tuning** (`forge/training/`, `scripts/finetune_specialists.py`)
+- Dataset: real fleet-run evidence → instruction pairs (blocked specialists
+  contribute nothing), validated and deduplicated by the Model Studio's own
+  validator; a secret-bearing row is rejected and never trained on.
+- `GgufLoRATrainer` trains LoRA against the **GGUF the runtime serves**
+  (dequantized with `gguf.quants`), on CPU, with a hand-written llama forward
+  pass whose correctness is checked by loss on real text (4.96 vs log(vocab)
+  10.80).
+- Artifacts: `adapter_model.safetensors`, `adapter.gguf` (llama.cpp adapter
+  format) and `training.json` (loss curve, params, exact base file).
+- Honest states: `BLOCKED` (with the exact missing requirement) · `READY` ·
+  `TRAINING` · `TRAINED` (only with a real artifact the backend marked trained)
+  · `FAILED` (verbatim error).
 
 **Runtime truth** (`forge/models/runtime_verification.py`,
 `runtime_monitor.py`, `runtime_monitor_service.py`, `configured_runtime*.py`)
@@ -278,13 +317,33 @@ environment** — BLOCKED (quality, not plumbing)
   or Twilio) behind the existing task/agent path; until then the capability is
   reported MISSING and no surface claims it works.
 
+## 6b. Deployment shape: servers do the work, thin clients just connect
+
+- The cockpit serves static HTML/CSS/JS and all logic runs server-side; the
+  browser calls relative `/api/v1/...` paths only. A G560-class client needs a
+  browser and a network path, nothing else (`docs/SERVER-SIDE-EXECUTION.md`).
+- Model servers are declared per deployment (`FORGE_LOCAL_MODEL_URL[_N]`,
+  `FORGE_MODEL_ENDPOINTS`, `deploy/model-endpoints.example.json`); the readiness
+  report's `failover` section prints how many are configured, their tiers, the
+  cooldown policy and anything currently exhausted.
+
 ## 7. Reproduce
 
 ```bash
-.venv/bin/python -m pytest -q                       # full suite
+.venv/bin/python -m pytest -q                       # 3263 passed, 6 skipped
 node --test tests/web/*.test.cjs                    # 11 passed
 .venv/bin/python scripts/verify_production_readiness.py
 .venv/bin/python scripts/verify_production_readiness.py --json | jq .
+
+# provider failover + multi-server routing (real HTTP servers in the tests)
+.venv/bin/python -m pytest tests/test_provider_failover_quota.py -q   # 19 passed
+
+# fine-tuning: dataset -> preflight -> train (needs torch + gguf + tokenizers)
+.venv/bin/python -m pytest tests/test_finetune_pipeline.py -q         # 8 passed
+.venv/bin/python -m pytest tests/test_gguf_lora_trainer.py -q         # 6 passed
+.venv/bin/python scripts/finetune_specialists.py \
+    --dataset docs/evidence/fleet-real-run-2026-09-19.json \
+    --specialization documentation --steps 24
 
 # real model execution (requires the self-hosted runtime, see
 # docs/SELF-HOSTED-MODEL.md; refuses to report without a verified model)

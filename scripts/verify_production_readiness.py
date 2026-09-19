@@ -286,6 +286,113 @@ def _section_web() -> dict:
     }
 
 
+def _section_failover() -> dict:
+    """Provider failover: which of the operator's servers exist, tiers, quotas.
+
+    Configuration is read from the environment exactly as the fabric reads it,
+    so this reports the deployment's real posture: how many self-hosted
+    servers are configured, which models they serve, how they are ranked by
+    declared power, and whether any provider is currently sitting out a spent
+    quota.
+    """
+    from forge.models.config import FabricConfig, group_local_endpoints
+    from forge.models.quota import ExhaustionTracker
+
+    config = FabricConfig.from_dict({})
+    endpoints = list(config.local_openai_endpoints)
+    groups = group_local_endpoints(endpoints)
+    models = [
+        {
+            "model": model_id,
+            "tier": tier,
+            "servers": [entry.url for entry in entries],
+            "capabilities_declared": list(capabilities),
+        }
+        for model_id, capabilities, tier, entries in groups
+    ]
+    tracker = ExhaustionTracker(
+        cooldown_seconds=float(config.provider_cooldown_seconds or 60.0),
+        max_cooldown_seconds=float(config.quota_max_cooldown_seconds or 900.0),
+    )
+    snapshot = tracker.snapshot()
+    return {
+        "self_hosted_servers_configured": len(endpoints),
+        "models": models,
+        "models_ranked_by_tier": [row["model"] for row in sorted(
+            models, key=lambda row: -row["tier"])],
+        "cloud_provider_configured": bool(config.openai_enabled),
+        "cooldown_seconds": snapshot["default_cooldown_seconds"],
+        "max_cooldown_seconds": snapshot["max_cooldown_seconds"],
+        "exhausted_now": snapshot["exhausted"],
+        "failover": (
+            "quota exhaustion is classified (HTTP 402/429/503 + provider "
+            "wording), the spent provider is skipped until its cooldown "
+            "passes and tried again afterwards, and the request fails over "
+            "to the next model in the same call"
+            if endpoints else
+            "no self-hosted endpoint is configured; set FORGE_LOCAL_MODEL_URL "
+            "or FORGE_MODEL_ENDPOINTS to enable rotation"),
+    }
+
+
+def _section_finetune() -> dict:
+    """Fine-tuning: what is installed, what is registered, what was trained.
+
+    Never says "trained" because a pipeline exists. It reports the trainer's
+    own availability, the dataset it would use, and the most recent job report
+    on disk (state, loss curve, artifact) when one exists.
+    """
+    from forge.training.job import register_default_trainers
+    from forge.models.model_studio import ModelStudio
+
+    studio = ModelStudio(root=str(REPO))
+    registered = register_default_trainers(studio)
+    reports = sorted((REPO / ".forge" / "models").glob("*/training.json"))
+    trained = sorted((REPO / ".forge" / "models").glob("*/training.json"))
+    last: dict = {}
+    if reports:
+        import json as _json
+        newest = max(reports, key=lambda path: path.stat().st_mtime)
+        try:
+            payload = _json.loads(newest.read_text(encoding="utf-8"))
+            last = {
+                "path": str(newest.relative_to(REPO)),
+                "base_model": payload.get("base_model", ""),
+                "specialization": payload.get("specialization", ""),
+                "steps": payload.get("steps"),
+                "initial_loss": payload.get("initial_loss"),
+                "final_loss": payload.get("final_loss"),
+                "held_out_loss": payload.get("held_out_loss"),
+                "trainable_parameters": payload.get("trainable_parameters"),
+                "servable": payload.get("servable"),
+            }
+        except (ValueError, OSError):
+            last = {}
+    stack = {"torch": _importable("torch"), "gguf": _importable("gguf"),
+             "tokenizers": _importable("tokenizers"),
+             "transformers": _importable("transformers"),
+             "peft": _importable("peft")}
+    return {
+        "training_stack": stack,
+        "registered_trainers": studio.trainers(),
+        "usable_for_local_gguf": "gguf-lora" in studio.trainers(),
+        "adapters_trained_on_this_machine": len(trained),
+        "last_training_report": last,
+        "blocked": ("" if studio.trainers() else
+                    "no training backend is registered: install torch + gguf + "
+                    "tokenizers (local GGUF LoRA) or the HuggingFace/PEFT stack"),
+    }
+
+
+def _importable(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
@@ -302,6 +409,8 @@ def main() -> int:
             "capabilities": _section_capabilities(plane),
             "background": _section_background(tmp),
             "web": _section_web(),
+            "failover": _section_failover(),
+            "finetune": _section_finetune(),
         }
         try:
             plane.stop(wait=False)
@@ -357,6 +466,25 @@ def main() -> int:
     web = report["web"]
     print(f"AI City in nav         : {web['ai_city_in_navigation']}")
     print(f"shared voice playback  : {web['shared_voice_playback']}")
+    failover = report["failover"]
+    print(f"self-hosted servers    : {failover['self_hosted_servers_configured']} "
+          f"configured, {len(failover['models'])} model(s); tier order "
+          f"{failover['models_ranked_by_tier'] or '-'}")
+    print(f"quota failover         : cooldown {failover['cooldown_seconds']}s "
+          f"(max {failover['max_cooldown_seconds']}s), exhausted now: "
+          f"{failover['exhausted_now'] or 'none'}")
+    finetune = report["finetune"]
+    print(f"fine-tuning            : trainers={finetune['registered_trainers'] or 'none'} "
+          f"stack={ {k: v for k, v in finetune['training_stack'].items() if v} }")
+    last = finetune["last_training_report"]
+    if last:
+        print(f"  last adapter         : {last['specialization']} on "
+              f"{Path(last['base_model']).name} — loss "
+              f"{last['initial_loss']} -> {last['final_loss']} "
+              f"(held-out {last['held_out_loss']}), "
+              f"{last['trainable_parameters']} params, servable={last['servable']}")
+    elif finetune["blocked"]:
+        print(f"  BLOCKED: {finetune['blocked']}")
     return 0
 
 

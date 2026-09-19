@@ -19,6 +19,7 @@ from typing import Any, Iterator
 from forge.models.capabilities import Capability, TEXT_CAPABILITIES
 from forge.models.config import FabricConfig
 from forge.models.credentials import CredentialStore
+from forge.models.quota import ExhaustionTracker, classify_exhaustion
 from forge.models.errors import ModelUnavailableError
 from forge.models.feedback import RouterFeedback
 from forge.models.policy import RoutingPolicy
@@ -69,6 +70,21 @@ def _forwardable_kwargs(callable_obj: Any, **kwargs: Any) -> dict[str, Any]:
     return {key: value for key, value in kwargs.items() if key in accepted}
 
 
+def _single_local_endpoint(config: FabricConfig):
+    """The pre-multi-endpoint configuration as one endpoint entry."""
+    from forge.models.endpoints import LocalEndpoint
+
+    return LocalEndpoint(
+        url=config.local_openai_url,
+        model=config.local_openai_model,
+        capabilities=tuple(config.local_openai_capabilities or ()),
+        context_window=config.local_openai_context_window,
+        timeout=config.local_openai_timeout,
+        api_key=config.local_openai_api_key,
+        label="primary",
+    )
+
+
 class ModelFabric:
     """Central entry point for routing and calling models."""
 
@@ -82,11 +98,27 @@ class ModelFabric:
         credentials: CredentialStore | None = None,
         config: FabricConfig | None = None,
         model_policy=None,
+        exhaustion: ExhaustionTracker | None = None,
     ) -> None:
         #: Optional model data policy (A33): classified content is filtered
         #: per candidate model before any provider call. ``None`` (default)
         #: preserves exact legacy behavior.
         self.config = config
+        #: Provider quota memory: a provider that reported "spent" is skipped
+        #: by routing until its cooldown passes, then tried again by itself.
+        #: Never a permanent blacklist, never a hard block on a request.
+        #: A tracker given by the caller is shared, so endpoint-level and
+        #: provider-level cooldowns agree; otherwise this fabric owns one.
+        if exhaustion is not None:
+            self.exhaustion = exhaustion
+        else:
+            cooldown = getattr(config, "provider_cooldown_seconds", 60.0)
+            maximum = getattr(config, "quota_max_cooldown_seconds", 900.0)
+            self.exhaustion = ExhaustionTracker(
+                cooldown_seconds=60.0 if cooldown is None else float(cooldown),
+                max_cooldown_seconds=900.0 if maximum is None else float(maximum),
+            )
+        self.exhaustion.on_exhausted = self._note_provider_exhausted
         self.registry = registry if registry is not None else ModelRegistry()
         self.providers = providers if providers is not None else ProviderRegistry()
         self.policy = policy if policy is not None else _policy_from_config(config)
@@ -111,6 +143,20 @@ class ModelFabric:
         #: decision is recorded on every response.
         self.inference_path: Any = None
         self.inference_path_config = InferencePathConfig()
+
+    def _note_provider_exhausted(self, provider: str, model: str, signal,
+                                 seconds: float) -> None:
+        """Telemetry hook: record *why* a provider was skipped, and for how long."""
+        self.telemetry.record(
+            "provider_exhausted", provider=provider, model=model,
+            reason=signal.reason, status=signal.status,
+            cooldown_seconds=round(float(seconds), 1),
+            stated_retry_after=signal.retry_after,
+        )
+
+    def quota_snapshot(self) -> dict[str, Any]:
+        """Which providers are currently spent, and for how much longer."""
+        return self.exhaustion.snapshot()
 
     def attach_memory(self, memory, *, project: str = "") -> "ModelFabric":
         """Record model-performance memory on each routed feedback event.
@@ -297,49 +343,76 @@ class ModelFabric:
                 metadata={"description": "Local Ollama model."},
             ))
 
+        #: One tracker for the whole fabric: the provider skips individual
+        #: spent endpoints, the fabric skips a provider whose endpoints are all
+        #: spent, and both read the same cooldowns.
+        cooldown = getattr(config, "provider_cooldown_seconds", 60.0)
+        maximum = getattr(config, "quota_max_cooldown_seconds", 900.0)
+        exhaustion = ExhaustionTracker(
+            cooldown_seconds=60.0 if cooldown is None else float(cooldown),
+            max_cooldown_seconds=900.0 if maximum is None else float(maximum),
+        )
+
         if config.local_openai_enabled and config.local_openai_url \
                 and config.local_openai_model:
+            from forge.models.config import group_local_endpoints
             from forge.models.local_openai import LocalOpenAIProvider
 
-            local_capabilities = tuple(
-                config.local_openai_capabilities or TEXT_CAPABILITIES)
-            providers.register(
-                "local-openai",
-                LocalOpenAIProvider(
-                    model=config.local_openai_model,
-                    url=config.local_openai_url,
-                    api_key=config.local_openai_api_key,
-                    timeout=config.local_openai_timeout,
+            declared = tuple(config.local_openai_endpoints) or (
+                _single_local_endpoint(config),)
+            groups = group_local_endpoints(declared)
+            for position, (model_id, declared_caps, tier, endpoints) in \
+                    enumerate(groups):
+                #: The first group keeps the historical provider name so every
+                #: existing configuration, probe and test is unaffected;
+                #: additional models get numbered providers of their own.
+                provider_name = ("local-openai" if position == 0
+                                 else f"local-openai-{position + 1}")
+                local_capabilities = tuple(
+                    declared_caps or config.local_openai_capabilities
+                    or TEXT_CAPABILITIES)
+                providers.register(
+                    provider_name,
+                    LocalOpenAIProvider(
+                        model=model_id,
+                        endpoints=endpoints,
+                        timeout=config.local_openai_timeout,
+                        capabilities=local_capabilities,
+                        exhaustion=exhaustion,
+                    ),
+                    ProviderInfo(
+                        name=provider_name,
+                        display_name="Self-hosted model endpoint",
+                        kind="local",
+                        local=True,
+                        free=True,
+                        capabilities=local_capabilities,
+                        endpoint=endpoints[0].url,
+                        model=model_id,
+                    ),
+                )
+                registry.register(Model(
+                    name=model_id,
+                    provider=provider_name,
                     capabilities=local_capabilities,
-                ),
-                ProviderInfo(
-                    name="local-openai",
-                    display_name="Self-hosted model endpoint",
-                    kind="local",
-                    local=True,
+                    context_window=(endpoints[0].context_window
+                                    or config.local_openai_context_window),
                     free=True,
-                    capabilities=local_capabilities,
-                    endpoint=config.local_openai_url,
-                    model=config.local_openai_model,
-                ),
-            )
-            registry.register(Model(
-                name=config.local_openai_model,
-                provider="local-openai",
-                capabilities=local_capabilities,
-                context_window=config.local_openai_context_window,
-                free=True,
-                local=True,
-                #: Registered from configuration, never from a probe: the
-                #: runtime monitor sets `runtime_verified` only after a real
-                #: /models probe observes this exact model.
-                metadata={
-                    "description": "Self-hosted OpenAI-compatible model "
-                                   "endpoint (llama.cpp/vLLM/Ollama).",
-                    "endpoint": config.local_openai_url,
-                    "runtime_verified": False,
-                },
-            ))
+                    local=True,
+                    #: Registered from configuration, never from a probe: the
+                    #: runtime monitor sets `runtime_verified` only after a real
+                    #: /models probe observes this exact model.
+                    metadata={
+                        "description": "Self-hosted OpenAI-compatible model "
+                                       "endpoint (llama.cpp/vLLM/Ollama).",
+                        "endpoint": endpoints[0].url,
+                        "endpoints": [e.to_dict() for e in endpoints],
+                        #: Relative power, used only to order models that can
+                        #: equally do the job. 0 = undeclared.
+                        "tier": int(tier),
+                        "runtime_verified": False,
+                    },
+                ))
 
         if config.openai_enabled and credentials.configured("openai"):
             openai = OpenAIProvider(model=config.openai_model, api_key=credentials.get("openai"))
@@ -368,6 +441,7 @@ class ModelFabric:
             telemetry=Telemetry(enabled=config.telemetry_enabled, sink_path=config.telemetry_path),
             credentials=credentials,
             config=config,
+            exhaustion=exhaustion,
         )
 
     # -- registration ----------------------------------------------------
@@ -496,6 +570,22 @@ class ModelFabric:
                     )
                     continue
             provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
+            if provider is not None and self.exhaustion.is_exhausted(
+                    model.provider, model.name):
+                #: "One provider's limit is spent, use the next": skip it
+                #: instead of paying its error on every request. The cooldown
+                #: expires on its own, so this is a delay, not a blacklist.
+                last_error = (
+                    f"provider {model.provider!r} for model {model.name!r} is "
+                    f"exhausted for another "
+                    f"{self.exhaustion.remaining(model.provider, model.name):.0f}s")
+                self.telemetry.record(
+                    "provider_skipped_exhausted", provider=model.provider,
+                    model=model.name, capability=request.capability,
+                    trace_id=request.trace_id,
+                    seconds_remaining=round(self.exhaustion.remaining(
+                        model.provider, model.name), 1))
+                continue
             if provider is None:
                 # A model whose provider is not registered can never succeed.
                 model.available = False
@@ -520,6 +610,12 @@ class ModelFabric:
                 )
             except Exception as exc:  # provider failures are feedback, not crashes
                 last_error = str(exc)
+                signal = classify_exhaustion(exc)
+                if signal.exhausted:
+                    #: A spent quota is not a defect: remember it so the next
+                    #: request goes straight to a provider that can serve, and
+                    #: fail over to the next model in this same request.
+                    self.exhaustion.record(model.provider, model.name, signal)
                 self.record_feedback(
                     model=model.name, provider=model.provider, capability=request.capability,
                     success=False, latency_ms=(perf_counter() - started) * 1000.0,
@@ -544,6 +640,8 @@ class ModelFabric:
             )
             for key, value in result_metadata.items():
                 response.metadata.setdefault(str(key), value)
+            #: A provider that answers is healthy again, whatever its history.
+            self.exhaustion.clear(model.provider, model.name)
             if classification is not None:
                 response.metadata["classification"] = classification.value
             self.record_feedback(
@@ -565,7 +663,13 @@ class ModelFabric:
             return response
 
         self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
-        return ModelResponse.failure(last_error or "no model available", request_id=request.trace_id)
+        failure = ModelResponse.failure(last_error or "no model available", request_id=request.trace_id)
+        spent = self.exhaustion.snapshot()
+        if spent["exhausted_count"]:
+            #: Why the request failed is often "every provider is spent": say
+            #: so, with the time each one needs, instead of a bare error.
+            failure.metadata["providers_exhausted"] = spent["exhausted"]
+        return failure
 
     def stream(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None,
                fence: Any = None, fence_registry: Any = None,
@@ -642,6 +746,22 @@ class ModelFabric:
                     )
                     continue
             provider = self.providers.get(model.provider) if self.providers.has(model.provider) else None
+            if provider is not None and self.exhaustion.is_exhausted(
+                    model.provider, model.name):
+                #: "One provider's limit is spent, use the next": skip it
+                #: instead of paying its error on every request. The cooldown
+                #: expires on its own, so this is a delay, not a blacklist.
+                last_error = (
+                    f"provider {model.provider!r} for model {model.name!r} is "
+                    f"exhausted for another "
+                    f"{self.exhaustion.remaining(model.provider, model.name):.0f}s")
+                self.telemetry.record(
+                    "provider_skipped_exhausted", provider=model.provider,
+                    model=model.name, capability=request.capability,
+                    trace_id=request.trace_id,
+                    seconds_remaining=round(self.exhaustion.remaining(
+                        model.provider, model.name), 1))
+                continue
             if provider is None:
                 model.available = False
                 last_error = f"provider {model.provider!r} for model {model.name!r} is not registered"
