@@ -163,9 +163,10 @@ class FabricRouter:
         policy = policy or self.policy
         required = request.effective_capabilities()
 
-        capable = [model for model in self.registry if model.available]
         if required:
-            capable = [model for model in capable if model.supports_all(required)]
+            capable = [model for model in self.registry.models_for_capabilities(required) if model.available]
+        else:
+            capable = [model for model in self.registry if model.available]
 
         if not capable:
             missing = sorted(required) if required else ["<any>"]

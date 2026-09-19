@@ -1,5 +1,11 @@
 from forge.agents.fleet import DEFAULT_AGENT_FLEET
-from forge.agents.routing import model_request_for_agent, route_snapshot, route_spec
+from forge.agents.routing import (
+    _DOMAIN_CAPABILITIES,
+    _SPECIALTY_CAPABILITY,
+    model_request_for_agent,
+    route_snapshot,
+    route_spec,
+)
 
 
 def test_every_fleet_slot_has_deterministic_routing_contract():
@@ -7,7 +13,9 @@ def test_every_fleet_slot_has_deterministic_routing_contract():
     for slot in DEFAULT_AGENT_FLEET:
         spec = route_spec(slot)
         assert spec.capabilities
-        assert slot.domain in spec.capabilities or slot.specialty in spec.capabilities
+        domain_caps = _DOMAIN_CAPABILITIES.get(slot.domain, (slot.domain,))
+        specialty_cap = _SPECIALTY_CAPABILITY.get(slot.specialty, slot.specialty)
+        assert any(c in spec.capabilities for c in domain_caps) or specialty_cap in spec.capabilities
         request = model_request_for_agent(slot)
         assert request.caller == "mediated-agent:" + slot.name
         assert tuple(request.required_capabilities) == spec.capabilities
