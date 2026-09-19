@@ -25,7 +25,17 @@ class ExecutionReceipt:
     result: Optional[dict[str, Any]] = None
     error: str = ""
 
+    @property
+    def ok(self) -> bool:
+        """True only for a transport that reported a successful status."""
+        return self.status in ("succeeded", "success", "ok", "completed")
+
     def to_dict(self) -> dict[str, Any]:
+        payload = self._to_dict()
+        payload["ok"] = self.ok
+        return payload
+
+    def _to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "status": self.status,

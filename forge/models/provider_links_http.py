@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from starlette.requests import Request
+
 from forge.models.provider_links import enrich_provider_info, provider_link_catalog
 
 
@@ -12,7 +14,9 @@ def install_provider_links_route(app: Any, *, prefix: str = "/api/v1", require: 
         raise ValueError("require callback is required")
 
     @app.get(prefix.rstrip("/") + "/provider-links")
-    def provider_links(request: Any) -> dict[str, Any]:
+    #: ``Request`` (not ``Any``): a bare ``Any`` annotation is interpreted by
+    #: FastAPI as a required query parameter, which broke the endpoint.
+    def provider_links(request: Request) -> dict[str, Any]:
         require(request, "models.status")
         return {"schema_version": 1, "providers": provider_link_catalog()}
 

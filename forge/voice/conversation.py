@@ -66,10 +66,16 @@ class VoiceConversation:
     """One bounded, interruptible voice conversation."""
 
     def __init__(self, interface: VoiceInterface, conversation_id: str,
-                 *, max_turns: int = MAX_TURNS) -> None:
+                 *, max_turns: int = MAX_TURNS,
+                 conversational: Any = None) -> None:
         self.interface = interface
         self.id = conversation_id
         self.max_turns = max_turns
+        #: Optional live-model conversationalist. Deterministic intent
+        #: matching stays the fast path; unrecognized *speech* is answered by
+        #: the model when one is live, instead of only by "I didn't catch
+        #: that". ``None`` preserves the deterministic-only behavior.
+        self.conversational = conversational
         self.turns: list[ConversationTurn] = []
         self._interrupt = threading.Event()
         self._lock = threading.RLock()
@@ -149,6 +155,18 @@ class VoiceConversation:
                     approval_token_id)
             intent = self.interface.parse(VoiceCommand(text=resolved))
             if not intent.known:
+                # Not a runnable command, but possibly perfectly good
+                # conversation ("how are you?", "explain what you are
+                # building"). A live model answers; otherwise the
+                # deterministic clarifier asks what to do.
+                model_reply = self._model_reply(resolved)
+                if model_reply is not None:
+                    user_turn.status = "completed"
+                    user_turn.intent = "conversation"
+                    return self._reply(
+                        model_reply["text"], "conversation",
+                        status="completed", user_turn=user_turn,
+                        meta=model_reply)
                 user_turn.status = "awaiting_answer"
                 spoken = ("I didn't catch a command I can run. "
                           "What would you like me to do?")
@@ -231,15 +249,48 @@ class VoiceConversation:
                 return None
         return None
 
+    def _model_reply(self, speech: str) -> dict[str, Any] | None:
+        """Answer free-form speech with the live model, or return None.
+
+        Nothing here executes: the model channel is conversational only, and
+        every reply carries ``engine``/``model``/``provider`` provenance so
+        the UI can distinguish a live-model answer from a deterministic one.
+        """
+        conversational = self.conversational
+        if conversational is None:
+            return None
+        try:
+            if hasattr(conversational, "available") and not conversational.available():
+                return None
+            reply = conversational.reply(
+                speech, history=[turn.to_dict() for turn in self.turns])
+        except Exception:
+            return None
+        if reply is None:
+            return None
+        return {
+            "text": str(getattr(reply, "text", "") or ""),
+            "engine": f"model:{getattr(reply, 'model', '')}",
+            "model": str(getattr(reply, "model", "") or ""),
+            "provider": str(getattr(reply, "provider", "") or ""),
+            "live_model": True,
+        }
+
     def _reply(self, spoken: str, intent: str, *, status: str,
                user_turn: ConversationTurn,
-               task: dict[str, Any] | None = None) -> dict[str, Any]:
+               task: dict[str, Any] | None = None,
+               meta: dict[str, Any] | None = None) -> dict[str, Any]:
         self.turns.append(ConversationTurn(
             role="assistant", text=spoken, spoken=spoken, status=status,
             intent=intent, task=task))
         self.turns = self.turns[-self.max_turns:]
-        return {"conversation_id": self.id, "spoken": spoken,
-                "intent": intent, "status": status, "task": task}
+        payload: dict[str, Any] = {
+            "conversation_id": self.id, "spoken": spoken,
+            "intent": intent, "status": status, "task": task}
+        if meta:
+            payload.update({key: value for key, value in meta.items()
+                            if key != "text"})
+        return payload
 
     def state(self) -> dict[str, Any]:
         return {
@@ -251,5 +302,7 @@ class VoiceConversation:
         }
 
 
-def new_conversation(interface: VoiceInterface) -> VoiceConversation:
-    return VoiceConversation(interface, uuid4().hex[:12])
+def new_conversation(interface: VoiceInterface,
+                     conversational: Any = None) -> VoiceConversation:
+    return VoiceConversation(interface, uuid4().hex[:12],
+                             conversational=conversational)

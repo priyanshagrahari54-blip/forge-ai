@@ -297,10 +297,14 @@ class Supervisor:
             # Add the lightweight 1,000+ specialist fleet. These are logical
             # agents sharing the same ModelFabric; no 1,000 model processes
             # are spawned. Core safety-critical agents above remain canonical.
+            #: Fleet size is reported *inside* the existing ``agents_selected``
+            #: event: A32 telemetry has a closed event-name contract, so a new
+            #: event name must not be introduced to carry extra detail.
+            fleet_registered_agents = 0
             if fabric is not None:
                 from forge.agents.frontier_fleet import extend_registry_with_frontier_fleet
                 extend_registry_with_frontier_fleet(registry, fabric, minimum_size=1000)
-                event("frontier_fleet_ready", {"registered_agents": len(registry), "logical_fleet": True})
+                fleet_registered_agents = len(registry)
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
@@ -308,7 +312,11 @@ class Supervisor:
             if not agent_plan.agents or "coder" not in agent_plan.names:
                 raise RuntimeError("capability planner could not select a coding agent")
             timed("plan", plan_started)
-            event("agents_selected", {"agents": list(agent_plan.names)})
+            fleet_details: dict[str, Any] = {"agents": list(agent_plan.names)}
+            if fleet_registered_agents:
+                fleet_details["registered_agents"] = fleet_registered_agents
+                fleet_details["logical_fleet"] = True
+            event("agents_selected", fleet_details)
             stage("AGENTS")
             stage("MODEL")
             # Pre-flight gate: when the fabric has no real (non-fallback)

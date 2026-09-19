@@ -10,7 +10,24 @@ from typing import Any
 
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.agents.registry import AgentRegistration, AgentRegistry
+from forge.models.capabilities import ALL_CAPABILITIES
 from forge.models.request import ModelRequest
+
+
+def routing_capabilities(declared: tuple[str, ...]) -> tuple[str, ...]:
+    """Map a specialist's declared labels onto canonical model capabilities.
+
+    Labels such as ``web_research``, ``database`` or ``multilingual`` describe
+    the *agent*, not a model: ``Model`` rejects unknown capabilities outright,
+    so no provider can ever advertise them. Requiring them would make every
+    routing attempt fail closed ("no registered model supports capabilities
+    [...]") and leave the specialist registered but unexecutable. Only the
+    canonical subset is required from a model; the declared labels stay
+    attached to the specialist as metadata.
+    """
+    canonical = tuple(dict.fromkeys(
+        label for label in declared if label in ALL_CAPABILITIES))
+    return canonical or ("reasoning",)
 
 
 FRONTIER_MODELS: tuple[str, ...] = (
@@ -85,11 +102,17 @@ class FrontierModelAgentExecutor(AgentExecutor):
         model_name: str,
         capabilities: tuple[str, ...],
         fabric: Any,
+        *,
+        declared_capabilities: tuple[str, ...] | None = None,
     ) -> None:
         self.name = name
         self.role = role
         self.model_name = model_name
-        self.capabilities = capabilities
+        self.declared_capabilities = tuple(
+            declared_capabilities if declared_capabilities is not None
+            else capabilities)
+        #: What the Model Fabric is asked for: canonical capabilities only.
+        self.capabilities = routing_capabilities(tuple(capabilities))
         self.fabric = fabric
 
     def execute(self, request: AgentRequest) -> AgentResponse:
@@ -103,7 +126,7 @@ class FrontierModelAgentExecutor(AgentExecutor):
         prompt = request.instructions or request.task.description
         prompt = (
             f"You are Forge specialist {self.name} ({self.role}). "
-            f"Your declared capabilities are: {', '.join(self.capabilities)}. "
+            f"Your declared capabilities are: {', '.join(self.declared_capabilities)}. "
             f"Preferred model target: {self.model_name}. "
             "Route through the shared ModelFabric. "
             "Do not claim tool execution you did not perform.\n\n"
@@ -123,6 +146,10 @@ class FrontierModelAgentExecutor(AgentExecutor):
                 "role": self.role,
                 "preferred_model": self.model_name,
                 "fleet": "frontier-1000-plus",
+                #: Declared agent labels vs the canonical capabilities the
+                #: model must actually support — never conflated.
+                "declared_capabilities": ",".join(self.declared_capabilities),
+                "routing_capabilities": ",".join(self.capabilities),
             },
         )
         response = self.fabric.generate(model_request)
@@ -134,6 +161,7 @@ class FrontierModelAgentExecutor(AgentExecutor):
             "routed_provider": getattr(response, "provider", ""),
             "agent_role": self.role,
             "agent_capabilities": ",".join(self.capabilities),
+            "declared_capabilities": ",".join(self.declared_capabilities),
             "fleet": "frontier-1000-plus",
         })
         return AgentResponse(
@@ -156,26 +184,38 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
     target = max(1000, int(minimum_size))
     registrations: list[AgentRegistration] = []
     index = 0
+    # Register in specialization-major order so every declared specialization
+    # is represented before any specialist gets a second identity. Truncating
+    # a fixed 26-variant sweep at an arbitrary target silently dropped the
+    # trailing specializations (1,000 / 26 = 38.5, so only 38 of 40 roles
+    # existed); the round-robin below guarantees full coverage at any size
+    # while keeping every registered specialist executable.
+    generation = 0
     while len(registrations) < target:
         for specialization, role, capabilities in SPECIALIZATIONS:
-            for variant in range(26):
-                if len(registrations) >= target:
-                    break
-                model_name = FRONTIER_MODELS[
-                    (variant + index) % len(FRONTIER_MODELS)
-                ]
-                name = f"{specialization}-{variant + 1:02d}-{index + 1:04d}"
-                registrations.append(
-                    AgentRegistration(
-                        name,
-                        role,
-                        FrontierModelAgentExecutor(
-                            name, role, model_name, tuple(capabilities), fabric
-                        ),
-                        tuple(capabilities),
-                    )
+            if len(registrations) >= target:
+                break
+            name = f"{specialization}-{generation + 1:02d}-{index + 1:04d}"
+            model_name = FRONTIER_MODELS[
+                (generation + index) % len(FRONTIER_MODELS)
+            ]
+            #: The registry keeps the specialist's declared labels so
+            #: agent-level selection (``get_by_capability``) still works; the
+            #: executor canonicalises them for the model request, which is
+            #: what makes every registered specialist routable.
+            registrations.append(
+                AgentRegistration(
+                    name,
+                    role,
+                    FrontierModelAgentExecutor(
+                        name, role, model_name, tuple(capabilities), fabric,
+                        declared_capabilities=tuple(capabilities),
+                    ),
+                    tuple(capabilities),
                 )
-                index += 1
+            )
+            index += 1
+        generation += 1
     return AgentRegistry(registrations)
 
 

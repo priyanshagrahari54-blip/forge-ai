@@ -72,8 +72,14 @@ class AdmissionError(RuntimeError):
 class WorkerAdmission:
     """Atomically reserve a suitable live worker for a remote job."""
 
-    def __init__(self, registry: WorkerRegistry) -> None:
+    def __init__(self, registry: WorkerRegistry,
+                 *, heartbeat_ttl: Optional[float] = None) -> None:
         self.registry = registry
+        #: Optional stricter/looser liveness window for admission. The
+        #: registry is the single source of truth for liveness, so an
+        #: override is applied there instead of being silently ignored.
+        if heartbeat_ttl is not None and hasattr(registry, "heartbeat_ttl"):
+            registry.heartbeat_ttl = max(1.0, float(heartbeat_ttl))
 
     def admit(self, requirements: WorkerRequirements,
               *, now: Optional[float] = None) -> Admission:

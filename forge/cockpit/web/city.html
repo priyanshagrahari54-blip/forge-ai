@@ -32,8 +32,8 @@
 let selected=null,source=null,cursor=0,seen=new Set(),milestones=null;
 const $=id=>document.getElementById(id);
 function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
-function save(){localStorage.setItem('forge.city.server',$('server').value);if($('token').value) localStorage.setItem('forge.city.token',$('token').value)}
-function restore(){const s=localStorage.getItem('forge.city.server');const t=localStorage.getItem('forge.city.token');if(s)$('server').value=s;if(t)$('token').value=t}
+function save(){localStorage.setItem('forge.city.server',$('server').value);if($('token').value) sessionStorage.setItem('forge.city.token',$('token').value)}
+function restore(){const s=localStorage.getItem('forge.city.server');const t=sessionStorage.getItem('forge.city.token');if(s)$('server').value=s;if(t)$('token').value=t}
 function headers(){save();const h={'Accept':'application/json'};const t=$('token').value.trim();if(t)h.Authorization='Bearer '+t;return h}
 async function api(path,opts={}){const r=await fetch(($('server').value||'/api/v1').replace(/\/$/,'')+path,Object.assign({},opts,{headers:Object.assign(headers(),opts.headers||{})}));let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.error?.message||d.detail||d.message||('HTTP '+r.status));return d}
 function log(x){$('log').textContent=new Date().toLocaleTimeString()+'  '+x+'\n'+$('log').textContent}

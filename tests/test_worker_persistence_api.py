@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from forge.api.app import create_app
+from forge.api.app import create_app, served_route_paths
 from forge.control.control_plane import ControlConfig, ControlPlane
 from forge.workers.persistence import WorkerStore
 from forge.workers.registry import WorkerRegistry
@@ -31,6 +31,8 @@ def test_app_initializes_worker_persistence(tmp_path):
                                        projects={"p": str(project)}))
     app = create_app(plane)
     assert app.state.plane.worker_registry is not None
-    assert any(getattr(route, "path", "") == "/api/v1/readiness"
-               for route in app.routes)
+    #: ``served_route_paths`` is version-tolerant: FastAPI >= 0.141 keeps
+    #: sub-routers lazy, so ``app.routes`` no longer lists their paths even
+    #: though they are served (verified over HTTP throughout this suite).
+    assert "/api/v1/readiness" in served_route_paths(app)
     plane.stop(wait=False)
