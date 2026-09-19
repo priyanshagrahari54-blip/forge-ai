@@ -10,7 +10,7 @@ reports. Reproduce with the commands in the last section.
 
 | Check | Result |
 | --- | --- |
-| `python -m pytest -q` | **3263 passed, 6 skipped, 0 failed** (1,240 s, run alongside the model sweep on 2 vCPU) — baseline before this work was 112 failures |
+| `python -m pytest -q` | **3296 passed, 6 skipped, 0 failed** (665 s) — baseline before this work was 112 failures |
 | `node --test tests/web/*.test.cjs` | **11 passed, 0 failed** (4 of them failed at `HEAD`) |
 | `scripts/verify_production_readiness.py` | 1000 registered specialists / 40 roles (25 each), 40/40 representatives routed through a real `ModelFabric`, worker identity + capabilities survive restart with `live_count = 0` before a heartbeat |
 | Runtime capability states | LIVE 5 · READY 1 · SIMULATED 2 · BLOCKED 1 · ARCHITECTURE 6 (details below) |
@@ -330,7 +330,7 @@ environment** — BLOCKED (quality, not plumbing)
 ## 7. Reproduce
 
 ```bash
-.venv/bin/python -m pytest -q                       # 3263 passed, 6 skipped
+.venv/bin/python -m pytest -q                       # 3296 passed, 6 skipped
 node --test tests/web/*.test.cjs                    # 11 passed
 .venv/bin/python scripts/verify_production_readiness.py
 .venv/bin/python scripts/verify_production_readiness.py --json | jq .
