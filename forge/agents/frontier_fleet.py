@@ -70,6 +70,15 @@ FRONTIER_MODELS: tuple[str, ...] = (
 #: performance, git) must be advertised — and be paired with the matching
 #: role — by at least one specialization, otherwise the planner silently
 #: drops that part of the requirement and the task runs under-covered.
+#: Default output budget for one specialist call. Bounded on purpose: a
+#: specialist answers or produces a snippet, and an unbounded request would let
+#: a single agent consume an entire local runtime's capacity.
+DEFAULT_MAX_OUTPUT_TOKENS = 512
+
+#: Specialist work is engineering work: answer from the same facts twice, and
+#: keep small-model rambling down.
+DEFAULT_TEMPERATURE = 0.2
+
 SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("planner", "planning", ("planning", "reasoning")),
     ("architect", "architecture", ("architecture", "reasoning")),
@@ -129,6 +138,8 @@ class FrontierModelAgentExecutor(AgentExecutor):
         fabric: Any,
         *,
         declared_capabilities: tuple[str, ...] | None = None,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        temperature: float | None = DEFAULT_TEMPERATURE,
     ) -> None:
         self.name = name
         self.role = role
@@ -138,6 +149,11 @@ class FrontierModelAgentExecutor(AgentExecutor):
             else capabilities)
         #: What the Model Fabric is asked for: canonical capabilities only.
         self.capabilities = routing_capabilities(tuple(capabilities))
+        #: Specialists are callers, not chat users: unbounded generation is a
+        #: real cost/latency risk, so every specialist request carries a
+        #: budget. A stop sequence still ends generation earlier.
+        self.max_output_tokens = max(16, int(max_output_tokens))
+        self.temperature = None if temperature is None else float(temperature)
         #: The router never relaxes a hard requirement, so only the
         #: specialization-defining capability is required; the rest travel as
         #: preferences that a capable model may satisfy.
@@ -154,17 +170,18 @@ class FrontierModelAgentExecutor(AgentExecutor):
             )
 
         prompt = request.instructions or request.task.description
-        prompt = (
-            f"You are Forge specialist {self.name} ({self.role}). "
-            f"Your declared capabilities are: {', '.join(self.declared_capabilities)}. "
-            f"Preferred model target: {self.model_name}. "
-            "Route through the shared ModelFabric. "
-            "Do not claim tool execution you did not perform.\n\n"
-            + prompt
+        #: Only what the model can act on. Routing facts (preferred model,
+        #: capability requirements, fleet identity) travel in the request
+        #: metadata where the router and the audit trail read them: restating
+        #: them to the model wastes context and, on small instruct models,
+        #: gets echoed back instead of an answer.
+        model_prompt = (
+            f"You are the {self.role} specialist on the Forge engineering team.\n"
+            f"Task: {prompt}"
         )
 
         model_request = ModelRequest(
-            prompt=prompt,
+            prompt=model_prompt,
             task=self.role,
             caller=f"frontier-agent:{self.name}",
             context=context,
@@ -173,6 +190,8 @@ class FrontierModelAgentExecutor(AgentExecutor):
             #: used for this specialist.
             capability=self.required_capabilities[0],
             required_capabilities=self.required_capabilities,
+            max_output_tokens=self.max_output_tokens,
+            temperature=self.temperature,
             complexity=max(1.0, float(getattr(request.task, "attempts", 0) + 1)),
             metadata={
                 "agent": self.name,
@@ -210,7 +229,13 @@ class FrontierModelAgentExecutor(AgentExecutor):
         )
 
 
-def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegistry:
+def build_frontier_fleet(
+    fabric: Any,
+    *,
+    minimum_size: int = 1000,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float | None = DEFAULT_TEMPERATURE,
+) -> AgentRegistry:
     """Build 1,000+ logical specialists without spawning 1,000 processes.
 
     The registry is lightweight. Actual model inference happens only when a
@@ -245,6 +270,8 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
                     FrontierModelAgentExecutor(
                         name, role, model_name, tuple(capabilities), fabric,
                         declared_capabilities=tuple(capabilities),
+                        max_output_tokens=max_output_tokens,
+                        temperature=temperature,
                     ),
                     tuple(capabilities),
                 )
@@ -255,10 +282,17 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
 
 
 def extend_registry_with_frontier_fleet(
-    registry: AgentRegistry, fabric: Any, *, minimum_size: int = 1000
+    registry: AgentRegistry,
+    fabric: Any,
+    *,
+    minimum_size: int = 1000,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float | None = DEFAULT_TEMPERATURE,
 ) -> AgentRegistry:
     """Add the fleet to an existing registry while preserving core agents."""
-    fleet = build_frontier_fleet(fabric, minimum_size=minimum_size)
+    fleet = build_frontier_fleet(fabric, minimum_size=minimum_size,
+                                 max_output_tokens=max_output_tokens,
+                                 temperature=temperature)
     for name in fleet.names():
         registration = fleet.get(name)
         registry.register(registration)

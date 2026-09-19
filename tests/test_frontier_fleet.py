@@ -215,3 +215,95 @@ def test_plan_reports_capabilities_it_could_not_staff():
     plan = CapabilityAgentPlanner(AgentRegistry()).plan("document the api")
     assert plan.unmet == ("documentation",)
     assert plan.names == ()
+
+
+def test_specialist_requests_carry_a_bounded_output_budget():
+    """A specialist is a caller, not a chat user.
+
+    Before this was enforced, every specialist call omitted ``max_tokens``:
+    the local runtime then generated to its own ceiling (512 tokens) for each
+    of 1,000 specialists, turning a short fleet sweep into hours of
+    unbounded generation. The budget must reach the fabric request, and must
+    be configurable for the whole fleet.
+    """
+    fabric = _FakeFabric()
+    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    task = TaskEngine().add("budget", "produce a short answer")
+
+    defaults = {name: registry.get(name).executor.max_output_tokens
+                for name in registry.names()}
+    assert set(defaults.values()) == {512}
+
+    selected = registry.get("coder-01-0004")
+    selected.executor.execute(
+        AgentRequest(task, TaskStatus.CODING, instructions="answer briefly")
+    )
+    assert fabric.calls[-1].max_output_tokens == 512
+
+    tight = build_frontier_fleet(fabric, minimum_size=1000, max_output_tokens=48)
+    tight.get("coder-01-0004").executor.execute(
+        AgentRequest(task, TaskStatus.CODING, instructions="answer briefly")
+    )
+    assert fabric.calls[-1].max_output_tokens == 48
+    assert tight.get("tester-01-0010").executor.max_output_tokens == 48
+
+    # A nonsensical budget must not become an unbounded one.
+    floor = build_frontier_fleet(fabric, minimum_size=1000, max_output_tokens=0)
+    assert floor.get("coder-01-0004").executor.max_output_tokens >= 16
+
+
+def test_specialist_prompt_carries_no_routing_metadata():
+    """The model must receive the job, not Forge's internal routing facts.
+
+    Specialists used to prepend "Preferred model target: …", "Route through
+    the shared ModelFabric" and the declared capability list to every prompt.
+    A model cannot act on any of that, it burns context, and small instruct
+    models echo it back instead of answering. The same facts must still be
+    present in the request metadata for routing and the audit trail.
+    """
+    fabric = _FakeFabric()
+    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    task = TaskEngine().add("hygiene", "add pagination to the users endpoint")
+
+    registry.get("backend-01-0006").executor.execute(
+        AgentRequest(task, TaskStatus.CODING)
+    )
+    request = fabric.calls[-1]
+
+    for leak in ("Preferred model target", "Route through the shared ModelFabric",
+                 "Do not claim tool execution", "frontier-1000-plus",
+                 "required capabilities"):
+        assert leak not in request.prompt, leak
+    # The job itself survives, and the identity is a role, not a routing table.
+    assert "add pagination to the users endpoint" in request.prompt
+    assert "backend" in request.prompt
+
+    # Explicit instructions override the task text, as before.
+    registry.get("backend-01-0006").executor.execute(
+        AgentRequest(task, TaskStatus.CODING, instructions="answer briefly"))
+    assert fabric.calls[-1].prompt.endswith("answer briefly")
+    assert "Route through" not in fabric.calls[-1].prompt
+
+    # Routing facts did not disappear; they moved to where routing reads them.
+    assert request.metadata["preferred_model"]
+    assert request.metadata["routing_capabilities"]
+    assert request.metadata["agent"] == "backend-01-0006"
+    assert request.caller == "frontier-agent:backend-01-0006"
+
+
+def test_specialist_sampling_is_deterministic_by_default_and_configurable():
+    fabric = _FakeFabric()
+    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    task = TaskEngine().add("sampling", "answer the question")
+
+    executor = registry.get("researcher-01-0003").executor
+    assert executor.temperature == 0.2
+    executor.execute(AgentRequest(task, TaskStatus.CODING, instructions="brief"))
+    assert fabric.calls[-1].temperature == 0.2
+
+    loose = build_frontier_fleet(fabric, minimum_size=1000, temperature=0.9)
+    assert loose.get("researcher-01-0003").executor.temperature == 0.9
+    unset = build_frontier_fleet(fabric, minimum_size=1000, temperature=None)
+    unset.get("researcher-01-0003").executor.execute(
+        AgentRequest(task, TaskStatus.CODING, instructions="brief"))
+    assert fabric.calls[-1].temperature is None

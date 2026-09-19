@@ -14,12 +14,40 @@ from typing import Any, Mapping
 from forge.models.policy import RoutingPolicy
 
 
+def _capability_tuple(value: Any) -> tuple[str, ...]:
+    """Parse a declared capability list (comma/space separated or sequence)."""
+    if not value:
+        return ()
+    if isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        items = [part for part in str(value).replace(";", ",").split(",")]
+    return tuple(dict.fromkeys(
+        item.strip().lower().replace(" ", "_") for item in items
+        if item and item.strip()))
+
+
 @dataclass
 class FabricConfig:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2"
     ollama_enabled: bool = True
     ollama_context_window: int = 8192
+    #: Self-hosted OpenAI-compatible endpoint (llama.cpp ``llama-server``,
+    #: vLLM, Ollama's ``/v1``, LM Studio, TGI). Enabled only when an operator
+    #: supplies both a URL and a model name; no credential is required for a
+    #: local runtime, which is what makes real model execution possible
+    #: without a cloud provider.
+    local_openai_enabled: bool = False
+    local_openai_url: str = ""
+    local_openai_model: str = ""
+    local_openai_api_key: str = ""
+    local_openai_context_window: int = 8192
+    local_openai_timeout: float = 120.0
+    #: Capabilities the operator declares for that model. Empty means the
+    #: conservative text set: Forge cannot introspect a remote endpoint, so it
+    #: must not invent capabilities the model was never configured for.
+    local_openai_capabilities: tuple[str, ...] = ()
     local_enabled: bool = True
     openai_enabled: bool = False
     openai_model: str = "gpt-4o-mini"
@@ -48,11 +76,33 @@ class FabricConfig:
         ollama_url = data.get("ollama_url") or env.get("OLLAMA_URL") or "http://127.0.0.1:11434"
         ollama_model = data.get("ollama_model") or env.get("OLLAMA_MODEL") or "llama3.2"
 
+        local_url = (data.get("local_openai_url")
+                     or env.get("FORGE_LOCAL_MODEL_URL") or "")
+        local_model = (data.get("local_openai_model")
+                       or env.get("FORGE_LOCAL_MODEL_NAME") or "")
+        local_capabilities = _capability_tuple(
+            data.get("local_openai_capabilities")
+            or env.get("FORGE_LOCAL_MODEL_CAPABILITIES") or "")
+
         config = cls(
             ollama_url=str(ollama_url),
             ollama_model=str(ollama_model),
             ollama_enabled=bool(data.get("ollama_enabled", True)),
             ollama_context_window=int(data.get("ollama_context_window", 8192)),
+            local_openai_enabled=bool(
+                data.get("local_openai_enabled",
+                         bool(local_url and local_model))),
+            local_openai_url=str(local_url),
+            local_openai_model=str(local_model),
+            local_openai_api_key=str(
+                data.get("local_openai_api_key")
+                or env.get("FORGE_LOCAL_MODEL_KEY") or ""),
+            local_openai_context_window=int(
+                data.get("local_openai_context_window")
+                or env.get("FORGE_LOCAL_MODEL_CONTEXT") or 8192),
+            local_openai_timeout=float(
+                data.get("local_openai_timeout") or 120.0),
+            local_openai_capabilities=local_capabilities,
             local_enabled=bool(data.get("local_enabled", True)),
             openai_enabled=bool(data.get("openai_enabled", False)) or bool(env.get("OPENAI_API_KEY")),
             openai_model=str(data.get("openai_model") or env.get("OPENAI_MODEL") or "gpt-4o-mini"),

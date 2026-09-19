@@ -297,6 +297,50 @@ class ModelFabric:
                 metadata={"description": "Local Ollama model."},
             ))
 
+        if config.local_openai_enabled and config.local_openai_url \
+                and config.local_openai_model:
+            from forge.models.local_openai import LocalOpenAIProvider
+
+            local_capabilities = tuple(
+                config.local_openai_capabilities or TEXT_CAPABILITIES)
+            providers.register(
+                "local-openai",
+                LocalOpenAIProvider(
+                    model=config.local_openai_model,
+                    url=config.local_openai_url,
+                    api_key=config.local_openai_api_key,
+                    timeout=config.local_openai_timeout,
+                    capabilities=local_capabilities,
+                ),
+                ProviderInfo(
+                    name="local-openai",
+                    display_name="Self-hosted model endpoint",
+                    kind="local",
+                    local=True,
+                    free=True,
+                    capabilities=local_capabilities,
+                    endpoint=config.local_openai_url,
+                    model=config.local_openai_model,
+                ),
+            )
+            registry.register(Model(
+                name=config.local_openai_model,
+                provider="local-openai",
+                capabilities=local_capabilities,
+                context_window=config.local_openai_context_window,
+                free=True,
+                local=True,
+                #: Registered from configuration, never from a probe: the
+                #: runtime monitor sets `runtime_verified` only after a real
+                #: /models probe observes this exact model.
+                metadata={
+                    "description": "Self-hosted OpenAI-compatible model "
+                                   "endpoint (llama.cpp/vLLM/Ollama).",
+                    "endpoint": config.local_openai_url,
+                    "runtime_verified": False,
+                },
+            ))
+
         if config.openai_enabled and credentials.configured("openai"):
             openai = OpenAIProvider(model=config.openai_model, api_key=credentials.get("openai"))
             providers.register(
