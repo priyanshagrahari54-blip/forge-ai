@@ -123,6 +123,48 @@ def _section_routing(plane) -> dict:
     }
 
 
+def _section_deployment_routing(plane) -> dict:
+    """What happens to the fleet against *this* deployment's own fabric.
+
+    The representative section above proves the plumbing with a
+    capability-complete model. This one uses the fabric the server actually
+    builds, so it shows which specialists cannot run here at all because no
+    configured model provides the capability they require.
+    """
+    fabric = plane.fabric
+    provided = set()
+    for model in fabric.registry:
+        provided |= set(model.capabilities)
+    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    engine = TaskEngine()
+    executed: dict[str, int] = {}
+    blocked: dict[str, int] = {}
+    for name in registry.names():
+        registration = registry.get(name)
+        task = engine.add("deploy-" + name, "specialist smoke task")
+        response = registration.executor.execute(
+            AgentRequest(task, TaskStatus.CODING, instructions="smoke"))
+        if response.success:
+            provider = response.metadata.get("routed_provider", "")
+            executed[provider] = executed.get(provider, 0) + 1
+        else:
+            required = registration.executor.required_capabilities[0]
+            blocked[required] = blocked.get(required, 0) + 1
+    total = len(registry)
+    return {
+        "specialists": total,
+        "executed": sum(executed.values()),
+        "executed_by_provider": executed,
+        "blocked": blocked,
+        "capabilities_provided_by_models": sorted(provided),
+        "every_block_is_a_truly_missing_capability":
+            all(capability not in provided for capability in blocked),
+        "note": ("a blocked specialist means no configured model provides its "
+                 "required capability; it is never rerouted to a model that "
+                 "cannot do the job"),
+    }
+
+
 def _section_fabric(plane) -> dict:
     fabric = plane.fabric
     registry = getattr(fabric, "registry", None)
@@ -255,6 +297,7 @@ def main() -> int:
         report = {
             "agents": _section_agents(plane),
             "routing": _section_routing(plane),
+            "deployment_routing": _section_deployment_routing(plane),
             "fabric": _section_fabric(plane),
             "capabilities": _section_capabilities(plane),
             "background": _section_background(tmp),
@@ -281,6 +324,14 @@ def main() -> int:
     print(f"representatives routed : {routing['representatives_executed']}"
           f"/{routing['roles']} ({routing['provider_state']} provider "
           f"'{routing['provider']}', failures: {len(routing['failures'])})")
+    deploy = report["deployment_routing"]
+    print(f"this deployment's fabric: {deploy['executed']}/"
+          f"{deploy['specialists']} specialists execute "
+          f"(by provider: {deploy['executed_by_provider']})")
+    if deploy["blocked"]:
+        print(f"  blocked (capability no model provides): {deploy['blocked']}")
+    print("  models provide: "
+          f"{', '.join(deploy['capabilities_provided_by_models'])}")
     fabric = report["fabric"]
     print(f"model fabric           : {fabric['state']} "
           f"(models={len(fabric['models_registered'])}, "

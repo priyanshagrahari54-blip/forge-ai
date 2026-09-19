@@ -89,9 +89,37 @@ through the fabric but cannot call a real remote model here.
   computer-use, UX, product, QA, compliance, privacy, localization, math,
   science, finance, legal, prompt, agentic, memory, orchestration,
   integration, release.
-- Executed through real ModelFabric routing: **40/40 representatives** (one per
-  specialization), using an in-process **SIMULATED** provider. This proves the
-  routing and execution plumbing; it is **not** a live remote model call.
+
+### Are all 1,000 working? — the measured answer
+
+| Question | Answer | Evidence |
+| --- | --- | --- |
+| Registered and unique? | **1000/1000**, 25 per role, 40 roles | `scripts/verify_production_readiness.py` |
+| Routable (request is satisfiable)? | **1000/1000** | every specialist's required capabilities are canonical and met by a capability-complete model |
+| Executable end-to-end? | **1000/1000** in 0.09 s | all 1,000 executed through a real `ModelFabric` with a recording provider (1,000 provider calls) |
+| Executable on *this* deployment's fabric? | **900/1000** | the other **100** require `vision`, `audio`, `browser` or `computer_use` (25 each) and no configured model provides those capabilities — they fail loudly, they are never rerouted to a model that cannot do the job |
+| Producing real work right now? | **No** | with no runtime-verified live model, the 900 “successful” calls route to the deterministic `local` stub, whose output is literally *“No safe local synthesis engine is configured”* — provenance says `routed_provider=local`, so this is visible, not hidden |
+| Selectable by the planner? | **All 10 requirement capabilities staffed** | coding, testing, debugging, review, security, documentation, research, architecture, performance, git each resolve to a real specialist, and core tool-using agents (coder/debugger/reviewer/tester/security) win ties for their own capabilities |
+| Selectable when a capability is missing? | **Reported, not hidden** | `AgentPlan.unmet` and the `agents_selected` event carry `unmet_capabilities` |
+
+Two defects were found and fixed while answering this question:
+
+1. **Secondary capabilities were hard requirements.** `tool_use` was required
+   by 100 specialists (coder, integration, agentic, orchestration) and could not
+   be relaxed by the router, so they failed against models that could do their
+   actual job. Only the specialization-defining capability is required now;
+   the rest travel as `preferred_capabilities`. Failures dropped 200 → 100.
+2. **Three planner capabilities had no specialist at all.** `documentation`,
+   `performance` and `git` needs were silently dropped by the planner
+   (documentation specialists advertised `writing`, performance specialists
+   `optimization`, and no role was `git`), so a “document the deployment steps”
+   task planned **zero** agents. Fixed by advertising the capabilities the
+   requirement vocabulary uses and mapping `git` to the release-engineering
+   role; every requirement capability now selects a specialist.
+
+Representatives: **40/40** (one per specialization) routed through a real
+`ModelFabric` with an in-process **SIMULATED** provider — plumbing proven, not
+a live remote model call.
 
 ## 5. Background execution and persistence
 
@@ -105,7 +133,8 @@ through the fabric but cannot call a real remote model here.
 
 ## 6. Blocked external dependencies
 
-**1. Real model execution** — BLOCKED
+**1. Real model execution** — BLOCKED (this is why the 900 “executing”
+specialists still produce no real work)
 - *Reason*: no provider credential or reachable model endpoint exists in this
   environment.
 - *Already implemented*: ModelFabric routing, capability matching, runtime
@@ -114,6 +143,20 @@ through the fabric but cannot call a real remote model here.
   reachable `OLLAMA_BASE_URL`, then re-run
   `scripts/verify_production_readiness.py`; the state flips from CONFIGURED to
   LIVE only when a model is runtime-verified.
+
+**1b. Vision / audio / browser / computer-use specialists (100 of 1000)** —
+BLOCKED
+- *Reason*: the configured models declare coding, debugging, documentation,
+  planning, reasoning, research, review, security, structured_output and
+  testing — none declares `vision`, `audio`, `browser` or `computer_use`.
+- *Already implemented*: those 25+25+25+25 specialists are registered, routed
+  and executable the moment a model advertising the capability is configured;
+  they currently fail with an explicit capability error instead of being
+  rerouted to a model that cannot do the job.
+- *Exact requirement*: register a multimodal/vision model (e.g. a vision Ollama
+  model such as `llava` / `qwen2.5vl` through `OLLAMA_BASE_URL`, or a hosted
+  vision model), plus browser/computer-use backends for those two
+  specializations; re-run the readiness script and the blocked counts drop.
 
 **2. Render deployment of this commit** — BLOCKED
 - *Reason*: no Render API key or deploy hook is available here, and this

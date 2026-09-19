@@ -179,7 +179,11 @@ class TaskRequirementExtractor:
         "research": "research",
         "architecture": "architecture",
         "performance": "performance",
-        "git": "git",
+        #: Version-control work (commit/branch/merge) is owned by the
+        #: release-engineering specialist: no fleet role is literally
+        #: "git", and leaving the mapping as "git" made the planner drop
+        #: the capability instead of selecting an agent for it.
+        "git": "release-engineering",
     }
 
     def extract(self, task_description: str) -> TaskRequirements:

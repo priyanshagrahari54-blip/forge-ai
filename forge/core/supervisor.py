@@ -308,11 +308,19 @@ class Supervisor:
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
+            if agent_plan.unmet:
+                #: A capability the task needs that no registered agent could
+                #: take. Recorded, never hidden: the run continues with the
+                #: agents that do exist, but no caller may read the plan as
+                #: fully staffed.
+                result["plan"]["unmet"] = list(agent_plan.unmet)
             result["selected_agents"] = list(agent_plan.names)
             if not agent_plan.agents or "coder" not in agent_plan.names:
                 raise RuntimeError("capability planner could not select a coding agent")
             timed("plan", plan_started)
             fleet_details: dict[str, Any] = {"agents": list(agent_plan.names)}
+            if agent_plan.unmet:
+                fleet_details["unmet_capabilities"] = list(agent_plan.unmet)
             if fleet_registered_agents:
                 fleet_details["registered_agents"] = fleet_registered_agents
                 fleet_details["logical_fleet"] = True

@@ -30,6 +30,23 @@ def routing_capabilities(declared: tuple[str, ...]) -> tuple[str, ...]:
     return canonical or ("reasoning",)
 
 
+def required_and_preferred(
+        canonical: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split canonical capabilities into what is *required* and *preferred*.
+
+    The router never relaxes a capability requirement, so everything listed as
+    required must be advertised by the serving model or the specialist cannot
+    run at all. Only the specialization-defining capability is therefore
+    required — a coder needs ``coding`` and may *prefer* ``tool_use``, because
+    tool execution belongs to Forge's own tool layer, not to the model. Making
+    the preference a hard requirement left hundreds of specialists unroutable
+    against perfectly capable models.
+    """
+    if not canonical:
+        return ("reasoning",), ()
+    return (canonical[0],), tuple(canonical[1:])
+
+
 FRONTIER_MODELS: tuple[str, ...] = (
     "openai/gpt-5.6-sol",
     "openai/gpt-5.6-terra",
@@ -48,6 +65,11 @@ FRONTIER_MODELS: tuple[str, ...] = (
 )
 
 # 40 specializations x 26 model/strategy variants = 1,040 logical agents.
+#: Every capability ``TaskRequirementExtractor`` can emit (coding, testing,
+#: debugging, review, security, documentation, research, architecture,
+#: performance, git) must be advertised — and be paired with the matching
+#: role — by at least one specialization, otherwise the planner silently
+#: drops that part of the requirement and the task runs under-covered.
 SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("planner", "planning", ("planning", "reasoning")),
     ("architect", "architecture", ("architecture", "reasoning")),
@@ -61,9 +83,11 @@ SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("tester", "testing", ("testing", "coding")),
     ("reviewer", "reviewing", ("review", "reasoning")),
     ("security", "security", ("security", "reasoning")),
-    ("performance", "performance", ("optimization", "coding")),
+    ("performance", "performance",
+     ("performance", "optimization", "coding")),
     ("refactor", "refactoring", ("coding", "refactor")),
-    ("documentation", "documentation", ("writing", "coding")),
+    ("documentation", "documentation",
+     ("documentation", "writing", "coding")),
     ("api", "api-design", ("coding", "api")),
     ("data", "data-engineering", ("coding", "data")),
     ("ml", "machine-learning", ("coding", "reasoning")),
@@ -88,7 +112,8 @@ SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("memory", "memory", ("reasoning", "data")),
     ("orchestration", "orchestration", ("planning", "tool_use")),
     ("integration", "integration", ("coding", "tool_use")),
-    ("release", "release-engineering", ("deployment", "testing")),
+    ("release", "release-engineering",
+     ("git", "deployment", "testing")),
 )
 
 
@@ -113,6 +138,11 @@ class FrontierModelAgentExecutor(AgentExecutor):
             else capabilities)
         #: What the Model Fabric is asked for: canonical capabilities only.
         self.capabilities = routing_capabilities(tuple(capabilities))
+        #: The router never relaxes a hard requirement, so only the
+        #: specialization-defining capability is required; the rest travel as
+        #: preferences that a capable model may satisfy.
+        self.required_capabilities, self.preferred_capabilities = \
+            required_and_preferred(self.capabilities)
         self.fabric = fabric
 
     def execute(self, request: AgentRequest) -> AgentResponse:
@@ -138,8 +168,11 @@ class FrontierModelAgentExecutor(AgentExecutor):
             task=self.role,
             caller=f"frontier-agent:{self.name}",
             context=context,
-            capability=self.capabilities[0],
-            required_capabilities=self.capabilities,
+            #: Hard requirement: the capability that defines this
+            #: specialization. A model that does not advertise it must not be
+            #: used for this specialist.
+            capability=self.required_capabilities[0],
+            required_capabilities=self.required_capabilities,
             complexity=max(1.0, float(getattr(request.task, "attempts", 0) + 1)),
             metadata={
                 "agent": self.name,
@@ -150,6 +183,8 @@ class FrontierModelAgentExecutor(AgentExecutor):
                 #: model must actually support — never conflated.
                 "declared_capabilities": ",".join(self.declared_capabilities),
                 "routing_capabilities": ",".join(self.capabilities),
+                "required_capabilities": ",".join(self.required_capabilities),
+                "preferred_capabilities": ",".join(self.preferred_capabilities),
             },
         )
         response = self.fabric.generate(model_request)
