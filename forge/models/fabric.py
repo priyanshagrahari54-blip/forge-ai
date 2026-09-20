@@ -723,6 +723,13 @@ class ModelFabric:
         if not decision.chosen:
             return decision
         required = request.effective_capabilities()
+        request_preferences = request.effective_model_preferences()
+
+        # The request-level preference is stronger than fabric defaults once
+        # the router has proven that the preferred model is eligible. Defaults
+        # may still fill the gap when no requested preference was eligible.
+        if request_preferences and decision.model.name in request_preferences:
+            return decision
 
         if self.default_model and self.default_model in decision.candidates:
             model = self.registry.get(self.default_model)
