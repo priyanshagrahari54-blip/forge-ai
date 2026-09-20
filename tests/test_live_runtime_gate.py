@@ -25,6 +25,9 @@ def test_discovered_runtime_is_not_routable_until_inference_is_verified(tmp_path
     service.tick(force=True, now=100.0)
     assert service.registry.get("fake:model-live").state == RuntimeState.CONFIGURED.value
     assert registry.get("model-live").available is False
+    assert registry.get("model-live").metadata["runtime_verified"] is False
+    assert registry.get("model-live").metadata["runtime_verified"] is False
+    assert registry.get("model-live").metadata["verification_kind"] == "discovered"
 
     provider.models = []
     service.tick(force=True, now=401.0)
