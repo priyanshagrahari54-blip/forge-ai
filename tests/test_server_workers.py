@@ -40,7 +40,14 @@ def test_successful_run_completes_with_result_and_notification(tmp_path):
         assert finished.progress == 1.0
         assert finished.stage == "completed"
         assert finished.error == ""
-        assert server.notifications.unread_count("demo") == 1
+        # The terminal transition and the notification are two steps of the
+        # completion sequence, so a caller that observed COMPLETED may still be
+        # a moment ahead of the notification. Wait for it with the same bounded
+        # helper the memory-file assertion below uses — the guarantee under
+        # test is that the notification always arrives, not that it arrives in
+        # the same instant.
+        assert wait_until(
+            lambda: server.notifications.unread_count("demo") == 1, timeout=10)
         kinds = [n["kind"] for n in server.notifications.list("demo")]
         assert "task.completed" in kinds
         # Memory integration: bounded outcome summary in project memory.
