@@ -354,7 +354,15 @@ adapter work)
   on for that branch Render rebuilds by itself; or **(b)** Render dashboard →
   `forge-ai-server` → *Manual Deploy → Deploy latest commit* (or pick the
   branch/commit), or `render deploys create <service-id> --commit <sha>` with a
-  Render API key.
+  Render API key; or **(c)** run this branch on one of your own servers, which
+  needs no dashboard at all:
+  `git fetch origin arena/01a0b955-forge-ai && git switch --detach FETCH_HEAD`,
+  then `python -m pip install ".[media]"` (or `docker build -t forge-ai .`), then
+  `FORGE_AUTH_MODE=production python forge_web.py` — the image and the extra both
+  include the real vision / speech / image backends, and the voice loop is
+  configured to use them (`FORGE_VOICE_{TTS,STT}_PROVIDER=local-inprocess`).
+  *Verify*: `GET /api/v1/health` → `status: ok`, `GET /voice-playback.js` → 200,
+  `GET /api/v1/multimodal` and `/api/v1/channels` → 401 without a token.
   *Verify*: `GET /voice-playback.js` → 200,
   `GET /api/v1/multimodal` and `/api/v1/channels` → **401** without a token
   (they are read-only and auth-protected), `GET /api/v1/health` → `status: ok`.
