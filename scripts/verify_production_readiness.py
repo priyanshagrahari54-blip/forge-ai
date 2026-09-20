@@ -368,13 +368,14 @@ def _section_finetune() -> dict:
     from forge.training.job import register_default_trainers
     from forge.models.model_studio import ModelStudio
 
+    import json as _json
+
     studio = ModelStudio(root=str(REPO))
     registered = register_default_trainers(studio)
     reports = sorted((REPO / ".forge" / "models").glob("*/training.json"))
     trained = sorted((REPO / ".forge" / "models").glob("*/training.json"))
     last: dict = {}
     if reports:
-        import json as _json
         newest = max(reports, key=lambda path: path.stat().st_mtime)
         try:
             payload = _json.loads(newest.read_text(encoding="utf-8"))
@@ -391,6 +392,34 @@ def _section_finetune() -> dict:
             }
         except (ValueError, OSError):
             last = {}
+    #: Promotion is a separate decision from training: the studio's gate
+    #: compares the adapter with the base model on held-out evidence. Report
+    #: the newest manifest, including an honest ``rejected`` verdict.
+    promotion: dict = {
+        "gate": "ModelStudio.promote (average + per-category + regression "
+                "budget against the base model)",
+        "runner": "scripts/finetune_specialists.py --evaluate",
+        "last_manifest": {},
+    }
+    manifests = sorted((REPO / ".forge" / "models").glob("*.manifest.json"))
+    if manifests:
+        newest_manifest = max(manifests, key=lambda path: path.stat().st_mtime)
+        try:
+            payload = _json.loads(newest_manifest.read_text(encoding="utf-8"))
+            artifact = payload.get("artifact") or {}
+            benchmarks = payload.get("benchmarks") or []
+            scores = [float(item.get("score") or 0.0) for item in benchmarks]
+            promotion["last_manifest"] = {
+                "path": str(newest_manifest.relative_to(REPO)),
+                "artifact_id": artifact.get("id", ""),
+                "status": artifact.get("status", ""),
+                "benchmarks": len(benchmarks),
+                "average": (round(sum(scores) / len(scores), 4)
+                            if scores else 0.0),
+            }
+        except (ValueError, OSError, TypeError):
+            promotion["last_manifest"] = {}
+
     stack = {"torch": _importable("torch"), "gguf": _importable("gguf"),
              "tokenizers": _importable("tokenizers"),
              "transformers": _importable("transformers"),
@@ -400,6 +429,7 @@ def _section_finetune() -> dict:
         "registered_trainers": studio.trainers(),
         "usable_for_local_gguf": "gguf-lora" in studio.trainers(),
         "adapters_trained_on_this_machine": len(trained),
+        "promotion": promotion,
         "last_training_report": last,
         "blocked": ("" if studio.trainers() else
                     "no training backend is registered: install torch + gguf + "
@@ -518,6 +548,12 @@ def main() -> int:
               f"{last['trainable_parameters']} params, servable={last['servable']}")
     elif finetune["blocked"]:
         print(f"  BLOCKED: {finetune['blocked']}")
+    verdict = (finetune.get("promotion") or {}).get("last_manifest") or {}
+    if verdict:
+        print(f"  promotion gate       : {verdict.get('status', '?')} on "
+              f"{verdict.get('benchmarks', 0)} held-out case(s), "
+              f"average {verdict.get('average', 0.0)} "
+              f"({verdict.get('artifact_id', '')})")
     return 0
 
 

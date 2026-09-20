@@ -35,8 +35,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from forge.models.model_studio import ModelStudio               # noqa: E402
+from forge.models.model_studio import (                         # noqa: E402
+    ModelStudio,
+    PromotionGate,
+)
 from forge.training.dataset import build_dataset                # noqa: E402
+from forge.training.promotion import evaluate_artifact          # noqa: E402
 from forge.training.job import (                                # noqa: E402
     FineTuneJob,
     JobState,
@@ -64,6 +68,18 @@ def main() -> int:
     parser.add_argument("--allow-network", action="store_true",
                         help="let the training backend download the base model")
     parser.add_argument("--out", default="")
+    parser.add_argument("--no-evaluate", dest="evaluate", action="store_false",
+                        help="skip the held-out base-vs-adapter comparison")
+    parser.add_argument("--eval-cases", type=int, default=6,
+                        help="held-out prompts to compare the adapter on")
+    parser.add_argument("--eval-tokens", type=int, default=24,
+                        help="greedy tokens generated per answer")
+    parser.add_argument("--gate-min-average", type=float, default=0.35,
+                        help="promotion gate: minimum average score")
+    parser.add_argument("--gate-min-category", type=float, default=0.25,
+                        help="promotion gate: minimum per-category score")
+    parser.add_argument("--gate-max-regression", type=float, default=0.05,
+                        help="promotion gate: allowed regression vs the base model")
     args = parser.parse_args()
 
     sources = [Path(item) for item in args.dataset] or [
@@ -117,6 +133,7 @@ def main() -> int:
     for requirement in job.requirements:
         print(f"  requirement  : {requirement}")
 
+    evaluation = None
     if state is JobState.READY:
         print(f"training       : {job.trainer} × {args.epochs} epoch(s) on "
               f"{len(job.records)} examples …")
@@ -126,10 +143,37 @@ def main() -> int:
             print(f"  provenance   : base={artifact.provenance.base_model} "
                   f"method={artifact.provenance.method} "
                   f"trainer={artifact.provenance.trainer}")
+            #: Training is not promotion. The adapter is compared against the
+            #: base model on prompts it never saw, and the studio's gate
+            #: decides — a rejected adapter stays a candidate artifact.
+            if args.evaluate:
+                print(f"evaluating     : {args.eval_cases} held-out case(s) × "
+                      f"{args.eval_tokens} tokens, base vs adapter …")
+                outcome = evaluate_artifact(
+                    studio, artifact, bundle.records,
+                    specialization=args.specialization,
+                    gate=PromotionGate(
+                        minimum_average=args.gate_min_average,
+                        minimum_category=args.gate_min_category,
+                        maximum_regression=args.gate_max_regression,
+                        require_all_critical=False),
+                    max_cases=args.eval_cases,
+                    max_new_tokens=args.eval_tokens)
+                evaluation = outcome.to_dict()
+                print(f"promotion      : {evaluation['status']} "
+                      f"(average {evaluation['average']} vs base "
+                      f"{evaluation['baseline_average']}, "
+                      f"delta {evaluation['delta']})")
+                for note in evaluation["notes"]:
+                    print(f"  note         : {note}")
+                if evaluation["manifest"]:
+                    print(f"manifest       : {evaluation['manifest']}")
         else:
             print(f"FAILED         : {job.error}")
 
     report = job.to_dict()
+    if evaluation is not None:
+        report["evaluation"] = evaluation
     report["dataset_fingerprint"] = bundle.fingerprint
     report["dataset_by_role"] = bundle.by_role
     report["dataset_report"] = bundle.report
