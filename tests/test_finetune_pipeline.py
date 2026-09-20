@@ -222,3 +222,82 @@ def test_an_artifact_the_backend_did_not_mark_trained_is_refused(tmp_path):
     assert job.run(minimum_records=8) is None
     assert job.state is JobState.FAILED
     assert job.artifact is None
+
+
+def test_a_role_filter_trains_one_specialisation_not_the_whole_fleet(tmp_path):
+    """A security adapter must learn security answers, not everyone's."""
+    artifact = _evidence(tmp_path / "run.json", [
+        {"agent": f"c{i}", "role": "coding", "success": True,
+         "required_capability": "coding", "output": f"Coding answer {i}."}
+        for i in range(3)
+    ] + [
+        {"agent": f"s{i}", "role": "security", "success": True,
+         "required_capability": "security", "output": f"Security answer {i}."}
+        for i in range(3)
+    ])
+    studio = ModelStudio(root=tmp_path)
+
+    mixed = build_dataset([artifact], studio=studio,
+                          output=tmp_path / "mixed.jsonl")
+    focused = build_dataset([artifact], studio=studio,
+                            output=tmp_path / "security.jsonl",
+                            roles=["security"])
+
+    assert len(mixed.records) == 6, "without a filter every role is included"
+    assert len(focused.records) == 3, "only the requested role survives"
+    assert focused.by_role == {"security": 3}
+    #: The unfiltered counts stay visible, so a narrowed dataset is auditable.
+    assert focused.report["roles_before_filter"] == {"coding": 3, "security": 3}
+    assert focused.report["role_filter"] == ["security"]
+    assert focused.fingerprint != mixed.fingerprint
+    written = focused.path.read_text(encoding="utf-8")
+    assert "Coding answer" not in written
+    assert "Security answer" in written
+
+
+def test_role_names_are_matched_case_and_separator_insensitively(tmp_path):
+    artifact = _evidence(tmp_path / "run.json", [
+        {"agent": f"q{i}", "role": "quality-assurance", "success": True,
+         "required_capability": "testing", "output": f"QA answer {i}."}
+        for i in range(2)
+    ] + [
+        {"agent": "d0", "role": "devops", "success": True,
+         "required_capability": "devops", "output": "DevOps answer."}
+    ])
+    studio = ModelStudio(root=tmp_path)
+
+    for spelling in ("quality-assurance", "Quality_Assurance", "QUALITY ASSURANCE"):
+        bundle = build_dataset([artifact], studio=studio,
+                               output=tmp_path / "qa.jsonl", roles=[spelling])
+        assert bundle.by_role == {"quality-assurance": 2}, spelling
+        assert bundle.report["role_filter"] == ["quality assurance"]
+
+
+def test_an_unknown_role_yields_an_empty_dataset_not_a_silent_mix(tmp_path):
+    """Asking for a role the evidence never ran must not fall back to others.
+
+    An empty dataset then fails the job's own minimum-records preflight, which
+    is the honest outcome: there is nothing to learn for that specialist.
+    """
+    artifact = _evidence(tmp_path / "run.json", [
+        {"agent": f"c{i}", "role": "coding", "success": True,
+         "required_capability": "coding", "output": f"Coding answer {i}."}
+        for i in range(3)
+    ])
+    studio = ModelStudio(root=tmp_path)
+    bundle = build_dataset([artifact], studio=studio,
+                           output=tmp_path / "vision.jsonl", roles=["vision"])
+
+    assert bundle.records == []
+    assert bundle.by_role == {}
+    assert bundle.report["roles_before_filter"] == {"coding": 3}
+    assert bundle.path.read_text(encoding="utf-8") == ""
+
+    job = FineTuneJob(specialization="vision", dataset_path=bundle.path,
+                      base_model="SmolLM2-135M-Instruct",
+                      records=bundle.records, studio=studio,
+                      trainer="gguf-lora")
+    state = job.preflight(minimum_records=8)
+    assert state is JobState.BLOCKED
+    assert any("0 usable examples" in blocker for blocker in job.blockers), \
+        f"the empty dataset must be named: {job.blockers}"

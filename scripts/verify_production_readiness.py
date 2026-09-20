@@ -420,6 +420,7 @@ def _section_finetune() -> dict:
         except (ValueError, OSError, TypeError):
             promotion["last_manifest"] = {}
 
+    coverage = _dataset_role_coverage(REPO)
     stack = {"torch": _importable("torch"), "gguf": _importable("gguf"),
              "tokenizers": _importable("tokenizers"),
              "transformers": _importable("transformers"),
@@ -430,10 +431,63 @@ def _section_finetune() -> dict:
         "usable_for_local_gguf": "gguf-lora" in studio.trainers(),
         "adapters_trained_on_this_machine": len(trained),
         "promotion": promotion,
+        "role_coverage": coverage,
         "last_training_report": last,
         "blocked": ("" if studio.trainers() else
                     "no training backend is registered: install torch + gguf + "
                     "tokenizers (local GGUF LoRA) or the HuggingFace/PEFT stack"),
+    }
+
+
+def _relative(root: Path, item) -> str:
+    """Sources come back as strings from the dataset builder."""
+    try:
+        return str(Path(item).relative_to(root))
+    except ValueError:
+        return str(item)
+
+
+def _dataset_role_coverage(root: Path) -> dict:
+    """Which roles the recorded evidence can train an adapter for.
+
+    Read-only on purpose: a readiness report must not write a dataset. The
+    numbers come from the same builder the training script uses, so a role is
+    trainable here exactly when ``--roles`` would find enough rows for it.
+    """
+    evidence = sorted((root / "docs" / "evidence").glob("fleet-real-run-*.json"))
+    if not evidence:
+        return {"evidence": "", "roles": 0, "trainable": 0, "blocked": [],
+                "note": "no fleet-run evidence is committed, so there is "
+                        "nothing to fine-tune on"}
+    try:
+        import tempfile
+
+        from forge.models.model_studio import ModelStudio
+        from forge.training.dataset import build_dataset
+
+        #: The builder always writes its JSONL, so send it to a scratch file
+        #: instead of dropping a dataset into the deployment's model folder.
+        with tempfile.TemporaryDirectory() as scratch:
+            bundle = build_dataset(
+                evidence, studio=ModelStudio(root=str(root)),
+                output=Path(scratch) / "coverage.jsonl")
+    except Exception as exc:            # noqa: BLE001 - reported, not raised
+        return {"evidence": str(evidence[-1]), "roles": 0, "trainable": 0,
+                "blocked": [], "note": f"dataset could not be built: {exc}"}
+    minimum = 8                        # FineTuneJob.preflight default
+    trainable = sorted(role for role, count in bundle.by_role.items()
+                       if count >= minimum)
+    blocked = sorted(role for role, count in bundle.by_role.items()
+                     if count < minimum)
+    return {
+        "evidence": ", ".join(_relative(root, item) for item in bundle.sources),
+        "validated_rows": len(bundle.records),
+        "roles": len(bundle.by_role),
+        "trainable": len(trainable),
+        "minimum_records": minimum,
+        "blocked": blocked,
+        "note": "each role trains its own adapter: "
+                "scripts/finetune_specialists.py --roles <role>",
     }
 
 
@@ -548,6 +602,15 @@ def main() -> int:
               f"{last['trainable_parameters']} params, servable={last['servable']}")
     elif finetune["blocked"]:
         print(f"  BLOCKED: {finetune['blocked']}")
+    coverage = finetune.get("role_coverage") or {}
+    if coverage.get("roles"):
+        print(f"  role coverage        : {coverage['trainable']}/{coverage['roles']} "
+              f"role(s) can train from {coverage['validated_rows']} validated "
+              f"row(s) (>= {coverage['minimum_records']} each)")
+        if coverage.get("blocked"):
+            print(f"  BLOCKED roles        : {', '.join(coverage['blocked'])}")
+    elif coverage.get("note"):
+        print(f"  role coverage        : {coverage['note']}")
     verdict = (finetune.get("promotion") or {}).get("last_manifest") or {}
     if verdict:
         print(f"  promotion gate       : {verdict.get('status', '?')} on "

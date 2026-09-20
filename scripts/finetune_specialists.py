@@ -50,6 +50,38 @@ from forge.training.job import (                                # noqa: E402
 BLOCKED_EXIT = 3
 
 
+def report_coverage(sources: list[Path], *, minimum_records: int) -> int:
+    """Which specialisations can this evidence actually train an adapter for?
+
+    A role needs ``minimum_records`` validated rows of its own. Listing every
+    role in the evidence makes coverage auditable before spending GPU time, and
+    a role that cannot reach the minimum is reported as such instead of being
+    silently trained on other specialists' answers.
+    """
+    studio = ModelStudio(root=str(REPO))
+    bundle = build_dataset(sources, studio=studio,
+                           output=REPO / ".forge" / "models"
+                           / "coverage-finetune.jsonl")
+    coverage = {role: count for role, count in bundle.by_role.items()}
+    trainable = {role: count for role, count in coverage.items()
+                 if count >= minimum_records}
+    print(f"evidence       : {', '.join(bundle.sources)}")
+    print(f"validated rows : {len(bundle.records)} across {len(coverage)} role(s)")
+    print(f"trainable now  : {len(trainable)}/{len(coverage)} role(s) "
+          f"with at least {minimum_records} row(s)")
+    for role, count in sorted(coverage.items()):
+        state = "READY" if count >= minimum_records else "BLOCKED"
+        print(f"  {role:<22} {state:<8} {count} row(s)")
+    blocked = sorted(role for role, count in coverage.items()
+                     if count < minimum_records)
+    if blocked:
+        print(f"  BLOCKED: {', '.join(blocked)} — need more evidence "
+              f"(run the fleet for those roles and re-run)")
+    print(f"hint           : train one at a time with "
+          f"--specialization <role> --roles <role>")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", action="append", default=[],
@@ -80,6 +112,11 @@ def main() -> int:
                         help="promotion gate: minimum per-category score")
     parser.add_argument("--gate-max-regression", type=float, default=0.05,
                         help="promotion gate: allowed regression vs the base model")
+    parser.add_argument("--roles", default="",
+                        help="comma-separated specialist roles to train on "
+                             "(default: every role in the evidence)")
+    parser.add_argument("--coverage", action="store_true",
+                        help="report which roles the evidence can train, and stop")
     args = parser.parse_args()
 
     sources = [Path(item) for item in args.dataset] or [
@@ -94,13 +131,18 @@ def main() -> int:
               "runtime-verified model to produce evidence first")
         return BLOCKED_EXIT
 
+    roles = [item for item in args.roles.split(",") if item.strip()]
+    if args.coverage:
+        return report_coverage(sources, minimum_records=args.minimum_records)
+
     studio = ModelStudio(root=str(REPO))
     declared = register_default_trainers(studio, allow_network=args.allow_network,
                                         base_model=args.base_model,
                                         steps=args.steps)
     bundle = build_dataset(sources, studio=studio,
                            output=REPO / ".forge" / "models"
-                           / f"{args.specialization}-finetune.jsonl")
+                           / f"{args.specialization}-finetune.jsonl",
+                           roles=roles or None)
     print(f"dataset        : {bundle.path}")
     print(f"examples       : {len(bundle.records)} "
           f"(of {len(bundle.records) + bundle.report['duplicates_removed'] + bundle.report['rejected']} "
@@ -108,6 +150,10 @@ def main() -> int:
           f"{bundle.report['rejected']} rejected, "
           f"{bundle.report['secret_bearing']} secret-bearing)")
     print(f"roles          : {bundle.by_role}")
+    if roles:
+        print(f"role filter    : {roles} "
+              f"(of {sum((bundle.report.get('roles_before_filter') or {}).values())}"
+              f" validated rows)")
     print(f"fingerprint    : {bundle.fingerprint[:32]}…")
     print(f"trainers       : {studio.trainers() or 'none registered'}"
           f"{' (auto-registered: ' + ', '.join(declared) + ')' if declared else ''}")

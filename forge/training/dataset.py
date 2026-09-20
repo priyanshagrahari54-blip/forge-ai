@@ -113,6 +113,16 @@ def export_instruction_records(
     return records, used
 
 
+def _normalise_role(name: str) -> str:
+    """Role names are spelled with ``-``, ``_`` or spaces across the codebase."""
+    return " ".join(str(name).strip().lower().replace("-", " ").replace("_", " ")
+                    .split())
+
+
+def _normalise_roles(roles: Iterable[str] | None) -> set[str]:
+    return {_normalise_role(role) for role in (roles or []) if str(role).strip()}
+
+
 def build_dataset(
     sources: Iterable[str | Path],
     *,
@@ -120,12 +130,21 @@ def build_dataset(
     output: str | Path | None = None,
     brief: str = DEFAULT_SPECIALIST_BRIEF,
     strict: bool = False,
+    roles: Iterable[str] | None = None,
 ) -> DatasetBundle:
     """Validate, deduplicate and write a fine-tuning dataset as JSONL.
 
     Validation is the studio's: it rejects secret-bearing records, so a dataset
     built here can be shared without leaking a credential that a task happened
     to contain.
+
+    ``roles`` narrows the dataset to the specialists a single adapter is being
+    trained for (case-insensitive, ``-``/``_``/space interchangeable). Without
+    it every role in the evidence is mixed together, which teaches a
+    specialisation nothing in particular: a ``security`` adapter trained on the
+    whole fleet is not a security adapter. The unfiltered counts stay in
+    ``report["roles_before_filter"]`` so a narrowed dataset can still be
+    audited against what the evidence contained.
     """
     studio = studio or ModelStudio(root=".")
     records, used = export_instruction_records(sources, brief=brief)
@@ -152,6 +171,23 @@ def build_dataset(
                                        "unknown")
         by_role[role] = by_role.get(role, 0) + 1
 
+    roles_before_filter = dict(sorted(by_role.items()))
+    report_dict = report.to_dict()
+    report_dict["roles_before_filter"] = roles_before_filter
+    wanted = _normalise_roles(roles)
+    if wanted:
+        accepted = [
+            record for record in accepted
+            if _normalise_role(role_by_instruction.get(
+                str(record.get("instruction", "")), "unknown")) in wanted
+        ]
+        by_role = {}
+        for record in accepted:
+            role = role_by_instruction.get(str(record.get("instruction", "")),
+                                           "unknown")
+            by_role[role] = by_role.get(role, 0) + 1
+    report_dict["role_filter"] = sorted(wanted)
+
     target = Path(output) if output else (
         Path(studio.directory) / "finetune-dataset.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +199,7 @@ def build_dataset(
     return DatasetBundle(
         path=target,
         records=list(accepted),
-        report=report.to_dict(),
+        report=report_dict,
         fingerprint=_fingerprint(accepted),
         by_role=dict(sorted(by_role.items())),
         sources=used,
