@@ -57,6 +57,17 @@ class RuntimeMonitor:
                 runtime.verification_id, True,
             )
 
+        # Discovery proves provider exposure, not successful inference.
+        if str(result.status or "").lower() == "discovered":
+            if runtime.state in {RuntimeState.VERIFIED.value, RuntimeState.LIVE.value, RuntimeState.UNAVAILABLE.value}:
+                runtime.state = RuntimeState.CONFIGURED.value
+            runtime.last_checked = checked
+            runtime.last_reason = result.reason
+            return RuntimeMonitorResult(
+                runtime.provider, runtime.model_id, runtime.state, result,
+                runtime.verification_id, True,
+            )
+
         verification_id = str(uuid4())
         if runtime.state == RuntimeState.UNAVAILABLE.value:
             # Recovery is explicit: a fresh successful probe is allowed to
