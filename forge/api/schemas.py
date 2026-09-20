@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, constr
 
 PROFILE_VALUES = ("safe", "assisted", "autonomous", "locked")
 COMMAND_VALUES = ("START_TASK", "PAUSE_TASK", "RESUME_TASK", "CANCEL_TASK",
@@ -172,6 +172,8 @@ class ModelGenerateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     capability: str = Field(default="coding", max_length=64)
     approval_id: str = Field(default="", max_length=200)
+    preferred_models: List[constr(strip_whitespace=True, min_length=1, max_length=200)] = Field(default_factory=list, max_length=16)
+    fallback_models: List[constr(strip_whitespace=True, min_length=1, max_length=200)] = Field(default_factory=list, max_length=16)
 
 
 # -- A47 research / intelligence --------------------------------------------------------
