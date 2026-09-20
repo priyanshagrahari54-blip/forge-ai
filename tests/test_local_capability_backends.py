@@ -57,7 +57,10 @@ def test_a_failed_probe_is_never_reported_as_a_capability():
     for capability, report in reports.items():
         if report.get("probe") == "passed":
             continue
-        assert report.get("reason"), f"{capability} failed without a reason"
+        #: "skipped" counts too: a probe that did not run must say why, or a
+        #: reader cannot tell a missing backend from an unnoticed failure.
+        assert report.get("reason"), f"{capability} was not probed and did " \
+                                     "not say why"
     verified = probe_local_capabilities()["verified"]
     for capability in verified:
         assert reports[capability]["probe"] == "passed"
@@ -108,7 +111,12 @@ def test_a_capability_whose_probe_failed_is_refused(monkeypatch):
                for model in registered)
     skipped = {entry["capability"]: entry["reason"]
                for entry in result["skipped"]}
-    assert "raster" in skipped["image_generation"]
+    #: Which sentence explains the skip depends on the machine: with the
+    #: renderer installed the reason is the probe the test forced to fail,
+    #: without it the reason is the package that is missing. Both name what is
+    #: actually wrong, which is the property under test.
+    reason = skipped["image_generation"]
+    assert "raster" in reason or "Pillow" in reason
 
 
 def test_unverified_registration_claims_nothing():

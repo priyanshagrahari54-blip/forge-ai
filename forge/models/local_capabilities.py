@@ -118,14 +118,26 @@ def probe_audio() -> dict[str, Any]:
                               "text_to_speech": {"probe": "skipped"},
                               "speech_to_text": {"probe": "skipped"}}
     if not state["text_to_speech"]["available"]:
-        result["text_to_speech"] = {
-            "probe": "failed",
-            "reason": state["text_to_speech"]["requirement"]}
+        requirement = state["text_to_speech"]["requirement"]
+        result["text_to_speech"] = {"probe": "failed", "reason": requirement}
+        #: Recognition cannot be exercised without a sample to recognise.
+        #: "skipped" alone would be exactly the kind of unexplained gap this
+        #: module exists to prevent, so it says why.
+        result["speech_to_text"] = {
+            "probe": "skipped",
+            "reason": f"no sample could be produced to recognise: {requirement}"}
         return result
     try:
         wav = _LocalTTSProbe().synthesize()
     except Exception as exc:                                # noqa: BLE001
-        result["text_to_speech"] = {"probe": "failed", "reason": str(exc)[:200]}
+        reason = str(exc)[:200]
+        result["text_to_speech"] = {"probe": "failed", "reason": reason}
+        #: Recognition needs a real sample to decode, and with synthesis down
+        #: there is none — so it is skipped *with the reason*, never silently.
+        result["speech_to_text"] = {
+            "probe": "skipped",
+            "reason": f"synthesis failed, so there was nothing to decode: "
+                      f"{reason}"}
         #: Measurement still works without synthesis, so the audio verdict
         #: stays what measurement says — the failure is reported where it
         #: belongs instead of failing an unrelated capability.
@@ -138,7 +150,14 @@ def probe_audio() -> dict[str, Any]:
         return result
     from forge.voice.local_speech import transcribe
 
-    heard = transcribe(wav)
+    try:
+        heard = transcribe(wav)
+    except Exception as exc:                                # noqa: BLE001
+        #: A recogniser that blows up must degrade this one entry, not the
+        #: deployment's startup: the audio capability itself still measures.
+        result["speech_to_text"] = {"probe": "failed",
+                                    "reason": str(exc)[:200]}
+        return result
     result["speech_to_text"] = {
         "probe": "passed" if heard["text"] else "failed",
         "reason": "" if heard["text"] else "the recogniser returned no words",
