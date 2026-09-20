@@ -47,6 +47,11 @@ class ModelRequest:
     #: Explicit model selection (``"<backend>:<name>"`` or a bare name). The
     #: routing engine still refuses it when it is unsafe or unavailable.
     model: str = ""
+    #: Soft model preference chain. Every name must still pass capability,
+    #: policy, health and availability checks before selection.
+    preferred_models: tuple[str, ...] = ()
+    #: Optional explicit fallback names, kept behind ordinary candidates.
+    fallback_models: tuple[str, ...] = ()
     #: Explicit backend selection. Never "whichever backend answers".
     backend: str = ""
     #: Execution identity: a stale attempt may not publish a result.
@@ -85,6 +90,14 @@ class ModelRequest:
         **kwargs: Any,
     ) -> "ModelRequest":
         return cls(prompt=prompt, capability=capability, context=context, task=task, **kwargs)
+
+    def effective_model_preferences(self) -> tuple[str, ...]:
+        """Return explicit and preferred model names in deterministic order."""
+        names: list[str] = []
+        for value in (self.model, *self.preferred_models):
+            if value and value not in names:
+                names.append(value)
+        return tuple(names)
 
     def effective_capabilities(self) -> tuple[str, ...]:
         """Capabilities a routed model must support."""
@@ -131,6 +144,8 @@ class ModelRequest:
             "trace_id": self.trace_id,
             # Session 11: addressing/governance metadata only — never content.
             "model": self.model,
+            "preferred_models": list(self.preferred_models),
+            "fallback_models": list(self.fallback_models),
             "backend": self.backend,
             "task_id": self.task_id,
             "attempt_id": self.attempt_id,
