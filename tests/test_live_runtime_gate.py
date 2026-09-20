@@ -14,7 +14,7 @@ class FakeProvider(MockProvider):
         return list(self.models)
 
 
-def test_verified_runtime_is_the_only_non_fallback_routable_model(tmp_path):
+def test_discovered_runtime_is_not_routable_until_inference_is_verified(tmp_path):
     registry = ModelRegistry()
     fabric = ModelFabric(registry=registry)
     provider = FakeProvider(["model-live"])
@@ -23,8 +23,8 @@ def test_verified_runtime_is_the_only_non_fallback_routable_model(tmp_path):
     service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json")
 
     service.tick(force=True, now=100.0)
-    assert service.registry.get("fake:model-live").state == RuntimeState.LIVE.value
-    assert registry.get("model-live").available is True
+    assert service.registry.get("fake:model-live").state == RuntimeState.CONFIGURED.value
+    assert registry.get("model-live").available is False
 
     provider.models = []
     service.tick(force=True, now=401.0)
