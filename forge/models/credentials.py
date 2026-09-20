@@ -21,6 +21,10 @@ class CredentialError(RuntimeError):
 #: that require no credential (local, Ollama) are intentionally absent.
 ENV_VAR_NAMES: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "gemini": ("GEMINI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "groq": ("GROQ_API_KEY",),
 }
 
 #: Providers that are always credential-free.
