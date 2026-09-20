@@ -26,11 +26,22 @@ def test_lease_heartbeat_is_created_and_owner_can_renew(tmp_path: Path) -> None:
 
 
 def test_stale_worker_cannot_renew_or_complete_after_recovery(tmp_path: Path) -> None:
-    store = TaskStore(tmp_path / "tasks.db")
+    path = tmp_path / "tasks.db"
+    store = TaskStore(path)
     queue = PersistentTaskQueue(store=store)
     queue.add("task-1", "work")
     claimed = queue.start_next()
     assert claimed is not None
+
+    # Age the lease instead of racing the wall clock. A 1 ms idle window is
+    # shorter than the time a fast CI runner needs to get from the claim to
+    # the recovery query, so the task sometimes still looked fresh and the
+    # recovery returned nothing.
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE tasks SET lease_heartbeat = ? WHERE id = ?",
+            (time.time() - 60, "task-1"),
+        )
 
     recovered = queue.recover_stale_running(0.001)
     assert [task.id for task in recovered] == ["task-1"]

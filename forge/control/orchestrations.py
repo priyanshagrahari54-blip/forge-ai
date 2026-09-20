@@ -136,16 +136,20 @@ class OrchestrationStore:
         return record
 
     def get(self, orchestration_id: str) -> Orchestration | None:
-        row = self._db.execute(
-            "SELECT * FROM orchestrations WHERE id = ?",
-            (orchestration_id,)).fetchone()
+        #: ``query_one`` fetches inside the Database lock; ``execute`` returns a
+        #: live cursor that is read outside it, while worker threads write to
+        #: the same shared connection. Reading under the lock removes that
+        #: window entirely — a first poll after submit returned ``None`` once
+        #: on the 3.13 CI runner and crashed a test on ``record.status``.
+        row = self._db.query_one(
+            "SELECT * FROM orchestrations WHERE id = ?", (orchestration_id,))
         return self._from_row(row) if row else None
 
     def list_for_session(self, session_id: str) -> list[Orchestration]:
-        rows = self._db.execute(
+        rows = self._db.query(
             "SELECT * FROM orchestrations WHERE session_id = ?"
             " ORDER BY created_at DESC LIMIT 200",
-            (session_id,)).fetchall()
+            (session_id,))
         return [self._from_row(row) for row in rows]
 
     def compare_and_set(self, orchestration_id: str, version: int,
