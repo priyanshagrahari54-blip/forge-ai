@@ -401,7 +401,7 @@ credentials)
 ## 7. Reproduce
 
 ```bash
-.venv/bin/python -m pytest -q                       # 3296 passed, 6 skipped
+.venv/bin/python -m pytest -q                       # 3352 passed, 6 skipped (dev venv)
 node --test tests/web/*.test.cjs                    # 11 passed
 .venv/bin/python scripts/verify_production_readiness.py
 .venv/bin/python scripts/verify_production_readiness.py --json | jq .
@@ -409,12 +409,20 @@ node --test tests/web/*.test.cjs                    # 11 passed
 # provider failover + multi-server routing (real HTTP servers in the tests)
 .venv/bin/python -m pytest tests/test_provider_failover_quota.py -q   # 19 passed
 
-# fine-tuning: dataset -> preflight -> train (needs torch + gguf + tokenizers)
-.venv/bin/python -m pytest tests/test_finetune_pipeline.py -q         # 8 passed
+# fine-tuning: dataset -> preflight -> train -> held-out gate (needs torch + gguf + tokenizers)
+.venv/bin/python -m pytest tests/test_finetune_pipeline.py -q         # 11 passed
+.venv/bin/python -m pytest tests/test_finetune_promotion.py -q        # 10 passed
 .venv/bin/python -m pytest tests/test_gguf_lora_trainer.py -q         # 6 passed
+
+# what can the recorded evidence actually train? (one adapter per role)
+.venv/bin/python scripts/finetune_specialists.py --coverage           # 36/36 roles READY
+
+# train one specialisation on its own answers, then let the gate decide:
+# a rejected adapter stays a candidate artifact, it is never silently promoted
 .venv/bin/python scripts/finetune_specialists.py \
     --dataset docs/evidence/fleet-real-run-2026-09-19.json \
-    --specialization documentation --steps 24
+    --specialization security --roles security --steps 30 \
+    --eval-cases 6 --eval-tokens 24
 
 # real model execution (requires the self-hosted runtime, see
 # docs/SELF-HOSTED-MODEL.md; refuses to report without a verified model)
