@@ -24,7 +24,9 @@ cannot silently return:
 from __future__ import annotations
 
 import re
+import sqlite3
 import tempfile
+import time
 from pathlib import Path
 
 from forge.agents.frontier_fleet import SPECIALIZATIONS, build_frontier_fleet
@@ -202,6 +204,14 @@ class _RecordingFabric:
         })()
 
 
+def _age_lease(tmp_path, task_id: str) -> None:
+    """Backdate a claim so staleness is a fact, not a race."""
+    with sqlite3.connect(Path(tmp_path) / "tasks.db") as connection:
+        connection.execute(
+            "UPDATE tasks SET lease_heartbeat = ? WHERE id = ?",
+            (time.time() - 60, task_id))
+
+
 def _queue(tmp_path):
     store = TaskStore(Path(tmp_path) / "tasks.db")
     queue = PersistentTaskQueue(store=store)
@@ -217,6 +227,11 @@ def test_lease_guard_verifies_ownership_at_publish_time(tmp_path):
     monitor = LeaseMonitor(queue, task_id=claimed.id,
                            lease_id=claimed.lease_id,
                            heartbeat_interval=0.01, stale_after=0.05)
+    # Age the persisted heartbeat instead of racing the wall clock: a 1 ms
+    # idle window is shorter than the time a fast CI runner needs to get from
+    # the claim to this query, so the lease sometimes still looked fresh and
+    # the recovery returned nothing (observed on the 3.11 CI job).
+    _age_lease(tmp_path, claimed.id)
     recovered = queue.recover_stale_running(0.001)
     assert recovered and recovered[0].status == TaskStatus.RECOVERY
     try:
