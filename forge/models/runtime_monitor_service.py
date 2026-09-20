@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from forge.models.configured_runtime import ConfiguredRuntime, ConfiguredRuntimeRegistry, RuntimeState
 from forge.models.configured_runtime_bridge import sync_configured_runtimes
 from forge.models.runtime_monitor import RuntimeMonitor
-from forge.models.runtime_verification import RuntimeProbeResult, apply_probe_result
+from forge.models.runtime_verification import RuntimeProbeResult, apply_probe_result, probe_provider_inference
 
 class RuntimeMonitorService:
     """Persistent runtime verification coordinator with live-registry feedback."""
@@ -49,6 +49,47 @@ class RuntimeMonitorService:
                 except Exception as exc:
                     runtime.mark_unavailable("runtime probe failed: %s"%type(exc).__name__); self._set_model_available(model_registry,runtime,False); results.append({"provider":runtime.provider,"model_id":runtime.model_id,"state":runtime.state,"changed":True,"error":type(exc).__name__})
             self._save(); return {"time":checked_at,"results":results,**self.snapshot()}
+    def inference_check(self, provider_name: str, model_id: str) -> Dict[str, Any]:
+        """Run one explicit real inference probe for an exact configured runtime."""
+        with self._lock:
+            sync_configured_runtimes(self.fabric, self.registry)
+            runtime = self.registry.maybe_get(provider_name, model_id)
+            if runtime is None:
+                raise KeyError("configured runtime not found: %s:%s" % (provider_name, model_id))
+            providers = getattr(self.fabric, "providers", None)
+            if providers is None or not providers.has(provider_name):
+                runtime.mark_unavailable("provider is not registered")
+                self._save()
+                return {"provider": provider_name, "model_id": model_id, "ok": False,
+                        "state": runtime.state, "reason": runtime.last_reason}
+            provider = providers.get(provider_name)
+            result = probe_provider_inference(provider, model_id)
+            registry = getattr(self.fabric, "registry", None)
+            if registry is not None:
+                try:
+                    apply_probe_result(registry, result)
+                except Exception:
+                    pass
+            runtime.last_checked = time.time()
+            if result.ok:
+                if runtime.state == RuntimeState.UNAVAILABLE.value:
+                    runtime.set_configured(valid=True)
+                if runtime.state == RuntimeState.CONFIGURED.value:
+                    runtime.mark_verified(
+                        verification_id="inference:%s:%d" % (model_id, int(runtime.last_checked)),
+                        capabilities=result.capabilities,
+                        checked_at=runtime.last_checked,
+                    )
+                    runtime.activate()
+                elif runtime.state in {RuntimeState.VERIFIED.value, RuntimeState.LIVE.value}:
+                    runtime.state = RuntimeState.LIVE.value
+                    runtime.last_reason = ""
+                    runtime.verification_id = "inference:%s:%d" % (model_id, int(runtime.last_checked))
+            else:
+                runtime.mark_unavailable(result.reason)
+            self._save()
+            return {"provider": provider_name, "model_id": model_id, "ok": result.ok,
+                    "state": runtime.state, "probe": result.to_dict()}
     def snapshot(self)->Dict[str,Any]:
         counts=self.registry.counts(); return {"schema_version":1,"running":self.running,"last_tick":self._last_tick,"interval_seconds":self.interval_seconds,"verification_ttl_seconds":self.monitor.verification_ttl_seconds,"counts":counts,"live":counts.get(RuntimeState.LIVE.value,0),"runtimes":self.registry.snapshot()}
     def _probe(self,provider_name:str,model_id:str)->RuntimeProbeResult:
