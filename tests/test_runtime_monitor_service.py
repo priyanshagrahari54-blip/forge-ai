@@ -94,6 +94,8 @@ def test_service_fails_closed_when_exact_model_missing(tmp_path):
 
 class InferenceProvider:
     model = "model-a"
+    def list_models(self):
+        return ["model-a"]
     def generate(self, prompt, *, context="", task=""):
         from forge.models.provider import ModelResult
         return ModelResult("OK", self.model)
