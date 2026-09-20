@@ -283,7 +283,12 @@ def test_task_crud_flow_over_http(tmp_path):
             task = create_task(client, ADMIN, "Add CSV export",
                                priority=5)
             task_id = task["task_id"]
-            assert task["status"] in ("created", "queued")
+            # The worker consumes the queue as fast as it can, so a task may
+            # already be started (or running) by the time this response lands.
+            # Any non-terminal state is correct; only a finished task would
+            # mean the create call waited for execution.
+            assert task["status"] in ("created", "queued", "started",
+                                      "running"), task["status"]
             assert task["project_id"] == "demo"
             assert task["requirement"] == "Add CSV export"
             assert task["priority"] == 5

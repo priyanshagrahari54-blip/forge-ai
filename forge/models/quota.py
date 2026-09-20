@@ -62,13 +62,31 @@ class QuotaSignal:
         }
 
 
+def safe_attribute(error: BaseException, name: str) -> Any:
+    """``getattr`` that cannot itself blow up while classifying a failure.
+
+    A Python 3.8 ``urllib.error.HTTPError`` inherits an attribute delegate from
+    the stdlib file wrapper whose ``__getattr__`` raises ``KeyError('file')``
+    for anything it does not have — so a plain ``getattr(exc, "retry_after",
+    None)`` raised instead of returning the default, and a *real* HTTP 429 from
+    a provider could not be classified at all on that interpreter. Reading an
+    optional attribute off somebody else's exception must never be the thing
+    that fails, so the lookup is guarded here and reused by every caller that
+    inspects a provider exception.
+    """
+    try:
+        return getattr(error, name)
+    except (AttributeError, KeyError, IndexError, TypeError):
+        return None
+
+
 def _retry_after_from(exc: BaseException) -> float | None:
     """Read a stated retry delay off an exception, when the provider kept it."""
     for attribute in ("retry_after", "retry_after_seconds"):
-        value = getattr(exc, attribute, None)
+        value = safe_attribute(exc, attribute)
         if isinstance(value, (int, float)) and value >= 0:
             return float(value)
-    headers = getattr(exc, "headers", None)
+    headers = safe_attribute(exc, "headers")
     if headers is not None:
         try:
             raw = headers.get("Retry-After") or headers.get("retry-after")
@@ -99,9 +117,9 @@ def classify_exhaustion(error: BaseException | str) -> QuotaSignal:
         )
 
     message = error if isinstance(error, str) else str(error)
-    status = getattr(error, "code", None)
+    status = safe_attribute(error, "code")
     if not isinstance(status, int):
-        status = getattr(error, "status", None)
+        status = safe_attribute(error, "status")
     status = status if isinstance(status, int) else None
 
     matched = ""

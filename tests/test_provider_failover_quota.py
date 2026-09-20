@@ -465,3 +465,48 @@ def test_a_model_that_cannot_do_the_job_is_never_chosen_for_power():
 
     response = fabric.generate(ModelRequest(prompt="p", capability="coding"))
     assert response.text == "coder", "tier must never override capability"
+
+
+class _ThreeEightHTTPError(Exception):
+    """A stand-in for Python 3.8's ``urllib.error.HTTPError``.
+
+    On that interpreter an HTTPError delegates unknown attributes to the stdlib
+    file wrapper, whose ``__getattr__`` raises ``KeyError('file')`` instead of
+    ``AttributeError``. Classification read ``retry_after`` and ``headers`` off
+    such an exception, so a real 429 crashed the failover path on Python 3.8
+    (observed in CI as ``KeyError: 'file'``). The class below reproduces the
+    delegate exactly, on every interpreter.
+    """
+
+    def __init__(self, *, code: int = 429, headers=None) -> None:
+        self.code = code
+        self.headers = headers if headers is not None else {"Retry-After": "12"}
+
+    def __getattr__(self, name: str):
+        raise KeyError("file")
+
+    def __str__(self) -> str:
+        return f"HTTP Error {self.code}: {self.reason_phrase}"
+
+    @property
+    def reason_phrase(self) -> str:
+        return {429: "Too Many Requests", 500: "Internal Server Error"}.get(
+            self.code, "Error")
+
+
+def test_classification_survives_an_exception_whose_attribute_lookup_raises():
+    signal = classify_exhaustion(_ThreeEightHTTPError())
+
+    assert signal.exhausted is True
+    assert signal.status == 429
+    # The stated delay is still read from the headers once attribute lookup is
+    # guarded — the fix must not turn a known delay into "unknown".
+    assert signal.retry_after == 12.0
+
+
+def test_a_hostile_exception_is_never_mistaken_for_an_exhausted_provider():
+    """Guarding the lookup must not make every failure look like exhaustion."""
+    signal = classify_exhaustion(_ThreeEightHTTPError(code=500, headers={}))
+
+    assert signal.exhausted is False
+    assert signal.status == 500
