@@ -222,6 +222,148 @@ def default_capabilities(
         evidence="forge/cockpit/web/city.html + event infrastructure",
     )
 
+    # -- A84: intelligence & personal-AI plane --------------------------------
+    # Each entry below follows the same rule as every other one: an implemented
+    # module is ARCHITECTURE/READY; configuration moves it to CONFIGURED;
+    # a live external dependency moves it to BLOCKED->CONFIGURED; only real
+    # runtime evidence promotes it to LIVE. A class existing is never "live".
+
+    result["personal-assistant-core"] = CapabilityTruth(
+        "personal-assistant-core", "Persistent personal assistant pipeline",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("session ledger -> continuity -> prompt intelligence -> "
+                 "triage -> context -> delegated execution -> verification -> "
+                 "controlled memory; every execution step delegates to the "
+                 "existing supervisor/fabric/research paths"),
+        evidence="forge/assistant + tests/test_a84_*",
+    )
+    result["personal-memory"] = CapabilityTruth(
+        "personal-memory", "Layered personal memory (short-term/session/"
+        "long-term/episodic/semantic/project)", STATUS_LIVE,
+        True, True, True, True, False,
+        detail=("retention is decided per record — ordinary messages are not "
+                 "stored; sensitive content fails closed; inspect/correct/"
+                 "delete/forget/clear are user-controlled paths over the "
+                 "shared SQLite memory engine behind the A33 MEMORY policy"),
+        evidence="forge/memory + forge/assistant/memory.py",
+    )
+    result["prompt-intelligence"] = CapabilityTruth(
+        "prompt-intelligence", "Intent-preserving prompt enhancement",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("deterministic extraction/enhancement + quality gate + "
+                 "model-targeted adaptation + bounded versioning; ASK_USER "
+                 "on blocking ambiguity; intent-preservation check gates every "
+                 "enhancement"),
+        evidence="forge/prompt_intelligence",
+    )
+    result["tool-intelligence"] = CapabilityTruth(
+        "tool-intelligence", "Tool capability registry + planner + verifier",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("registry descriptions are NOT permissions: execution stays "
+                 "on the A33-gated paths; availability resolves per tool "
+                 "probe and honestly reports architecture-only where nothing "
+                 "is live"),
+        evidence="forge/tools/intelligence + forge.tools",
+    )
+    result["deep-research"] = CapabilityTruth(
+        "deep-research", "Multi-source deep research with provenance",
+        STATUS_READY, True, _env_configured("FORGE_RESEARCH_ALLOW_WEB"),
+        False, False, False,
+        detail=("scope/strategy/extraction/cross-comparison/contradiction/ "
+                 "ranking/synthesis over the secure research engine; live web "
+                 "corroboration requires a configured provider — without it "
+                 "reports PARTIAL, never fabricated citations"),
+        evidence="forge/research/deep.py + A81 secure engine",
+    )
+    result["safe-research-networks"] = CapabilityTruth(
+        "safe-research-networks", "Lawful privacy-network research (Tor-class)",
+        STATUS_ARCHITECTURE, True, False, False, False, False,
+        detail=("classification + prohibition screen + inert gateway: enabled "
+                 "ONLY with an operator-supplied isolated transport; no "
+                 "downloads, credentials, transactions or auth; disabled is "
+                 "the honest default and Forge ships no circuit authority"),
+        evidence="forge/research/networks.py",
+    )
+    result["pattern-graph"] = CapabilityTruth(
+        "pattern-graph", "Entity/relation pattern layer with conflict "
+        "adjudication", STATUS_LIVE, True, True, True, True, False,
+        detail=("contradictions open CONFLICT records and are adjudicated "
+                 "explicitly; nothing is silently overwritten"),
+        evidence="forge/patterns + shared plane database",
+    )
+    result["operational-learning"] = CapabilityTruth(
+        "operational-learning", "Tool/route/provider/task outcome learning",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("bounded ledgers drive proposals and soft priors; model "
+                 "weights are NEVER trained from conversations and priors "
+                 "can only order already-eligible candidates"),
+        evidence="forge/learning (A84) + A59 ledger",
+    )
+    result["cross-model-teams"] = CapabilityTruth(
+        "cross-model-teams", "Task-dependent multi-model collaboration",
+        STATUS_READY, True, True, False, False, False,
+        detail=("roles resolve through the fabric per task; unmet roles stay "
+                 "unmet and a one-model answer is labeled single-model — "
+                 "never presented as consensus or a seven-model panel"),
+        evidence="forge/models/teams.py + A45/A44",
+    )
+    result["critic-verifier"] = CapabilityTruth(
+        "critic-verifier", "generate -> critique -> revise -> verify",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("deterministic-first critic (requirements, hallucination "
+                 "indicators, compile/security, provenance tracing); model "
+                 "critics contribute findings but never remove deterministic "
+                 "ones; an exhausted loop ends UNVERIFIED, not accepted"),
+        evidence="forge/verification + forge.security gates",
+    )
+    result["personalization"] = CapabilityTruth(
+        "personalization", "User preference profile (presentation + soft routing)",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("closed field vocabulary persisted as memory; can restrict "
+                 "(prefer local/free) but never relax security, authorization "
+                 "or capability requirements"),
+        evidence="forge/assistant/personalization.py",
+    )
+    result["long-context"] = CapabilityTruth(
+        "long-context", "Hierarchical long-context assembly (retrieval + digests)",
+        STATUS_LIVE, True, True, True, True, False,
+        detail=("context is assembled by relevance within a model-derived "
+                 "budget with lossy digests labeled as such; a lifetime of "
+                 "conversation is never injected wholesale"),
+        evidence="forge/assistant/context.py + forge.memory.summarizer",
+    )
+    result["context-quality"] = CapabilityTruth(
+        "context-quality", "Context quality metrics (relevance/redundancy/"
+        "contradictions/source quality/budget)", STATUS_LIVE,
+        True, True, True, True, False,
+        detail="quality numbers accompany every assembled bundle",
+        evidence="forge/assistant/context.py",
+    )
+    result["improvement-loop"] = CapabilityTruth(
+        "improvement-loop", "Continuous improvement proposals", STATUS_LIVE,
+        True, True, True, True, False,
+        detail=("proposals only; any self-modification still runs through "
+                 "A58/A26 loops with tests, security, authorization and "
+                 "rollback — this layer cannot apply its own suggestions"),
+        evidence="forge/improvement + A58/A59/A60",
+    )
+    result["massive-model-routing"] = CapabilityTruth(
+        "massive-model-routing", "Routing to large/MoE/trillion-scale models",
+        STATUS_CONFIGURED if (ollama_configured or openai_configured)
+        else STATUS_ARCHITECTURE,
+        True, ollama_configured or openai_configured,
+        bool(ollama.get("reachable") or openai.get("reachable")),
+        bool(ollama.get("verified") or openai.get("verified")),
+        False,
+        detail=(
+            "Forge ROUTES to provider-offered large models; it does not HOST "
+            "their weights; and routing availability exists only where a "
+            "provider actually offers them — " + (
+                "model parameter scale, Forge infrastructure capability and "
+                "provider availability are three separate facts")),
+        evidence="forge/models (registry scale metadata + router scale fit) + provider health",
+    )
+
     # Runtime facts useful to the G560/thin-client UI. These are descriptive,
     # not a capability claim.
     result["host-runtime"] = CapabilityTruth(
@@ -253,6 +395,15 @@ def capability_snapshot(
             "configured_is_not_live": True,
             "simulation_is_never_live": True,
             "unknown_provider_is_never_assumed_ready": True,
+            "catalog_is_not_inference": True,
+            "registration_is_not_execution": True,
+            "tool_registration_is_not_tool_success": True,
+            "memory_storage_is_not_learning": True,
+            "prompt_rewriting_is_not_improved_result": True,
+            "source_discovery_is_not_verified_evidence": True,
+            "declared_scale_is_not_hosting": True,
+            "many_agents_is_not_better_answer": True,
+            "model_availability_is_not_production_readiness": True,
         },
         "counts": counts,
         "capabilities": [item.to_dict() for item in capabilities.values()],

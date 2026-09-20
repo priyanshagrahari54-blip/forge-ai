@@ -688,6 +688,95 @@ roadmap + blueprint + stage-1 prompt → real Supervisor run → verified?
 See `docs/A82-STAGED-BUILDS.md` for the architecture, prompt assembly,
 API reference, and guarantees.
 
+## Personal Assistant Plane (A84)
+
+The Intelligence & Personal-AI addendum lands as one plane over the existing
+substrate — no second assistant runtime, no parallel memory store, no
+invented capabilities:
+
+```text
+User
+  ↓ session ledger + short-term window      forge/assistant/sessions.py
+  ↓ continuity resolution ("that file",     forge/assistant/continuity.py
+  ↓  "continue yesterday's research")
+  ↓ prompt intelligence (intent-preserving  forge/prompt_intelligence/
+  ↓  enhancement + quality gate: EXECUTE |
+  ↓  ASK_USER | REJECT)
+  ↓ behavior triage (answer | research |    forge/assistant/behavior.py
+  ↓  code | orchestrate | clarify | confirm
+  ↓  | recover | report-unknown)
+  ↓ context assembly + quality metrics      forge/assistant/context.py
+  ↓ preference profile (soft, restrictable forge/assistant/personalization.py
+  ↓  never relaxable; stored as memories)
+  ↓ model/class + team selection            forge/models/model_class.py
+  ↓                                        forge/models/teams.py
+  ↓ execution — delegated: supervisor task, forge/control/assistant_plane.py
+  ↓  A38 orchestration, deep research, or
+  ↓  verified conversation; writes stay
+  ↓  behind A33 gates
+  ↓ cross verification                      forge/verification/
+  ↓ controlled memory update                forge/assistant/memory.py
+  ↓ patterns + learning + improvement       forge/patterns/ forge/learning/
+     proposals                              forge/improvement/
+```
+
+Honesty contract (every line verified by `tests/test_a84_*`):
+
+- **Memory** — ordinary messages are never stored by default. Retention is a
+  per-record decision (defaults to skip), sensitive content fails closed, and
+  inspect/search/correct/delete/forget are real user-controlled paths over the
+  A37 engine behind the A33 memory gate. `forget` purges content, embeddings
+  and pattern references and is irreversible *by design*. Short-term context
+  lives in RAM only.
+- **Trillion-parameter models** — Forge records *declared* scale (parameter
+  count, active parameters, MoE architecture) on the Model Fabric registry and
+  identity, uses it only as a bounded soft preference *after* every hard
+  routing filter, and never claims to host weights it can only route to. An
+  undisclosed count stays `unknown` — parsing never guesses.
+  `forge assistant scale` prints the table.
+- **Prompt enhancement** — never changes intent: preserved-term checks,
+  blocking ambiguity → question instead of silent guessing, redacted bounded
+  versioning with outcome recording, per-task strategy learning that can only
+  reorder prompt styles, never add capabilities.
+- **Deep/dark web research** — lawful, authorized research only. The
+  privacy-network layer ships a prohibition screen (credentials, illicit
+  markets, malware, weapons, fraud, doxxing, transactions, unauthorized
+  access — all refused), an inert gateway (no circuit authority exists in
+  Forge), and URL rules (`.onion` v3 only, no userinfo/ports, no auto
+  downloads, no execution). Source trust for every privacy-network row is
+  `untrusted` regardless of how plausible it looks.
+- **Tools** — the intelligence registry (E1) describes tools; descriptions
+  are not permissions. High-risk tools require confirmation + auth metadata;
+  availability resolves honestly (`architecture` when nothing is live) and
+  results are verified (single-source unverified data is labeled, never
+  silently promoted). Execution remains on the existing runtime paths.
+- **Learning** — operational/route/tool/outcome ledgers drive *proposals* and
+  capped soft priors (±0.05, min 10 samples). Model weights are never
+  trained; the improvement loop cannot apply its own suggestions (any
+  self-modification still runs the A58/A26 loops with tests, security,
+  authorization and rollback unchanged).
+- **Cross-model teams** — task-dependent role selection through the fabric;
+  unmet roles stay unmet and are reported; same-model review is labeled
+  not-independent; a plain answer gets one routed call, never a fake panel.
+- **Verification** — deterministic critic first (requirements coverage,
+  hallucination indicators, citation grounding, compile/security); model
+  critics may add findings but never remove deterministic ones; an exhausted
+  critique loop ends `UNVERIFIED` — output is not silently accepted.
+- **The laptop stays a thin client** — heavy execution is delegated to the
+  server/plane or provider infrastructure; the standalone CLI path answers as
+  proposals with no execution authority at all.
+
+Surfaces: control plane `plane.assistant`, 25 REST endpoints under
+`/api/v1/assistant/*` (conversation, memory controls with approval-gated
+destructive ops, profile, prompts, tools, research, networks, patterns,
+learning, improvement, verify, teams, scale catalog), the cockpit
+`Assistant` view, `forge assistant ask|sessions|memory|tools|scale|learning|status`,
+and 15 new capability entries in the reality matrix
+(`forge.capabilities.reality.capability_snapshot()`).
+
+See `docs/A84-INTELLIGENCE-PERSONAL-AI.md` for the full stage-by-stage
+architecture, the vocabulary tables and the equivalence ledger.
+
 ## Complete Supervisor transaction
 
 `Supervisor.run(requirement, approved=True, router=...)` is the production integration point. It performs planning and capability selection before routing a model, then calls `CoderAgent` and always runs `TestDebugLoop`; it never skips directly to verification. A failing test supplies its captured output to `DebuggerAgent`, whose routed model response is applied and retested until success or the bounded retry limit. Only then do independent review, security, build/lint, benchmark, and acceptance run. Accepted files are explicitly staged and committed; every rejection restores the checkpoint and leaves unrelated working-tree files alone.
@@ -852,6 +941,14 @@ forge runtime health           # backend health (exit 0 only if it can infer)
 forge runtime backends --json
 forge self-analyze
 forge self-improve --iterations 1
+forge assistant ask "what do you remember about my last decision?"
+forge assistant ask "research sqlite WAL durability" --web
+forge assistant memory inspect          # everything stored is listable
+forge assistant memory forget <id>      # irreversible by design
+forge assistant memory clear --confirm "FORGET EVERYTHING IN THIS SCOPE"
+forge assistant tools                   # registry descriptions, not permissions
+forge assistant scale                   # declared model scale, never invented
+forge assistant status                  # which A84 layers are live here
 ```
 
 Writes, command execution, commits, pushes, repository deletion, and secret exposure remain permission-controlled. Forge is intentionally not an unattended deployment system.

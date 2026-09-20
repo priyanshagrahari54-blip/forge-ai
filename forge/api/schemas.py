@@ -435,3 +435,78 @@ class EngineRunRequest(BaseModel):
 
 class EngineImportRequest(BaseModel):
     payload: dict
+
+
+# --- A84: personal-assistant plane ------------------------------------------------
+
+class AssistantRespondRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    session_id: str = Field(default="", max_length=64)
+    allow_web: bool = False
+    confirmed: bool = False
+    approval_id: str = Field(default="", max_length=128)
+
+
+class AssistantRetentionRequest(BaseModel):
+    mode: str = Field(min_length=1, max_length=16)
+
+
+class AssistantTextRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=8000)
+
+
+class AssistantContinuityRequest(BaseModel):
+    session_id: str = Field(default="", max_length=64)
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class AssistantMemoryCorrectRequest(BaseModel):
+    entry_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=8000)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class AssistantMemoryIdRequest(BaseModel):
+    entry_id: str = Field(min_length=1, max_length=128)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class AssistantMemoryClearRequest(BaseModel):
+    confirm: str = Field(min_length=1, max_length=64)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class AssistantProfileSetRequest(BaseModel):
+    field: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=400)
+    approval_id: str = Field(default="", max_length=128)
+
+
+class AssistantResearchRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    allow_web: bool = False
+
+
+class AssistantNetworkUrlRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class AssistantNetworkGoalRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+
+
+class AssistantAdjudicateRequest(BaseModel):
+    conflict_id: str = Field(min_length=1, max_length=128)
+    resolution: str = Field(min_length=1, max_length=48)
+    note: str = Field(default="", max_length=1000)
+
+
+class AssistantCritiqueRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    requirements: List[str] = Field(default_factory=list, max_length=40)
+    citations: List[str] = Field(default_factory=list, max_length=40)
+
+
+class AssistantTeamRunRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=8000)
+    shape: str = Field(default="", max_length=24)

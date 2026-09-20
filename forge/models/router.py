@@ -182,6 +182,13 @@ class FabricRouter:
         self.policy = policy if policy is not None else RoutingPolicy()
         self.telemetry = telemetry if telemetry is not None else Telemetry()
         self.history: list[dict[str, Any]] = []
+        #: Optional routing-learning priors (A84 Stage I4). ``None`` — the
+        #: default — keeps routing exactly as it was; an operator attaches
+        #: ``forge.learning.routing.RoutingPriors`` explicitly. Priors add a
+        #: bounded score nudge *after* every hard filter; they cannot relax
+        #: capability, policy, health or verification requirements, and the
+        #: safety posture of a request is never traded for capability.
+        self.priors: Any = None
 
     # -- routing ---------------------------------------------------------
 
@@ -326,6 +333,8 @@ class FabricRouter:
 
         factors = {
             "tier": tier_of(model),
+            "model_class": model.model_class or "undeclared",
+            "scale_band": model.scale_band,
             "reliability": model.reliability,
             "latency_ms": model.latency_ms,
             "cost_per_token": model.cost_per_token,
@@ -372,7 +381,7 @@ class FabricRouter:
         # larger context windows (and therefore more room to reason).
         complexity = max(0.0, request.complexity or 1.0)
         complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
-        return (
+        base = (
             reliability * 0.30
             + latency * 0.15
             + cost * 0.10
@@ -382,6 +391,33 @@ class FabricRouter:
             + health * 0.10
             + complexity_fit * 0.05
         )
+        # A84 Stage A4: *declared* parameter scale influences preference on
+        # the margins only — complex tasks lean toward larger disclosed models,
+        # simple tasks lean toward smaller ones. Models without disclosed
+        # counts get exactly zero adjustment (unknown is never rewarded or
+        # punished on size), and the adjustment is bounded at ±0.04 so it can
+        # never outvote reliability/health/cost signals — much less a
+        # capability or policy requirement. Safety is never traded for scale.
+        base += self._scale_fit(model, complexity)
+        priors = getattr(self, "priors", None)
+        if priors is not None:
+            try:
+                base += float(priors.adjustment(
+                    "model", model.name, context=request.capability or ""))
+            except Exception:
+                pass  # a broken learner must not change routing behaviour
+        return base
+
+    @staticmethod
+    def _scale_fit(model: Model, complexity: float) -> float:
+        scale = model.scale
+        if not scale.disclosed:
+            return 0.0
+        if complexity >= 4.0 and scale.band in ("xlarge", "huge", "massive"):
+            return 0.04
+        if complexity <= 1.5 and scale.band in ("small", "medium"):
+            return 0.03
+        return 0.0
 
     @staticmethod
     def _route_event(decision: RouteDecision, request: ModelRequest, required: tuple[str, ...]) -> dict[str, Any]:

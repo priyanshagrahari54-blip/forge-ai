@@ -13,6 +13,11 @@ from typing import Any, Iterable, Iterator
 from forge.models.capabilities import is_capability
 from forge.models.health import ModelHealth
 
+try:  # typing-only import for the ``scale`` property annotation
+    from forge.models.model_class import ParameterScale as _ModelScale
+except Exception:  # pragma: no cover - annotation never evaluated at runtime
+    _ModelScale = None  # type: ignore[assignment]
+
 
 @dataclass
 class Model:
@@ -37,6 +42,9 @@ class Model:
     #: heuristic such as Ollama family prefixes), or ``verified`` (confirmed by
     #: a real capability probe). Unlisted capabilities default to ``declared``.
     capability_status: dict[str, str] = field(default_factory=dict)
+    #: One of ``forge.models.model_class.ALL_MODEL_CLASSES`` when the entry
+    #: declares what *kind* of neural model this is ("" = undeclared).
+    model_class: str = ""
     health: ModelHealth = field(default_factory=ModelHealth)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -46,6 +54,10 @@ class Model:
                 raise ValueError(
                     f"Model {self.name!r} advertises unknown capability {capability!r}"
                 )
+        if self.model_class:
+            from forge.models.model_class import normalize_model_class
+            object.__setattr__(
+                self, "model_class", normalize_model_class(self.model_class))
         for capability in self.capability_status:
             if not is_capability(capability):
                 raise ValueError(
@@ -111,6 +123,17 @@ class Model:
         # explicitly through metadata so future adapters can be declarative.
         return bool(self.metadata.get("streaming", False))
 
+    # -- parameter scale (A84 Stage A3): declared metadata, never inferred --
+
+    @property
+    def scale(self):
+        from forge.models.model_class import scale_from_metadata
+        return scale_from_metadata(self.metadata)
+
+    @property
+    def scale_band(self) -> str:
+        return self.scale.band
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -126,6 +149,8 @@ class Model:
             "available": self.available,
             "fallback": self.fallback,
             "capability_status": dict(self.capability_status),
+            "model_class": self.model_class,
+            "scale": self.scale.to_dict(),
             "health": self.health.to_dict(),
             "metadata": dict(self.metadata),
         }
@@ -147,6 +172,7 @@ class Model:
             available=bool(data.get("available", True)),
             fallback=bool(data.get("fallback", False)),
             capability_status=dict(data.get("capability_status", {})),
+            model_class=str(data.get("model_class") or ""),
             health=health,
             metadata=dict(data.get("metadata", {})),
         )

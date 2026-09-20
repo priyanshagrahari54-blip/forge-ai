@@ -6953,6 +6953,26 @@ class ControlPlane:
         except Exception:
             pass
 
+    @property
+    def assistant(self) -> Any:
+        """The A84 personal-assistant plane (lazily constructed, once).
+
+        Everything it touches — SQLite tables, memory records, audit events,
+        Model Fabric routing, task/orchestration submission — is the *same*
+        infrastructure the rest of the plane uses. It holds no model weights
+        and no separate execution path.
+        """
+        plane = getattr(self, "_assistant_plane", None)
+        if plane is None:
+            with self._locks.setdefault("__assistant__",
+                                        threading.Lock()):
+                plane = getattr(self, "_assistant_plane", None)
+                if plane is None:
+                    from forge.control.assistant_plane import AssistantPlane
+                    plane = AssistantPlane(self)
+                    self._assistant_plane = plane
+        return plane
+
     def _audit(self, actor: str, resource: str, operation: str,
                allowed: bool, *, task_id: str = "",
                reason: str = "") -> None:
