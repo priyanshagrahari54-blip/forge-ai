@@ -192,3 +192,59 @@ def test_governance_api(tmp_path):
         got = client.get("/api/v1/agents/scout/limits", headers=headers)
         assert got.status_code == 200
         assert got.json()["runs_last_hour"] == 1
+
+
+def test_the_concurrency_slot_is_released_before_a_run_looks_finished(
+        tmp_path):
+    """Publish order, not timing: terminal status must follow the release.
+
+    The CI 3.13 job caught the opposite order — an observer could read a
+    ``finished`` run while ``active_runs`` was still 1. This pins the order
+    itself with recorders, so it cannot regress behind a lucky schedule.
+    """
+    order: list[str] = []
+    provider = BlockingProvider()
+    plane = make_plane(tmp_path, start=True, provider=provider,
+                       policy=run_policy(), approval_timeout=5.0)
+    make_repo(Path(plane.projects["demo"].root))
+    client = make_client(plane)
+
+    governor = plane._agent_governor()
+    real_end = governor.end
+
+    class RecordingGovernor:
+        def __getattr__(self, item):
+            return getattr(governor, item)
+
+        def end(self, agent: str) -> None:
+            order.append("release")
+            real_end(agent)
+
+    recorder = RecordingGovernor()
+    plane._agent_governor = lambda: recorder        # type: ignore[assignment]
+
+    class RecordingResults(dict):
+        def __setitem__(self, key, value):
+            if isinstance(value, dict) and value.get("status") in (
+                    "finished", "failed"):
+                order.append("publish")
+            super().__setitem__(key, value)
+
+    plane._agent_run_results = RecordingResults()
+
+    with client:
+        payload, _token, headers = login(client)
+        session = plane.sessions.get(payload["session_id"])
+        plane.agent_create(session, "coder", "coding", ["coding"], bind=True)
+        plane.agent_set_limits(session, "coder", max_concurrent=1)
+        first = plane.agent_run(session, "coder", "write the csv export")
+        assert provider.entered.wait(timeout=15.0)
+        provider.release.set()
+        result = wait_terminal(plane, session, "coder", first["run_id"],
+                               timeout=30.0)
+        assert result["status"] in ("finished", "failed")
+
+    assert order, "the run never reached a terminal state"
+    assert order.index("release") < order.index("publish"), order
+    # And the accounting agrees with what an observer was told.
+    assert plane.agent_limits(session, "coder")["active_runs"] == 0

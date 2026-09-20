@@ -3370,6 +3370,20 @@ class ControlPlane:
         if not hasattr(self, "_agent_run_logs"):
             self._agent_run_logs: dict[str, list[dict[str, Any]]] = {}
 
+        #: A run must never look finished while it is still counted as active:
+        #: the concurrency slot is released *before* the terminal state is
+        #: published. Publishing first left observers (the cockpit, the
+        #: governance API, CI) reading a terminal run with ``active_runs``
+        #: still at 1 — observed as a real failure on the 3.13 CI job.
+        released = threading.Event()
+
+        def release_slot() -> None:
+            """Free this run's concurrency slot exactly once."""
+            if released.is_set():
+                return
+            released.set()
+            self._agent_governor().end(name)
+
         def worker():
             try:
                 result = runner.run(definition, requirement,
@@ -3383,6 +3397,7 @@ class ControlPlane:
                     report_json=json.dumps(
                         {"output": result.output[:2000],
                          "error": result.error}))
+                release_slot()
                 self._agent_run_results[(session.id, run_id)] = {
                     "status": "finished", "run": result.to_dict()}
                 self._agent_run_logs.setdefault(
@@ -3402,6 +3417,7 @@ class ControlPlane:
                 self.runs.mutate(record.id, status=RunStatus.FAILED,
                                  stage="failed", finished_at=time.time(),
                                  error=str(exc)[:500])
+                release_slot()
                 self._agent_run_results[(session.id, run_id)] = {
                     "status": "failed", "error": str(exc)[:500]}
                 self._agent_run_logs.setdefault(session.id, []).append({
@@ -3432,7 +3448,9 @@ class ControlPlane:
             try:
                 worker()
             finally:
-                self._agent_governor().end(name)
+                #: Covers the paths that never reached a terminal publish; the
+                #: event keeps a second release from freeing another run's slot.
+                release_slot()
 
         governor.begin(name)
         if self._executor is not None:
