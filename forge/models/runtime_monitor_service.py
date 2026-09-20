@@ -105,7 +105,7 @@ class RuntimeMonitorService:
                 if value:names.add(str(value))
             latency=(time.time()-started)*1000.0
             if model_id not in names:return RuntimeProbeResult(model_id=model_id,ok=False,latency_ms=latency,status="not_found",reason="exact model is not available")
-            return RuntimeProbeResult(model_id=model_id,ok=True,latency_ms=latency,status="healthy",reason="exact model listed by provider")
+            return RuntimeProbeResult(model_id=model_id,ok=True,latency_ms=latency,status="discovered",reason="exact model listed by provider")
         return RuntimeProbeResult(model_id=model_id,ok=False,status="unverifiable",reason="provider has no exact model-list probe")
     def _save(self)->None:
         self.state_path.parent.mkdir(parents=True,exist_ok=True); temp=self.state_path.with_suffix(self.state_path.suffix+".tmp"); temp.write_text(json.dumps(self.snapshot(),sort_keys=True),encoding="utf-8"); os.replace(str(temp),str(self.state_path))
