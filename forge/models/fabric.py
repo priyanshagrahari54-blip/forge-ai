@@ -414,6 +414,32 @@ class ModelFabric:
                     },
                 ))
 
+        # Hosted providers configured through Render environment variables.
+        # Each provider is registered only when its key is present; no secret
+        # value is logged or copied into model metadata.
+        from forge.models.remote_providers import build_remote_providers
+        for provider_name, provider, model_name in build_remote_providers():
+            if provider_name == "anthropic" and not credentials.configured("anthropic"):
+                continue
+            if provider_name == "gemini" and not credentials.configured("gemini"):
+                continue
+            if provider_name == "openrouter" and not credentials.configured("openrouter"):
+                continue
+            if provider_name == "groq" and not credentials.configured("groq"):
+                continue
+            providers.register(
+                provider_name,
+                provider,
+                ProviderInfo(name=provider_name, kind="remote", local=False,
+                             free=False, capabilities=TEXT_CAPABILITIES),
+            )
+            registry.register(Model(
+                name=f"{provider_name}/{model_name}", provider=provider_name,
+                capabilities=TEXT_CAPABILITIES, context_window=128000,
+                free=False, local=False,
+                metadata={"description": "Configured hosted provider."},
+            ))
+
         if config.openai_enabled and credentials.configured("openai"):
             openai = OpenAIProvider(model=config.openai_model, api_key=credentials.get("openai"))
             providers.register(
