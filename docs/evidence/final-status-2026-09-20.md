@@ -110,12 +110,12 @@ test → verify → report, against the 26-stage master prompt. Branch:
 
 ## Blocked (external, honestly recorded)
 
-1. **GitHub push / PR creation**: both `GH_TOKEN` and `GITHUB_TOKEN` in this
-   sandbox return **401** against api.github.com (expired). Git remote
-   operations fail ("terminal prompts disabled" with anonymous HTTPS).
-   Work committed locally on `arena/01a0bd78-forge-ai` (`711cff9`). Action
-   needed from user: reconnect GitHub in Arena; then:
-   `git push origin arena/01a0bd78-forge-ai` and open PR to `main`.
+1. **GitHub push / PR creation**: ~~both `GH_TOKEN` and `GITHUB_TOKEN` in this
+   sandbox return **401** against api.github.com (expired)~~ **RESOLVED**
+   (user reconnected GitHub at ~09:00 UTC): branch pushed, **PR #47 opened**,
+   CI green on all three legs (3.8 / 3.11 / 3.13 — run 35500313245, all
+   `success`), and #47 **merged into `main`** as merge commit `06b8681`.
+   Post-merge CI on `main`: run 35501552241.
 2. **Render dashboard/API operations** (redeploy, keep-alive settings):
    no credentials in env; production was reachable for verification via
    its public URL only.
@@ -127,11 +127,12 @@ test → verify → report, against the 26-stage master prompt. Branch:
 
 ## Remaining (post-push)
 
-- Open PR `arena/01a0bd78-forge-ai` → `main`, review CI on all three
-  matrix legs (3.8 thin-client BLOCKED-paths leg; 3.11 †deployment-parity
-  `.[dev,media]` + local-capability probe step; 3.13 `.[dev,media]`),
-  merge, let Render auto-deploy, then re-verify the same health/auth
-  smoke on the production URL.
+- ~~Open PR → CI → merge~~ **done** (PR #47, merged as `06b8681`; pre-merge
+  CI green on all three legs).
+- Render auto-deploy of merged `main` observed: service was mid-rebuild/
+  rolling restart at verification time (Render "Application loading" with
+  boot-log progressing); final health smoke repeats after the deploy
+  settles.
 - Recommend closing PRs #42 (superseded), and after merge: #46, #45, #34
   with "ported/merged via arena/01a0bd78-forge-ai" notes.
 
@@ -148,7 +149,7 @@ test → verify → report, against the 26-stage master prompt. Branch:
 | Tool fencing / mediation / supervisor | ✓ | ✓ green | ✓ | ✓ suite | ✓ | — | — |
 | Intelligence single-pass indexing | ✓ | ✓ 23 tests green | ✓ | ✓ measured 2× | ✓ | — | — |
 | Registry capability index | ✓ | ✓ green | ✓ | ✓ measured 6.9× | ✓ | — | — |
-| CI matrix wiring | ✓ | YAML validated | push-blocked | pending post-push | — | — | GitHub token |
+| CI matrix wiring | ✓ | ✓ green (3 legs, run 35500313245) | ✓ on main | ✓ success conclusions | ✓ | — | — |
 | Production health endpoint | — | — | ✓ live | ✓ fetched 200 | ✓ | — | cold-start ~4 min (free plan) |
 | Paid external model inference | — | — | — | — | — | — | need operator credentials |
 | AI City live demo | — | — | — | — | — | — | separate deployment |
