@@ -116,10 +116,19 @@ class GeneralConversationEngine:
             return {"kind": "preference", "reply": reply,
                     "remembered": remembered, "history": self.snapshot()}
         if kind == "question":
-            answer = self.answer_question(message)
+            answer, meta = self._answer_with_meta(message)
             self._append(answer, kind)
-            return {"kind": "question", "reply": answer,
-                    "history": self.snapshot()}
+            payload = {"kind": "question", "reply": answer,
+                       "history": self.snapshot()}
+            if meta:
+                # Provenance is part of the answer: a reply produced by a
+                # runtime-verified live model is labeled as such, and the
+                # deterministic channel is labeled honestly too.
+                payload["answer_meta"] = meta
+                for key in ("engine", "model", "provider", "live_model"):
+                    if key in meta:
+                        payload[key] = meta[key]
+            return payload
         if kind == "greeting":
             reply = ("Hello! I'm Forge. I can start engineering tasks "
                      "(\"add CSV export to this project\"), answer "
@@ -134,6 +143,22 @@ class GeneralConversationEngine:
         self._append(reply, kind)
         return {"kind": "chat", "reply": reply,
                 "history": self.snapshot()}
+
+    def _answer_with_meta(self, question: str) -> tuple[str, dict[str, Any]]:
+        """Answer a question, keeping the engine's provenance.
+
+        ``answer_question`` may return plain text (the original contract) or
+        a mapping carrying the provenance of the reply
+        (``{"text": ..., "engine": "model:...", ...}``). Both are supported
+        so existing answerers keep working unchanged.
+        """
+        answer = self.answer_question(question)
+        if isinstance(answer, dict):
+            text = str(answer.get("text", ""))
+            meta = {str(key): value for key, value in answer.items()
+                    if key != "text"}
+            return text, meta
+        return str(answer), {}
 
     def _append(self, text: str, kind: str, task_id: str = "") -> None:
         self.history.append(Message(role="assistant", text=text,

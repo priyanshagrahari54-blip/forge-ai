@@ -306,7 +306,8 @@ class TestDebugLoop:
                      else "terminal")
         for number in range(1, self.max_retries + 2):
             result = self.debugger.runtime.execute(test_tool, approved=approved, command=command,
-                                                   actor="debugger", task_id=task_id)
+                                                   actor="debugger", task_id=task_id,
+                                                   commit_guard=self.debugger.commit_guard)
             combined = ((result.output or "") + result.metadata.get("stdout", "") + result.metadata.get("stderr", ""))
             output = combined or result.error or ""
             exit_code = result.metadata.get("returncode")

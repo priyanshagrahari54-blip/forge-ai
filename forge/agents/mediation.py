@@ -641,6 +641,21 @@ class GatedAgentRuntime:
         calls = self._checked_tool_calls(tool_calls)
         self._governor.check(name, limits)
         run_id = uuid4().hex[:12]
+        # Same default-fence rationale as ChangeApplier.apply()/Supervisor.run():
+        # execute_tool() binds every mutating call to this run's ``run_id``
+        # as its task_id, so ToolRuntime now requires attempt authority for
+        # it (Session 11.5). This run applies exactly once and
+        # synchronously — there is no concurrent retry that could make it
+        # "stale" — so mint a single-attempt fence when the caller hasn't
+        # supplied its own ``guard`` from a shared FenceRegistry, instead of
+        # hard-refusing every mutating tool call by default.
+        if guard is None:
+            from forge.core.fencing import FenceRegistry
+            from forge.core.fencing import commit_guard as _build_commit_guard
+            _registry = FenceRegistry()
+            _fence = _registry.begin(run_id, owner=actor or name)
+            _fence = _registry.mark_running(run_id, _fence)
+            guard = _build_commit_guard(_fence, _registry)
         self._governor.begin(name)
         started = time.monotonic()
         checkpoint: Any = None

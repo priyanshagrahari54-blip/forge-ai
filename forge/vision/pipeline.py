@@ -24,7 +24,9 @@ from forge.vision.base import UnconfiguredVisionProvider
 
 #: Provider names the control plane accepts. Real providers
 #: register behind the same VisionProvider protocol as plugins.
-AVAILABLE_PROVIDERS = ("simulated", "openai-vision")
+#: ``local-vision`` is the self-hosted option: it needs no cloud credential,
+#: only an OpenAI-compatible multimodal endpoint on your own network.
+AVAILABLE_PROVIDERS = ("simulated", "openai-vision", "local-vision")
 
 
 def build_vision_provider(name: str) -> VisionProvider:
@@ -34,6 +36,9 @@ def build_vision_provider(name: str) -> VisionProvider:
     if name == "openai-vision":
         from forge.vision.real import OpenAIVisionProvider
         return OpenAIVisionProvider()
+    if name == "local-vision":
+        from forge.vision.local import LocalOpenAIVisionProvider
+        return LocalOpenAIVisionProvider()
     if name == "unconfigured":
         return UnconfiguredVisionProvider()
     raise ValueError(

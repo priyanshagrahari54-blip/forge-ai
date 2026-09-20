@@ -277,7 +277,19 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         self.server = server
 
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+        # Read the ASGI-scope path, not ``request.url.path``. Starlette
+        # historically built ``request.url`` by string-concatenating the
+        # client-supplied ``Host`` header with the request path and
+        # re-parsing the result (fixed in 1.0.1, CVE-2026-48710 /
+        # "BadHost"). A ``Host`` header containing a delimiter such as
+        # ``/``, ``?``, ``#`` or ``@`` could shift where that re-parse
+        # placed the path boundary, so ``request.url.path`` could disagree
+        # with the path the router actually dispatches on. ``scope["path"]``
+        # comes straight from the HTTP request line, is what the router
+        # uses, and cannot be influenced by any header — so it is the only
+        # value this auth check can safely gate on, independent of which
+        # Starlette version ends up installed.
+        path = request.scope.get("path", "")
         if (path == API_PREFIX + "/ping"
                 or path == API_PREFIX + "/auth/challenge"
                 or not path.startswith(API_PREFIX)):

@@ -42,7 +42,8 @@ class OpenAIVisionProvider:
         if not self._api_key:
             raise VisionUnavailable(
                 "No OPENAI_API_KEY configured for vision.")
-        from forge.vision.image_io import sniff_image, DANGER_MARKERS
+        from forge.vision.image_io import (find_dangerous_instructions,
+                                           sniff_image)
         try:
             image_format, width, height = sniff_image(image)
         except Exception as exc:
@@ -70,13 +71,9 @@ class OpenAIVisionProvider:
             kind="text", content=content[:MAX_CONTENT],
             confidence=0.85))
 
-        # Check for dangerous instructions in the API response
-        dangerous: list[str] = []
-        lowered = content.lower()
-        for marker in DANGER_MARKERS:
-            if marker in lowered:
-                dangerous.append(content[:400])
-                break
+        # Instructions inside an image are untrusted input, never
+        # authorization: report them with the shared detector.
+        dangerous = list(find_dangerous_instructions(content))
 
         summary = (f"Analyzed {image_format} image ({width}x{height}) "
                    f"via {self.model}: {len(content)} chars of "

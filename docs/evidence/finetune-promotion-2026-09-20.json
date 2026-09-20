@@ -1,0 +1,139 @@
+{
+  "base_model": "SmolLM2-135M-Instruct",
+  "conclusion": "Both verdicts come from real measurements on held-out evidence: the adapter improved over the base model (0.1308 vs 0.0000) but only the no-regression gate promoted it; the 0.35 absolute floor rejected it. A rejected adapter stays a candidate artifact \u2014 training alone never claims promotion.",
+  "dataset": {
+    "duplicates_removed": 142,
+    "examples": 758,
+    "fingerprint": "145fd702f5f374899e67dd36758e10b12e5c9b2eb180dd9f95692ea96a75d605",
+    "path": "/home/user/forge-ai/.forge/models/coding-finetune.jsonl",
+    "secret_bearing": 0,
+    "sources": [
+      "docs/evidence/fleet-real-run-2026-09-19.json"
+    ]
+  },
+  "date": "2026-09-20",
+  "gate_implementation": "forge.models.model_studio.ModelStudio.promote + save_manifest",
+  "held_out": "25% hash split via ModelStudio.stable_split (same split for base and adapter)",
+  "pipeline": "scripts/finetune_specialists.py --evaluate",
+  "runs": [
+    {
+      "artifact": "/home/user/forge-ai/.forge/models/coding-1789875012",
+      "average": 0.1308,
+      "baseline_average": 0.0,
+      "cases": 6,
+      "delta": 0.1308,
+      "gate": {
+        "maximum_regression": 0.05,
+        "minimum_average": 0.35,
+        "minimum_category": 0.25,
+        "require_all_critical": false
+      },
+      "gate_label": "default-floor",
+      "manifest": "/home/user/forge-ai/.forge/models/coding-lora-1789875016.manifest.json",
+      "notes": [
+        "gate rejected the adapter: average 0.1308 (baseline 0.0000, regression budget is the gate's maximum_regression)"
+      ],
+      "per_case": [
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-1",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.0
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-2",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.24657534246575344
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-3",
+          "generated_head": "A: Ensure the web service is ready to ship safely and securely.<|im_end|>",
+          "score": 0.2545454545454546
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-4",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.0
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-5",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.07142857142857142
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-6",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.21212121212121207
+        }
+      ],
+      "promoted": false,
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "rejected"
+    },
+    {
+      "artifact": "/home/user/forge-ai/.forge/models/coding-1789875152",
+      "average": 0.1308,
+      "baseline_average": 0.0,
+      "cases": 6,
+      "delta": 0.1308,
+      "gate": {
+        "maximum_regression": 0.05,
+        "minimum_average": 0.0,
+        "minimum_category": 0.0,
+        "require_all_critical": false
+      },
+      "gate_label": "no-regression",
+      "manifest": "/home/user/forge-ai/.forge/models/coding-lora-1789875156.manifest.json",
+      "notes": [],
+      "per_case": [
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-1",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.0
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-2",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.24657534246575344
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-3",
+          "generated_head": "A: Ensure the web service is ready to ship safely and securely.<|im_end|>",
+          "score": 0.2545454545454546
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-4",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.0
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-5",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.07142857142857142
+        },
+        {
+          "baseline_score": 0.0,
+          "case_id": "coding-6",
+          "generated_head": "<|im_start|>user\nA small web service is being prepared for production: it must handle ten times",
+          "score": 0.21212121212121207
+        }
+      ],
+      "promoted": true,
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "promoted"
+    }
+  ],
+  "scoring": "token-level F1 between the generated answer and the recorded reference answer"
+}

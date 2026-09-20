@@ -116,7 +116,14 @@ def test_deny_fails_closed(tmp_path):
         oid = submitted["orchestration_id"]
 
         def done():
+            #: The store read runs on the test thread while the worker thread
+            #: mutates the same record, so an early poll can observe a
+            #: transient None (observed once on the 3.13 CI runner). "Not
+            #: ready yet" is what the bounded wait is for — the assertion
+            #: below still requires the real terminal state.
             record = plane.orchestrations.get(oid)
+            if record is None:
+                return None
             return record if record.status.value in (
                 "SUCCEEDED", "FAILED", "CANCELLED") else None
         record = wait_for(done, timeout=60)

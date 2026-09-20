@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `main` is what deploys. `arena/**` is included because those branches
+    # carry the work in progress: without a push trigger their only feedback
+    # comes from the pull_request event, which GitHub stops emitting the moment
+    # the branch falls behind main and the pull request turns conflicting — the
+    # exact situation where a green run is most needed.
+    branches: [main, 'arena/**']
   pull_request:
 
 concurrency:
@@ -25,10 +30,16 @@ jobs:
       - name: Install dependencies
         run: |
           if [ "${{ matrix.python-version }}" = "3.8" ]; then
+            # The frozen 3.8 set (the Windows 7 thin-client target)
+            # intentionally has no media packages; that leg exercises the
+            # honest BLOCKED capability paths instead.
             python -m pip install -r requirements/py38-dev.txt
             python -m pip install -e . --no-deps
           else
-            python -m pip install -e ".[dev]"
+            # 3.11 is the interpreter the deployment image runs, and the media
+            # extra is pure-wheel on 3.13 too, so both modern legs install
+            # exactly the extras the Dockerfile installs.
+            python -m pip install -e ".[dev,media]"
           fi
       - run: python -m pytest -q
       - name: Forge Web startup smoke test
@@ -44,6 +55,32 @@ jobs:
               payload = response.json()
               assert payload.get("status") == "ok", payload
           print("Forge Web startup smoke test passed")
+          PY
+      - name: Local capability backends (deployment configuration)
+        if: matrix.python-version == '3.11'
+        run: |
+          python - <<'PY'
+          import importlib.util
+
+          from forge.models.local_capabilities import probe_local_capabilities
+
+          report = probe_local_capabilities()
+          for name, item in sorted(report["reports"].items()):
+              print(f"{name}: {item.get('probe')} {item.get('reason', '')}")
+          verified = set(report["verified"])
+          #: The image installs these packages. If one is present but its probe
+          #: did not pass, the deployment would advertise a capability it
+          #: cannot serve — so that mismatch fails here, not in production.
+          required = {"PIL": ("vision", "image_generation"),
+                      "espeakng_loader": ("text_to_speech",),
+                      "pocketsphinx": ("speech_to_text",)}
+          for module, capabilities in required.items():
+              if importlib.util.find_spec(module) is None:
+                  print(f"{module}: not installed on this job")
+                  continue
+              for capability in capabilities:
+                  assert capability in verified, report["reports"].get(capability)
+          print("verified local capabilities:", sorted(verified))
           PY
       - run: python -m compileall -q forge
       - run: git diff --check

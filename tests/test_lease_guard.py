@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 
 import pytest
@@ -46,8 +47,13 @@ def test_guard_refuses_result_after_ownership_loss(tmp_path):
 
     # Simulate another worker taking ownership by expiring/recovering the
     # current lease before the guarded worker attempts to publish its result.
-    time.sleep(0.02)
-    recovered = queue.recover_stale_running(0.001)
+    # The heartbeat is backdated rather than slept on: a sleep plus a 1 ms idle
+    # window is a wall-clock race that made this test flaky on CI.
+    with sqlite3.connect(tmp_path / "tasks.db") as connection:
+        connection.execute(
+            "UPDATE tasks SET lease_heartbeat = ? WHERE id = ?",
+            (time.time() - 60, claimed.id))
+    recovered = queue.recover_stale_running(1.0)
     assert recovered and recovered[0].status == TaskStatus.RECOVERY
 
     guard = LeaseGuard(monitor, lambda: "must-not-publish")

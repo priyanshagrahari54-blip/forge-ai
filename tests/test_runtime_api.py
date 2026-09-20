@@ -72,4 +72,6 @@ def test_runtime_inference_check_requires_exact_runtime_identity(tmp_path):
         )
 
         assert response.status_code == 404
-        assert "configured runtime not found" in response.json()["detail"]
+        payload = response.json()
+        assert payload["error"]["code"] == "NOT_FOUND"
+        assert "configured runtime not found" in payload["error"]["message"]

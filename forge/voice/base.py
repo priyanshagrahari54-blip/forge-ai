@@ -83,10 +83,18 @@ class VoiceCommandResult:
 #: tolerant about conversational phrasing while execution remains
 #: permission-gated.  Each entry is (pattern, intent, slot names).
 _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (r"(?:hey )?forge(?:,)? (?:update|change|modify) (?:the )?website", "update_website", ()),
+    # The leading wake word is already stripped by ``parse`` (so "Forge,
+    # update the website." arrives as "update the website"), yet callers may
+    # also pass an unstripped utterance: accept both forms.
+    (r"(?:hey )?(?:forge[,\s]+)?(?:please )?(?:update|change|modify) (?:the )?website", "update_website", ()),
     (r"(?:please )?(?:summarize|summary of|give me a summary of) (.+)", "summarize", ("target",)),
     (r"(?:please )?(?:run|execute) (?:the )?(?:full )?tests?(?: suite)?", "run_tests", ()),
     (r"(?:please )?(?:commit|save) (?:the )?(?:current )?changes", "commit", ()),
+    # Status phrasing is matched before the generic "review/check <target>"
+    # template: "check status" is an informational status query, not a review
+    # of something called "status".
+    (r"(?:please )?(?:check|show|tell me|report) (?:me )?(?:the )?"
+     r"(?:current )?(?:forge |project )?status", "status", ()),
     (r"(?:please )?(?:review|check) (.+)", "review", ("target",)),
     (r"(?:what(?:'s| is) )?(?:the )?status|how(?:'s| is) (?:forge|the project) doing", "status", ()),
     (r"(?:help|what can you do|what can forge do|show me what you can do)", "help", ()),

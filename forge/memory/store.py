@@ -6,6 +6,7 @@ root, entries are size-bounded, and callers can list/delete for retention.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -43,7 +44,17 @@ class MemoryStore:
             )
         path = self._safe_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(encoded)
+        #: Atomic replace: a concurrent reader (the API, a worker, or the
+        #: cockpit) must never observe a half-written entry, and a crash
+        #: mid-write must leave the previous value intact rather than an empty
+        #: file. The temporary file lives beside the target so ``os.replace``
+        #: stays a same-filesystem rename.
+        temporary = path.with_name(path.name + ".tmp")
+        with open(temporary, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
 
     def load(self, name: str) -> str | None:
         path = self._safe_path(name)

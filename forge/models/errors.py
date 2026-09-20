@@ -24,3 +24,22 @@ class ProviderError(FabricError):
 
 class ConfigurationError(FabricError):
     """Model Fabric configuration is invalid."""
+
+
+class ProviderExhaustedError(ProviderError):
+    """A provider refused work because its quota or rate limit is spent.
+
+    Raised only when the provider has no healthy endpoint left to try, so a
+    caller can fail over to another provider instead of retrying a wall. The
+    caller-supplied ``retry_after`` (seconds) is whatever the endpoint stated,
+    or ``None`` when it stated nothing.
+    """
+
+    def __init__(self, message: str, *, provider: str = "", model: str = "",
+                 retry_after: float | None = None,
+                 status: int | None = None) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.retry_after = retry_after
+        self.status = status

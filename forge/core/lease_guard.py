@@ -43,10 +43,20 @@ class LeaseGuard(Generic[T]):
         return self._result  # type: ignore[return-value]
 
     def run(self) -> T:
-        """Execute work and refuse to return a result after lease loss."""
+        """Execute work and refuse to return a result after lease loss.
+
+        Ownership is verified *at publish time* with one synchronous renewal
+        rather than trusting the background monitor's event: the heartbeat
+        thread only ticks every ``heartbeat_interval``, so a fast unit of work
+        could otherwise publish a result in the window after another worker
+        recovered the task. Renewal is owner-authenticated, so a lost lease
+        (different owner, recovered task, no longer RUNNING) returns ``None``
+        and is converted into an explicit refusal.
+        """
         self.monitor.start()
         try:
             self._result = self.work()
+            self.monitor.tick()
             if self.monitor.lost:
                 raise LeaseLostError(
                     f"Worker lease lost for task {self.monitor.task_id}; "

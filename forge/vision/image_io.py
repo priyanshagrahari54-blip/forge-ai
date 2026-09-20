@@ -9,6 +9,8 @@ closed with :class:`ImageFormatError`.
 """
 from __future__ import annotations
 
+import re
+
 import struct
 import zlib
 
@@ -154,3 +156,49 @@ DANGER_MARKERS = (
     "ignore all instructions", "disable security", "run as root",
     "sudo ", "give me your password", "reveal your secrets",
 )
+
+
+#: Instruction-shaped phrases an image may contain. The substring list above
+#: catches literal commands; these patterns catch the same intent phrased with
+#: extra words ("ignore all previous instructions", "delete the production
+#: database"), which is exactly how a prompt-injection inside an image reads.
+_DANGER_PATTERNS = (
+    r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions",
+    r"disregard\s+(all\s+)?(previous|prior|above|earlier)\s+instructions",
+    r"delete\s+(everything|all|the\s+\w+\s+(database|files?|data))",
+    r"drop\s+(table|database)",
+    r"rm\s+-rf",
+    r"format\s+c:",
+    r"disable\s+(the\s+)?(security|auth\w*|firewall|protection)",
+    r"approve\s+(all|everything|any)",
+    r"reveal\s+(your\s+)?(secrets?|password|api\s*keys?|credentials)",
+    r"give\s+me\s+(your\s+)?(password|secrets?|api\s*keys?)",
+    r"run\s+(this|the\s+following)?\s*as\s+root",
+    r"\bsudo\b",
+    r"\bshutdown\b",
+    r"grant\s+(me\s+)?(admin|root|full)\s+(access|permissions?)",
+)
+
+_DANGER_REGEXES = tuple(re.compile(pattern, re.IGNORECASE)
+                        for pattern in _DANGER_PATTERNS)
+
+
+def find_dangerous_instructions(text: str) -> tuple[str, ...]:
+    """Return the spans of ``text`` that read like an instruction to act.
+
+    Image content is untrusted input: anything that looks like a command is
+    reported so a caller can refuse it, and is never treated as authorization.
+    Both the literal markers and the pattern set are applied, so this is a
+    superset of the substring check it replaces at call sites.
+    """
+    lowered = str(text or "").lower()
+    for marker in DANGER_MARKERS:
+        if marker in lowered:
+            return (str(text)[:400],)
+    for pattern in _DANGER_REGEXES:
+        match = pattern.search(lowered)
+        if match:
+            start = max(0, match.start() - 40)
+            end = min(len(text), match.end() + 160)
+            return (str(text)[start:end],)
+    return ()

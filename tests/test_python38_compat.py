@@ -223,18 +223,66 @@ def test_tree_is_python38_compatible():
     assert not problems, "\n".join(problems[:20])
 
 
+#: HTTP verbs FastAPI exposes as route decorators. Anything that mounts an
+#: endpoint this way has its annotations evaluated at import time, wherever the
+#: module lives.
+ROUTE_VERBS = frozenset({
+    "get", "post", "put", "patch", "delete", "head", "options", "websocket",
+})
+
+
+def _mounts_a_route(path: Path) -> bool:
+    """True when the module decorates a function as an HTTP endpoint.
+
+    Parsed rather than regex-matched on purpose: a comment or docstring that
+    *mentions* ``@router.get`` must not drag an unrelated module into the
+    annotation rule.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            func = decorator.func if isinstance(decorator, ast.Call) else None
+            if isinstance(func, ast.Attribute) and func.attr in ROUTE_VERBS:
+                return True
+    return False
+
+
+def _modules_with_evaluated_annotations() -> list[Path]:
+    """Every module whose annotations FastAPI/pydantic evaluates.
+
+    That is the whole ``forge/api`` package plus any module elsewhere that
+    mounts a route (``install_*_route`` helpers live next to the feature they
+    serve). Restricting this check to ``forge/api`` missed
+    ``forge/models/provider_links_http.py``: its ``-> dict[str, Any]`` broke
+    app creation on Python 3.8 in CI even though the module had the future
+    import, because FastAPI evaluates the string.
+    """
+    found: list[Path] = []
+    for path in sorted((ROOT / "forge").rglob("*.py")):
+        if "__pycache__" in str(path):
+            continue
+        if path.parent.name == "api" or _mounts_a_route(path):
+            found.append(path)
+    return found
+
+
 def test_api_annotations_evaluate_on_python38():
-    """forge/api uses only typing-style annotations.
+    """Route modules use only typing-style annotations.
 
     FastAPI resolves endpoint/dependency annotations and pydantic
     resolves model fields by evaluating them at import time. With the
     future import the annotations are strings, and evaluating
     ``X | Y`` or ``list[X]`` raises TypeError on 3.8 — a collection
-    failure. So the API layer must spell them ``Optional/List/...``.
+    failure. So route modules must spell them ``Optional/List/...``.
     """
     problems: list[str] = []
     checked = 0
-    for path in sorted((ROOT / "forge" / "api").rglob("*.py")):
+    for path in _modules_with_evaluated_annotations():
         if "__pycache__" in str(path):
             continue
         checked += 1

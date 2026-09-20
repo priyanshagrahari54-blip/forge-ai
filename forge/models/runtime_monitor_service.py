@@ -27,6 +27,20 @@ class RuntimeMonitorService:
             try:self.tick(force=True)
             except Exception:pass
             self._stop.wait(self.interval_seconds)
+    def _model_availability(self, model_registry: Any, runtime: ConfiguredRuntime) -> Any:
+        """Return the current ``available`` flag for the runtime's model."""
+        if model_registry is None:
+            return None
+        try:
+            model = model_registry.get(runtime.model_id)
+        except Exception:
+            return None
+        if getattr(model, "provider", None) != runtime.provider:
+            return None
+        if bool(getattr(model, "fallback", False)):
+            return None
+        return bool(getattr(model, "available", True))
+
     def _set_model_available(self, model_registry: Any, runtime: ConfiguredRuntime, available: bool)->None:
         if model_registry is None:return
         try:
@@ -41,10 +55,25 @@ class RuntimeMonitorService:
             for runtime in self.registry.items():
                 if runtime.state==RuntimeState.REVOKED.value:continue
                 if runtime.state==RuntimeState.LIVE.value and not self.monitor.stale(runtime,now=checked_at):continue
+                # Fail closed while the probe is in flight, then apply only
+                # *conclusive* evidence. An inconclusive probe (a provider
+                # with no exact model-list probe) restores the previous
+                # availability instead of inventing an outage.
+                previous = self._model_availability(model_registry, runtime)
                 self._set_model_available(model_registry,runtime,False)
                 try:
                     result=self.monitor.check(runtime,self._probe,now=checked_at)
-                    if model_registry is not None: apply_probe_result(model_registry,result.probe)
+                    probe=result.probe
+                    if probe.conclusive:
+                        self._set_model_available(model_registry,runtime,bool(probe.ok))
+                        if model_registry is not None:
+                            # Registry feedback is a side effect: a registry
+                            # that cannot resolve the identity must not turn
+                            # a successful probe into a reported outage.
+                            try: apply_probe_result(model_registry,probe)
+                            except Exception: pass
+                    elif previous is not None:
+                        self._set_model_available(model_registry,runtime,previous)
                     results.append(result.to_dict())
                 except Exception as exc:
                     runtime.mark_unavailable("runtime probe failed: %s"%type(exc).__name__); self._set_model_available(model_registry,runtime,False); results.append({"provider":runtime.provider,"model_id":runtime.model_id,"state":runtime.state,"changed":True,"error":type(exc).__name__})
@@ -57,12 +86,20 @@ class RuntimeMonitorService:
             if runtime is None:
                 raise KeyError("configured runtime not found: %s:%s" % (provider_name, model_id))
             providers = getattr(self.fabric, "providers", None)
-            if providers is None or not providers.has(provider_name):
+            #: Duck-typed provider registries (adapters, test doubles) may
+            #: only expose ``get``; absence of ``has`` is not evidence the
+            #: provider is gone, a ``None`` from ``get`` is.
+            provider = None
+            if providers is not None:
+                try:
+                    provider = providers.get(provider_name)
+                except Exception:
+                    provider = None
+            if provider is None:
                 runtime.mark_unavailable("provider is not registered")
                 self._save()
                 return {"provider": provider_name, "model_id": model_id, "ok": False,
                         "state": runtime.state, "reason": runtime.last_reason}
-            provider = providers.get(provider_name)
             result = probe_provider_inference(provider, model_id)
             registry = getattr(self.fabric, "registry", None)
             if registry is not None:
@@ -95,7 +132,10 @@ class RuntimeMonitorService:
     def _probe(self,provider_name:str,model_id:str)->RuntimeProbeResult:
         providers=getattr(self.fabric,"providers",None)
         if providers is None:return RuntimeProbeResult(model_id=model_id,ok=False,status="unavailable",reason="provider registry unavailable")
-        provider=providers.get(provider_name)
+        try:
+            provider=providers.get(provider_name)
+        except Exception:
+            provider=None
         if provider is None:return RuntimeProbeResult(model_id=model_id,ok=False,status="unavailable",reason="provider is not registered")
         list_models=getattr(provider,"list_models",None)
         if callable(list_models):
@@ -105,8 +145,16 @@ class RuntimeMonitorService:
                 if value:names.add(str(value))
             latency=(time.time()-started)*1000.0
             if model_id not in names:return RuntimeProbeResult(model_id=model_id,ok=False,latency_ms=latency,status="not_found",reason="exact model is not available")
+            # A model-list hit proves provider exposure only. Discovery is
+            # recorded as ``discovered`` and never promotes a model on its
+            # own: only the explicit inference probe (``inference_check``)
+            # may move a runtime through CONFIGURED -> VERIFIED -> LIVE.
             return RuntimeProbeResult(model_id=model_id,ok=True,latency_ms=latency,status="discovered",reason="exact model listed by provider")
-        return RuntimeProbeResult(model_id=model_id,ok=False,status="unverifiable",reason="provider has no exact model-list probe")
+        # No exact model-list probe exists for this provider. The probe is
+        # inconclusive (``conclusive=False``): Forge records that it could not
+        # verify the runtime and leaves the model's routing state untouched,
+        # rather than reporting an outage it never observed.
+        return RuntimeProbeResult(model_id=model_id,ok=False,status="unverified",reason="provider has no exact model-list probe",conclusive=False)
     def _save(self)->None:
         self.state_path.parent.mkdir(parents=True,exist_ok=True); temp=self.state_path.with_suffix(self.state_path.suffix+".tmp"); temp.write_text(json.dumps(self.snapshot(),sort_keys=True),encoding="utf-8"); os.replace(str(temp),str(self.state_path))
     def _load(self)->None:

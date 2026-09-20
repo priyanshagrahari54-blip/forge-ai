@@ -31,6 +31,19 @@ class AgentPlan:
     def capabilities(self) -> tuple[str, ...]:
         return tuple(agent.capability for agent in self.agents)
 
+    @property
+    def unmet(self) -> tuple[str, ...]:
+        """Required capabilities no registered agent could satisfy.
+
+        The planner skips a capability when nothing is registered for it, so
+        without this the plan looks complete while a third of the requirement
+        is silently unassigned. Callers surface it instead of reporting a
+        fully-staffed plan.
+        """
+        covered = set(self.capabilities)
+        return tuple(capability for capability in self.requirements.capabilities
+                     if capability not in covered)
+
     def is_empty(self) -> bool:
         return not self.agents
 

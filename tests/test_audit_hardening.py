@@ -5,8 +5,12 @@ memory path safety, no fabricated metrics, coder syntax validation, security
 scan exclusions, checkpoint exclusions, terminal output bounds, capability
 verification levels, deterministic consensus, and planner validation.
 """
+from __future__ import annotations
+
 import json
+import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +56,49 @@ def test_memory_store_rejects_traversal(tmp_path):
     for bad in ("../../escape.txt", "/etc/passwd", "a/../../b.txt", ""):
         with pytest.raises(ValueError):
             store.save(bad, "x")
+
+
+def test_memory_store_write_is_atomic(tmp_path, monkeypatch):
+    """A reader must never observe a half-written entry.
+
+    The store used to write in place, so a concurrent reader (or a crash) could
+    see an empty file — which is how a background task's memory record went
+    missing in a full-suite run. The write now lands through ``os.replace``.
+    """
+    store = MemoryStore(str(tmp_path / "memory"))
+    replaced: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def recording_replace(source, destination):
+        replaced.append((str(source), str(destination)))
+        return real_replace(source, destination)
+
+    monkeypatch.setattr("forge.memory.store.os.replace", recording_replace)
+    store.save("server/tasks/t1.json", '{"status": "completed"}')
+
+    assert replaced, "the entry was not published atomically"
+    source, destination = replaced[-1]
+    assert destination.endswith("server/tasks/t1.json")
+    assert source.endswith(".tmp")
+    assert store.load("server/tasks/t1.json") == '{"status": "completed"}'
+    # The temporary file is gone: nothing is left behind for the next reader.
+    assert not list(Path(tmp_path / "memory").rglob("*.tmp"))
+
+
+def test_a_failed_write_leaves_the_previous_entry_intact(tmp_path, monkeypatch):
+    """A crash mid-write must not destroy the value that was already stored."""
+    store = MemoryStore(str(tmp_path / "memory"))
+    store.save("note", "original")
+
+    def exploding_replace(source, destination):
+        raise OSError("simulated crash before publish")
+
+    monkeypatch.setattr("forge.memory.store.os.replace", exploding_replace)
+    with pytest.raises(OSError):
+        store.save("note", "replacement")
+
+    monkeypatch.undo()
+    assert store.load("note") == "original"
 
 
 def test_memory_store_size_bound_and_lifecycle(tmp_path):

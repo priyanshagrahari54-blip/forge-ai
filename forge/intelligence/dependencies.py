@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from forge.intelligence.gitignore import GitIgnoreMatcher
-from forge.intelligence.python_parser import PythonParser
+from forge.intelligence.python_parser import PythonFileInfo, PythonParser
 
 
 @dataclass
@@ -114,8 +114,19 @@ class DependencyIndexer:
         self._module_cache: dict[str, str | None] = {}
         self._from_import_cache: dict[tuple[str, tuple[str, ...]], str | None] = {}
 
-    def build(self) -> DependencyGraph:
+    def build(self, parsed_files: dict[str, PythonFileInfo] | None = None) -> DependencyGraph:
+        """Build the dependency graph, reusing pre-parsed files when given.
+
+        ``RepositoryIntelligence.build`` parses every repository module once
+        and hands both indexers the results; a direct ``build()`` keeps the
+        original self-contained behaviour.
+        """
         graph = DependencyGraph()
+
+        if parsed_files is not None:
+            for relative, parsed in parsed_files.items():
+                self._index_parsed_file(relative, parsed, graph)
+            return graph
 
         for path in self.root.rglob("*.py"):
             if self._should_ignore(path):
@@ -145,6 +156,14 @@ class DependencyIndexer:
         except (OSError, UnicodeDecodeError, SyntaxError):
             return
 
+        self._index_parsed_file(relative, parsed, graph)
+
+    def _index_parsed_file(
+        self,
+        relative: str,
+        parsed: PythonFileInfo,
+        graph: DependencyGraph,
+    ) -> None:
         for import_detail in parsed.import_details:
             module = import_detail.module
 

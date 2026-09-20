@@ -953,6 +953,14 @@ iframe.preview-frame {
   background: #ffffff;
 }
 
+.city-frame iframe {
+  width: 100%;
+  height: 650px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #050812;
+}
+
 .made-group {
   margin-top: 12px;
   border-top: 1px solid var(--line-soft);
@@ -1030,6 +1038,7 @@ button.file-chip:hover { border-color: var(--accent); }
 
 @media (max-width: 900px) {
   iframe.preview-frame { height: 320px; }
+  .city-frame iframe { height: 420px; }
 }
 
 /* Ambient glass command center: no external assets or fonts. */

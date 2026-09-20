@@ -96,14 +96,23 @@ class WorkerRegistry:
             return True
 
     def mark_stale(self, *, now: Optional[float] = None) -> List[ComputeWorker]:
+        """Mark every non-revoked worker whose heartbeat has expired.
+
+        Staleness is decided by heartbeat age, not by the worker's previous
+        state label: a worker restored from durable storage, or inserted by an
+        adapter, can be stale while still labeled ``REGISTERED``. Only
+        ``REVOKED`` workers are left alone (they are already unadmittable).
+        """
         now = time.time() if now is None else now
         stale: List[ComputeWorker] = []
         with self._lock:
             for worker in self._workers.values():
-                if worker.state == "ONLINE" and not worker.fresh(now, self.heartbeat_ttl):
+                if worker.state == "REVOKED":
+                    continue
+                if not worker.fresh(now, self.heartbeat_ttl):
                     worker.state = "STALE"
                     stale.append(worker)
-        return stale
+        return sorted(stale, key=lambda item: item.worker_id)
 
     def get(self, worker_id: str) -> Optional[ComputeWorker]:
         with self._lock:
