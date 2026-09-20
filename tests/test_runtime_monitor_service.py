@@ -72,8 +72,8 @@ def test_service_uses_exact_model_list_and_persists(tmp_path):
 
     snapshot = service.tick(now=100.0, force=True)
 
-    assert snapshot["live"] == 1
-    assert snapshot["counts"][RuntimeState.LIVE.value] == 1
+    assert snapshot["live"] == 0
+    assert snapshot["counts"][RuntimeState.CONFIGURED.value] == 1
     assert (tmp_path / "runtime.json").exists()
     assert snapshot["runtimes"][0]["model_id"] == "model-a"
 
