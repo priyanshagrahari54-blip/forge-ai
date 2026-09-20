@@ -618,6 +618,22 @@ class ControlPlane:
             self.multimodal_report = {
                 "schema_version": 1, "registered": [], "available": [],
                 "gaps": [], "error": str(exc)[:300]}
+        #: Capabilities this machine can serve itself — in-process pixel
+        #: measurement, bundled espeak-ng/pocketsphinx speech, a real HTTP+DOM
+        #: browser and a DOM action runner. Each one must pass its own real
+        #: probe before it is registered, so the 100 vision/audio/browser/
+        #: computer-use specialists are executable without a remote endpoint
+        #: and never merely because the code exists.
+        self.local_capability_report: dict[str, Any] = {}
+        try:
+            from forge.models.local_capabilities import (
+                register_local_capability_models)
+            self.local_capability_report = register_local_capability_models(
+                self.fabric)
+        except Exception as exc:                              # noqa: BLE001
+            self.local_capability_report = {
+                "schema_version": 1, "registered": [], "skipped": [],
+                "verified": [], "error": str(exc)[:300]}
         self.policy = config.policy
         # A35 Desktop Agent: controlled execution through the existing A33
         # policy/approval/audit systems. Provider defaults to the

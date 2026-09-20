@@ -311,6 +311,13 @@ class Supervisor:
                     extend_registry_with_multimodal_fleet)
                 from forge.models.multimodal_bridge import register_multimodal_models
                 register_multimodal_models(fabric)
+                #: Local capability backends (pixel measurement, bundled
+                #: speech, DOM browser/actions) are registered via their own
+                #: real probes, so a deployment with no external endpoint still
+                #: executes the vision/audio/browser/computer-use specialists.
+                from forge.models.local_capabilities import (
+                    register_local_capability_models)
+                register_local_capability_models(fabric)
                 multimodal_report = extend_registry_with_multimodal_fleet(
                     registry, fabric)
                 fleet_registered_agents = len(registry)
