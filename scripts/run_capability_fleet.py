@@ -28,13 +28,14 @@ sys.path.insert(0, str(REPO))
 
 from forge.agents.execution import AgentRequest                    # noqa: E402
 from forge.agents.frontier_fleet import build_frontier_fleet       # noqa: E402
+from forge.capabilities.live_inputs import (                       # noqa: E402
+    PAGES, media_inputs, stop as stop_server)
 from forge.agents.multimodal_fleet import (                        # noqa: E402
     SPECIALIST_CAPABILITY, extend_registry_with_multimodal_fleet)
 from forge.core.task_engine import TaskEngine, TaskStatus          # noqa: E402
 from forge.models.local_capabilities import (                      # noqa: E402
     register_local_capability_models)
 from forge.models.fabric import ModelFabric                        # noqa: E402
-from forge.voice.local_speech import synthesize                    # noqa: E402
 from forge.vision.pixels import measure                            # noqa: E402
 
 BLOCKED_EXIT = 3
@@ -45,71 +46,6 @@ TARGETS = ("vision", "audio", "browser", "computer_use")
 #: ...and in the multimodal fleet, which is a separate set of 100 specialists.
 MULTIMODAL_TARGETS = ("vision", "image_generation", "speech_to_text",
                       "text_to_speech")
-
-PAGES = {
-    "/": (b"<html><head><title>Warehouse console</title></head><body>"
-          b"<h1>Warehouse console</h1>"
-          b"<p>Stock levels are refreshed every five minutes.</p>"
-          b"<a href='/orders'>Orders</a> <a href='/alerts'>Alerts</a>"
-          b"<form action='/search' method='get'>"
-          b"<input name='q' value=''><input type='submit'></form>"
-          b"</body></html>"),
-    "/orders": (b"<html><head><title>Orders</title></head><body>"
-                b"<h1>Orders</h1><p>41 orders are waiting to ship today.</p>"
-                b"<a href='/'>back</a></body></html>"),
-    "/alerts": (b"<html><head><title>Alerts</title></head><body>"
-                b"<h1>Alerts</h1><p>Two shelves are below their reorder "
-                b"point.</p></body></html>"),
-    "/search": (b"<html><head><title>Search</title></head><body>"
-                b"<h1>Search results</h1><p>Found 3 matching SKUs.</p>"
-                b"</body></html>"),
-}
-
-
-class _Handler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:                              # noqa: N802
-        path = self.path.split("?", 1)[0]
-        body = PAGES.get(path, PAGES["/"])
-        self.send_response(200 if path in PAGES else 404)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *args) -> None:                   # noqa: D102
-        return
-
-
-def serve_pages() -> tuple[ThreadingHTTPServer, str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{server.server_address[1]}"
-
-
-def real_png() -> bytes:
-    """A real image with structure: a gradient plus a dark block."""
-    import struct
-    import zlib
-
-    width, height = 96, 64
-    rows = []
-    for y in range(height):
-        row = bytearray(b"\x00")
-        for x in range(width):
-            if 20 <= x <= 60 and 16 <= y <= 44:
-                row += bytes((24, 24, 32))
-            else:
-                row += bytes((40 + x * 2, 90 + y * 2, 160))
-        rows.append(bytes(row))
-    raw = b"".join(rows)
-
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        return (struct.pack(">I", len(payload)) + kind + payload
-                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def failure_line(exc: BaseException) -> str:
@@ -191,21 +127,16 @@ def main() -> int:
               "machine, so nothing can be executed here.")
         return BLOCKED_EXIT
 
-    server, base = serve_pages()
-    image = real_png()
-    audio = synthesize("the warehouse console shows two shelves below their "
-                       "reorder point")
-    media = {"base": base,
-             "image": str(REPO / ".forge" / "capability-probe.png"),
-             "audio": str(REPO / ".forge" / "capability-probe.wav"),
-             "spoken": str(REPO / ".forge" / "capability-probe-spoken.wav"),
-             "chart": str(REPO / ".forge" / "capability-probe-chart.png")}
-    (REPO / ".forge").mkdir(exist_ok=True)
-    Path(media["image"]).write_bytes(image)
-    Path(media["audio"]).write_bytes(audio)
-    print(f"real inputs: image {len(image)} B ({measure(image, source='probe')['width']}x"
-          f"{measure(image, source='probe')['height']}), audio {len(audio)} B, "
-          f"pages at {base}")
+    #: The same real inputs the readiness report runs the same specialists on:
+    #: a real bitmap, real audio (synthesised when an engine exists, generated
+    #: samples when one does not, and the evidence records which), and pages
+    #: served on loopback.
+    server, media = media_inputs(REPO / ".forge")
+    measured = measure(open(media["image"], "rb").read(), source="probe")
+    print(f"real inputs: image {media['image_bytes']} B "
+          f"({measured['width']}x{measured['height']}), audio "
+          f"{media['audio_bytes']} B from {media['audio_source']}, pages at "
+          f"{media['base']}")
 
     registry = build_frontier_fleet(fabric, minimum_size=1000)
     engine = TaskEngine()
@@ -274,7 +205,7 @@ def main() -> int:
             failures.append({"agent": name, "capability": capability,
                              "error": entry["error"] or "empty output"})
 
-    server.shutdown()
+    stop_server(server)
     summary: dict[str, object] = {}
     for record in records:
         bucket = summary.setdefault(str(record["capability"]),
@@ -307,11 +238,12 @@ def main() -> int:
         "local_models_registered": registration["registered"],
         "local_models_skipped": registration["skipped"],
         "real_inputs": {
-            "image_bytes": len(image),
-            "audio_bytes": len(audio),
-            "audio_seconds": round(len(audio) / (22050 * 2), 2),
+            "image_bytes": media["image_bytes"],
+            "audio_bytes": media["audio_bytes"],
+            "audio_seconds": round(media["audio_bytes"] / (22050 * 2), 2),
+            "audio_source": media["audio_source"],
             "pages": sorted(PAGES),
-            "base_url": base,
+            "base_url": media["base"],
         },
         "specialists_targeted": len(records),
         "specialists_executed": executed,

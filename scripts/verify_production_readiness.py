@@ -128,57 +128,83 @@ def _section_deployment_routing(plane) -> dict:
 
     The representative section above proves the plumbing with a
     capability-complete model. This one uses the fabric the server actually
-    builds, so it shows which specialists cannot run here at all because no
-    configured model provides the capability they require.
+    builds. Every specialist is asked for work it can do: a text task for a
+    text capability, and — for vision, audio, browser and computer-use — a
+    request that carries the real media that capability needs (a real bitmap,
+    real audio samples, real pages on loopback). A generic "smoke" string used
+    to make those four look blocked while the capability was in fact served, so
+    the media now comes from the same builders the fleet run uses
+    (:mod:`forge.capabilities.live_inputs`) and the results are executions.
     """
+    from forge.capabilities.live_inputs import (MEDIA_CAPABILITIES,
+                                                media_inputs, request_for,
+                                                stop as stop_server)
+
     fabric = plane.fabric
     provided = set()
     for model in fabric.registry:
         provided |= set(model.capabilities)
+    needs_media = provided & set(MEDIA_CAPABILITIES)
+    server: Any = None
+    media: dict[str, Any] = {}
+    if needs_media:
+        server, media = media_inputs(REPO / ".forge")
     registry = build_frontier_fleet(fabric, minimum_size=1000)
     engine = TaskEngine()
     executed: dict[str, int] = {}
     blocked: dict[str, int] = {}
-    needs_input: dict[str, int] = {}
+    failed: dict[str, int] = {}
     examples: dict[str, str] = {}
-    for name in registry.names():
-        registration = registry.get(name)
-        task = engine.add("deploy-" + name, "specialist smoke task")
-        response = registration.executor.execute(
-            AgentRequest(task, TaskStatus.CODING, instructions="smoke"))
-        if response.success:
-            provider = response.metadata.get("routed_provider", "")
-            executed[provider] = executed.get(provider, 0) + 1
-            continue
-        required = registration.executor.required_capabilities[0]
-        error = str(response.error or "")
-        #: Two very different situations used to be reported as one. A
-        #: specialist is *blocked* only when no model provides its capability.
-        #: When a model does exist and the call failed, the honest reason is
-        #: usually that this generic smoke task carried no media (an image, a
-        #: WAV, a URL) — the capability exists and the specialist really works
-        #: with a real request, which scripts/run_capability_fleet.py proves.
-        if required in provided:
-            needs_input[required] = needs_input.get(required, 0) + 1
-            examples.setdefault(required, error[:200])
-        else:
-            blocked[required] = blocked.get(required, 0) + 1
+    try:
+        for name in registry.names():
+            registration = registry.get(name)
+            capability = registration.executor.required_capabilities[0]
+            task = engine.add("deploy-" + name, "specialist capability task")
+            if capability in needs_media:
+                instructions = request_for(capability, media, agent=name)
+            else:
+                instructions = ("Report the first concrete step you would take "
+                                "for this task.")
+            response = registration.executor.execute(
+                AgentRequest(task, TaskStatus.CODING, instructions=instructions))
+            if response.success and response.output:
+                provider = response.metadata.get("routed_provider", "")
+                executed[provider] = executed.get(provider, 0) + 1
+                continue
+            #: A specialist is *blocked* only when no model provides its
+            #: capability. When a model does provide it and the call still
+            #: failed, that is a failure — reported as one, with the error.
+            if capability in provided:
+                failed[capability] = failed.get(capability, 0) + 1
+                examples.setdefault(capability,
+                                    str(response.error or "empty output")[:200])
+            else:
+                blocked[capability] = blocked.get(capability, 0) + 1
+    finally:
+        if server is not None:
+            stop_server(server)
     total = len(registry)
     return {
         "specialists": total,
         "executed": sum(executed.values()),
         "executed_by_provider": executed,
         "blocked": blocked,
-        "needs_modality_input": needs_input,
-        "needs_input_examples": examples,
+        "failed": failed,
+        "failure_examples": examples,
+        "media_requests": sorted(needs_media),
+        "media_inputs": {key: media.get(key) for key in
+                         ("image_bytes", "audio_bytes", "audio_source", "base")
+                         if media},
         "capabilities_provided_by_models": sorted(provided),
         "every_block_is_a_truly_missing_capability":
             all(capability not in provided for capability in blocked),
-        "note": ("blocked = no configured model provides the capability and the "
-                 "specialist is never rerouted to a model that cannot do the "
-                 "job; needs_modality_input = a model *does* provide it and the "
-                 "specialist answers as soon as the request carries the media "
-                 "(see docs/evidence/capability-fleet-*.json)"),
+        "note": ("every specialist is executed with a request it can actually "
+                 "answer: media-capable specialists get real media, text "
+                 "specialists get a text task; blocked means no configured "
+                 "model provides the capability (never rerouted to a model "
+                 "that cannot do the job), and a specialist whose capability "
+                 "exists but whose call failed is counted as failed, with its "
+                 "error"),
     }
 
 
@@ -564,9 +590,14 @@ def main() -> int:
           f"(by provider: {deploy['executed_by_provider']})")
     if deploy["blocked"]:
         print(f"  blocked (capability no model provides): {deploy['blocked']}")
-    if deploy.get("needs_modality_input"):
-        print(f"  a model provides the capability, the smoke task carried no "
-              f"media: {deploy['needs_modality_input']}")
+    if deploy.get("failed"):
+        print(f"  failed (capability exists, the call did not succeed): "
+              f"{deploy['failed']}")
+    if deploy.get("media_inputs"):
+        inputs = deploy["media_inputs"]
+        print(f"  real media in those requests: image {inputs.get('image_bytes')} B,"
+              f" audio {inputs.get('audio_bytes')} B from {inputs.get('audio_source')},"
+              f" pages at {inputs.get('base')}")
     print("  models provide: "
           f"{', '.join(deploy['capabilities_provided_by_models'])}")
     fabric = report["fabric"]
