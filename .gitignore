@@ -27,6 +27,10 @@ dist/
 .forge/*.db-journal
 .forge/audit.jsonl
 .forge/fleet-run-monitor.json
+# Real probe inputs the capability fleet renders/synthesises at run time
+# (a PNG, a WAV per specialist): inputs, not deliverables, and always
+# regenerated — see scripts/run_capability_fleet.py.
+.forge/capability-probe*
 .forge/self/history/
 .forge/research_cache/
 .forge/index/

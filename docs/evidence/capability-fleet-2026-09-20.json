@@ -1,0 +1,2208 @@
+{
+  "by_capability": {
+    "audio": {
+      "executed": 25,
+      "models": {
+        "forge-local/audio-analysis": 25
+      },
+      "total": 25
+    },
+    "browser": {
+      "executed": 25,
+      "models": {
+        "forge-local/browser": 25
+      },
+      "total": 25
+    },
+    "computer_use": {
+      "executed": 25,
+      "models": {
+        "forge-local/computer-use": 25
+      },
+      "total": 25
+    },
+    "vision": {
+      "executed": 25,
+      "models": {
+        "forge-local/vision-pixels": 25
+      },
+      "total": 25
+    }
+  },
+  "capabilities": [
+    "vision",
+    "audio",
+    "browser",
+    "computer_use"
+  ],
+  "date": "2026-09-20",
+  "duration_seconds": 33.4,
+  "examples": [
+    {
+      "agent": "audio-01-0020",
+      "capability": "audio",
+      "elapsed_ms": 18.6,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-02-0060",
+      "capability": "audio",
+      "elapsed_ms": 18.4,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-03-0100",
+      "capability": "audio",
+      "elapsed_ms": 17.7,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-04-0140",
+      "capability": "audio",
+      "elapsed_ms": 17.9,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-05-0180",
+      "capability": "audio",
+      "elapsed_ms": 17.5,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-06-0220",
+      "capability": "audio",
+      "elapsed_ms": 18.1,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    }
+  ],
+  "failures": [],
+  "generated_at": 1789880340.1414309,
+  "local_models_registered": [
+    "forge-local/audio-analysis",
+    "forge-local/browser",
+    "forge-local/computer-use",
+    "forge-local/image-procedural",
+    "forge-local/speech-to-text",
+    "forge-local/text-to-speech",
+    "forge-local/vision-pixels"
+  ],
+  "local_models_skipped": [],
+  "multimodal_by_capability": {
+    "image_generation": {
+      "executed": 25,
+      "models": {
+        "forge-local/image-procedural": 25
+      },
+      "total": 25
+    },
+    "speech_to_text": {
+      "executed": 25,
+      "models": {
+        "forge-local/speech-to-text": 25
+      },
+      "total": 25
+    },
+    "text_to_speech": {
+      "executed": 25,
+      "models": {
+        "forge-local/text-to-speech": 25
+      },
+      "total": 25
+    },
+    "vision": {
+      "executed": 25,
+      "models": {
+        "forge-local/vision-pixels": 25
+      },
+      "total": 25
+    }
+  },
+  "multimodal_examples": [
+    {
+      "agent": "image-generation-ad-creative",
+      "capability": "image_generation",
+      "elapsed_ms": 24.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5243 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-album-art",
+      "capability": "image_generation",
+      "elapsed_ms": 23.8,
+      "error": "",
+      "output": "rendered 768x512 PNG (4974 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-avatar",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (4874 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-background-removal",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5111 bytes, #0e1015 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    }
+  ],
+  "multimodal_records": [
+    {
+      "agent": "image-generation-ad-creative",
+      "capability": "image_generation",
+      "elapsed_ms": 24.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5243 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-album-art",
+      "capability": "image_generation",
+      "elapsed_ms": 23.8,
+      "error": "",
+      "output": "rendered 768x512 PNG (4974 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-avatar",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (4874 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-background-removal",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5111 bytes, #0e1015 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-banner",
+      "capability": "image_generation",
+      "elapsed_ms": 23.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (4751 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-brand-assets",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (5018 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-chart-render",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5114 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-concept-art",
+      "capability": "image_generation",
+      "elapsed_ms": 23.1,
+      "error": "",
+      "output": "rendered 768x512 PNG (5060 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-diagram-render",
+      "capability": "image_generation",
+      "elapsed_ms": 23.1,
+      "error": "",
+      "output": "rendered 768x512 PNG (5026 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-icon-set",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5070 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-illustration",
+      "capability": "image_generation",
+      "elapsed_ms": 23.2,
+      "error": "",
+      "output": "rendered 768x512 PNG (4927 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-infographic",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5100 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-layout-render",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (5119 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-mockup",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (5171 bytes, #0e1015 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-pattern",
+      "capability": "image_generation",
+      "elapsed_ms": 22.9,
+      "error": "",
+      "output": "rendered 768x512 PNG (4655 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-photo-restore",
+      "capability": "image_generation",
+      "elapsed_ms": 23.1,
+      "error": "",
+      "output": "rendered 768x512 PNG (4960 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-poster",
+      "capability": "image_generation",
+      "elapsed_ms": 23.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (4917 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-product-shot",
+      "capability": "image_generation",
+      "elapsed_ms": 23.2,
+      "error": "",
+      "output": "rendered 768x512 PNG (5396 bytes, #0e1015 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-prompt-craft",
+      "capability": "image_generation",
+      "elapsed_ms": 24.3,
+      "error": "",
+      "output": "rendered 768x512 PNG (5291 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-sprite-sheet",
+      "capability": "image_generation",
+      "elapsed_ms": 24.3,
+      "error": "",
+      "output": "rendered 768x512 PNG (4910 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-style-transfer",
+      "capability": "image_generation",
+      "elapsed_ms": 24.5,
+      "error": "",
+      "output": "rendered 768x512 PNG (5187 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-texture",
+      "capability": "image_generation",
+      "elapsed_ms": 24.0,
+      "error": "",
+      "output": "rendered 768x512 PNG (5000 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-thumbnail",
+      "capability": "image_generation",
+      "elapsed_ms": 23.6,
+      "error": "",
+      "output": "rendered 768x512 PNG (4822 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-ui-mock",
+      "capability": "image_generation",
+      "elapsed_ms": 23.6,
+      "error": "",
+      "output": "rendered 768x512 PNG (4676 bytes, #0e1015 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "image-generation-upscaling",
+      "capability": "image_generation",
+      "elapsed_ms": 24.1,
+      "error": "",
+      "output": "rendered 768x512 PNG (5111 bytes, #0e1016 dominant): procedural drawing of what the request specified \u2014 deterministic, no diffusion model involved",
+      "routed_model": "forge-local/image-procedural",
+      "routed_provider": "forge-local-imagegen",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-accent-robust",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1126.1,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-call-transcript",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1095.6,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-code-switch-asr",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1063.3,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-diarization-merge",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1135.9,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-domain-terms",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1185.3,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-english-asr",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1231.7,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-hindi-asr",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1130.3,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-hinglish-asr",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1132.1,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-interview-transcript",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1151.8,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-lecture-transcript",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1112.8,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-legal-terms",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1182.0,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-long-form",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1132.8,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-low-resource",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1138.8,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-medical-terms",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1143.6,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-meeting-notes",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1201.9,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-named-entities",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1085.5,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-noise-robust",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1125.7,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-numerals",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1097.3,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-punctuation-restore",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1065.0,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-speaker-labels",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1038.4,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-subtitle-source",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1053.1,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-timestamp-align",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1066.4,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-transcript-verification",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1084.1,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-translation-ready",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1088.8,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "speech-to-text-voicemail-transcript",
+      "capability": "speech_to_text",
+      "elapsed_ms": 1049.5,
+      "error": "",
+      "output": "transcript (0.00 confidence, 3.467s): the warehouse console sure to look at real or you",
+      "routed_model": "forge-local/speech-to-text",
+      "routed_provider": "forge-local-stt",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-accessibility-readout",
+      "capability": "text_to_speech",
+      "elapsed_ms": 154.0,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.659s of 16-bit mono audio at 22050 Hz (1131616 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-accessibility-readout.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-acronym-reading",
+      "capability": "text_to_speech",
+      "elapsed_ms": 145.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.792s of 16-bit mono audio at 22050 Hz (1093380 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-acronym-reading.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-alert-announcements",
+      "capability": "text_to_speech",
+      "elapsed_ms": 149.5,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.21s of 16-bit mono audio at 22050 Hz (1111824 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-alert-announcements.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-audio-branding",
+      "capability": "text_to_speech",
+      "elapsed_ms": 144.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.8s of 16-bit mono audio at 22050 Hz (1093746 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-audio-branding.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-audiobook",
+      "capability": "text_to_speech",
+      "elapsed_ms": 140.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.355s of 16-bit mono audio at 22050 Hz (1074104 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-audiobook.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-chunking",
+      "capability": "text_to_speech",
+      "elapsed_ms": 146.4,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.213s of 16-bit mono audio at 22050 Hz (1067830 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-chunking.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-code-switch-tts",
+      "capability": "text_to_speech",
+      "elapsed_ms": 166.6,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.559s of 16-bit mono audio at 22050 Hz (1127192 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-code-switch-tts.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-dubbing",
+      "capability": "text_to_speech",
+      "elapsed_ms": 143.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 23.963s of 16-bit mono audio at 22050 Hz (1056800 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-dubbing.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-emotion-tone",
+      "capability": "text_to_speech",
+      "elapsed_ms": 147.2,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.68s of 16-bit mono audio at 22050 Hz (1088446 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-emotion-tone.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-emphasis-control",
+      "capability": "text_to_speech",
+      "elapsed_ms": 153.0,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.322s of 16-bit mono audio at 22050 Hz (1116728 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-emphasis-control.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-english-tts",
+      "capability": "text_to_speech",
+      "elapsed_ms": 145.3,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.912s of 16-bit mono audio at 22050 Hz (1098642 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-english-tts.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-hindi-tts",
+      "capability": "text_to_speech",
+      "elapsed_ms": 144.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.895s of 16-bit mono audio at 22050 Hz (1097914 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-hindi-tts.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-hinglish-tts",
+      "capability": "text_to_speech",
+      "elapsed_ms": 162.7,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.064s of 16-bit mono audio at 22050 Hz (1105352 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-hinglish-tts.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-ivr-prompts",
+      "capability": "text_to_speech",
+      "elapsed_ms": 181.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.731s of 16-bit mono audio at 22050 Hz (1090664 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-ivr-prompts.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-language-switch",
+      "capability": "text_to_speech",
+      "elapsed_ms": 154.6,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.895s of 16-bit mono audio at 22050 Hz (1097918 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-language-switch.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-latency-tuning",
+      "capability": "text_to_speech",
+      "elapsed_ms": 149.8,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.004s of 16-bit mono audio at 22050 Hz (1102736 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-latency-tuning.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-long-form-narration",
+      "capability": "text_to_speech",
+      "elapsed_ms": 151.9,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.103s of 16-bit mono audio at 22050 Hz (1107078 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-long-form-narration.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-narration",
+      "capability": "text_to_speech",
+      "elapsed_ms": 141.2,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.171s of 16-bit mono audio at 22050 Hz (1065980 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-narration.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-number-reading",
+      "capability": "text_to_speech",
+      "elapsed_ms": 142.4,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.574s of 16-bit mono audio at 22050 Hz (1083744 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-number-reading.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-pacing",
+      "capability": "text_to_speech",
+      "elapsed_ms": 146.2,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.072s of 16-bit mono audio at 22050 Hz (1061628 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-pacing.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-pause-control",
+      "capability": "text_to_speech",
+      "elapsed_ms": 140.4,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 24.955s of 16-bit mono audio at 22050 Hz (1100546 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-pause-control.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-pronunciation-fix",
+      "capability": "text_to_speech",
+      "elapsed_ms": 156.1,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.559s of 16-bit mono audio at 22050 Hz (1127178 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-pronunciation-fix.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-prosody-shaping",
+      "capability": "text_to_speech",
+      "elapsed_ms": 146.7,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.043s of 16-bit mono audio at 22050 Hz (1104444 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-prosody-shaping.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-ssml-review",
+      "capability": "text_to_speech",
+      "elapsed_ms": 147.2,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.075s of 16-bit mono audio at 22050 Hz (1105864 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-ssml-review.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "text-to-speech-voice-consistency",
+      "capability": "text_to_speech",
+      "elapsed_ms": 149.3,
+      "error": "",
+      "output": "spoke 36 word(s) with espeak-ng: 25.316s of 16-bit mono audio at 22050 Hz (1116460 bytes), written to /home/user/forge-ai/.forge/capability-probe-spoken.wav-speech-voice-consistency.wav",
+      "routed_model": "forge-local/text-to-speech",
+      "routed_provider": "forge-local-tts",
+      "success": true
+    },
+    {
+      "agent": "vision-accessibility-audit",
+      "capability": "vision",
+      "elapsed_ms": 2.9,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-chart-reading",
+      "capability": "vision",
+      "elapsed_ms": 2.4,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-color-analysis",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-defect-detection",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-diagram-parsing",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-document-layout",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-form-fields",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-gauge-reading",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-handwriting",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-image-captioning",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-logo-detection",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-map-reading",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-object-counting",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-ocr-extraction",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-packaging-check",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-photo-metadata-review",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-receipt-parsing",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-safety-inspection",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-scene-description",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-screenshot-diff",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-signature-check",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-table-extraction",
+      "capability": "vision",
+      "elapsed_ms": 2.1,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-ui-inspection",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-visual-qa",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-whiteboard-notes",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    }
+  ],
+  "multimodal_specialists_executed": 100,
+  "multimodal_specialists_targeted": 100,
+  "note": "every record was produced by real ModelFabric routing; the vision model measures real pixels, the speech models really synthesize and recognise audio, and the browser/action runtimes really fetch and act on pages served on loopback",
+  "real_inputs": {
+    "audio_bytes": 152928,
+    "audio_seconds": 3.47,
+    "base_url": "http://127.0.0.1:38071",
+    "image_bytes": 10031,
+    "pages": [
+      "/",
+      "/alerts",
+      "/orders",
+      "/search"
+    ]
+  },
+  "records": [
+    {
+      "agent": "audio-01-0020",
+      "capability": "audio",
+      "elapsed_ms": 18.6,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-02-0060",
+      "capability": "audio",
+      "elapsed_ms": 18.4,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-03-0100",
+      "capability": "audio",
+      "elapsed_ms": 17.7,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-04-0140",
+      "capability": "audio",
+      "elapsed_ms": 17.9,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-05-0180",
+      "capability": "audio",
+      "elapsed_ms": 17.5,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-06-0220",
+      "capability": "audio",
+      "elapsed_ms": 18.1,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-07-0260",
+      "capability": "audio",
+      "elapsed_ms": 15.8,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-08-0300",
+      "capability": "audio",
+      "elapsed_ms": 15.6,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-09-0340",
+      "capability": "audio",
+      "elapsed_ms": 15.7,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-10-0380",
+      "capability": "audio",
+      "elapsed_ms": 15.5,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-11-0420",
+      "capability": "audio",
+      "elapsed_ms": 16.3,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-12-0460",
+      "capability": "audio",
+      "elapsed_ms": 15.7,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-13-0500",
+      "capability": "audio",
+      "elapsed_ms": 16.7,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-14-0540",
+      "capability": "audio",
+      "elapsed_ms": 16.2,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-15-0580",
+      "capability": "audio",
+      "elapsed_ms": 16.8,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-16-0620",
+      "capability": "audio",
+      "elapsed_ms": 15.9,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-17-0660",
+      "capability": "audio",
+      "elapsed_ms": 16.4,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-18-0700",
+      "capability": "audio",
+      "elapsed_ms": 15.8,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-19-0740",
+      "capability": "audio",
+      "elapsed_ms": 18.8,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-20-0780",
+      "capability": "audio",
+      "elapsed_ms": 18.9,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-21-0820",
+      "capability": "audio",
+      "elapsed_ms": 16.3,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-22-0860",
+      "capability": "audio",
+      "elapsed_ms": 16.0,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-23-0900",
+      "capability": "audio",
+      "elapsed_ms": 17.0,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-24-0940",
+      "capability": "audio",
+      "elapsed_ms": 16.1,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "audio-25-0980",
+      "capability": "audio",
+      "elapsed_ms": 16.1,
+      "error": "",
+      "output": "audio: 3.467s, 22050 Hz, RMS 3409.0, peak 29803, silence 21%, zero-crossing 0.1411, clipping 0 sample(s)\nmeasured from real samples; spoken content needs speech-to-text (FORGE_STT_URL for Whisper-class accuracy)",
+      "routed_model": "forge-local/audio-analysis",
+      "routed_provider": "forge-local-audio",
+      "success": true
+    },
+    {
+      "agent": "browser-01-0023",
+      "capability": "browser",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-02-0063",
+      "capability": "browser",
+      "elapsed_ms": 1.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-03-0103",
+      "capability": "browser",
+      "elapsed_ms": 1.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-04-0143",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-05-0183",
+      "capability": "browser",
+      "elapsed_ms": 1.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-06-0223",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-07-0263",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-08-0303",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-09-0343",
+      "capability": "browser",
+      "elapsed_ms": 1.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-10-0383",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-11-0423",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-12-0463",
+      "capability": "browser",
+      "elapsed_ms": 1.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-13-0503",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-14-0543",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-15-0583",
+      "capability": "browser",
+      "elapsed_ms": 1.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-16-0623",
+      "capability": "browser",
+      "elapsed_ms": 1.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-17-0663",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-18-0703",
+      "capability": "browser",
+      "elapsed_ms": 1.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-19-0743",
+      "capability": "browser",
+      "elapsed_ms": 2.0,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-20-0783",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-21-0823",
+      "capability": "browser",
+      "elapsed_ms": 1.2,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-22-0863",
+      "capability": "browser",
+      "elapsed_ms": 1.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-23-0903",
+      "capability": "browser",
+      "elapsed_ms": 1.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-24-0943",
+      "capability": "browser",
+      "elapsed_ms": 1.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "browser-25-0983",
+      "capability": "browser",
+      "elapsed_ms": 1.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/orders\nTITLE: Orders\nLINKS: [0] back -> http://127.0.0.1:38071/\nTEXT:\nOrders\n41 orders are waiting to ship today.\nback",
+      "routed_model": "forge-local/browser",
+      "routed_provider": "forge-browser",
+      "success": true
+    },
+    {
+      "agent": "computer-use-01-0024",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-02-0064",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-03-0104",
+      "capability": "computer_use",
+      "elapsed_ms": 3.7,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-04-0144",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-05-0184",
+      "capability": "computer_use",
+      "elapsed_ms": 3.9,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-06-0224",
+      "capability": "computer_use",
+      "elapsed_ms": 3.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-07-0264",
+      "capability": "computer_use",
+      "elapsed_ms": 3.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-08-0304",
+      "capability": "computer_use",
+      "elapsed_ms": 3.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-09-0344",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-10-0384",
+      "capability": "computer_use",
+      "elapsed_ms": 3.9,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-11-0424",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-12-0464",
+      "capability": "computer_use",
+      "elapsed_ms": 3.3,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-13-0504",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-14-0544",
+      "capability": "computer_use",
+      "elapsed_ms": 3.7,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-15-0584",
+      "capability": "computer_use",
+      "elapsed_ms": 3.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-16-0624",
+      "capability": "computer_use",
+      "elapsed_ms": 3.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-17-0664",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-18-0704",
+      "capability": "computer_use",
+      "elapsed_ms": 4.1,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-19-0744",
+      "capability": "computer_use",
+      "elapsed_ms": 3.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-20-0784",
+      "capability": "computer_use",
+      "elapsed_ms": 3.4,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-21-0824",
+      "capability": "computer_use",
+      "elapsed_ms": 3.5,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-22-0864",
+      "capability": "computer_use",
+      "elapsed_ms": 3.7,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-23-0904",
+      "capability": "computer_use",
+      "elapsed_ms": 3.9,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-24-0944",
+      "capability": "computer_use",
+      "elapsed_ms": 3.7,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "computer-use-25-0984",
+      "capability": "computer_use",
+      "elapsed_ms": 3.6,
+      "error": "",
+      "output": "URL: http://127.0.0.1:38071/search?q=low+stock\nTITLE: Search\nTEXT:\nSearch results\nFound 3 matching SKUs.",
+      "routed_model": "forge-local/computer-use",
+      "routed_provider": "forge-web-actions",
+      "success": true
+    },
+    {
+      "agent": "vision-01-0019",
+      "capability": "vision",
+      "elapsed_ms": 2.7,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-02-0059",
+      "capability": "vision",
+      "elapsed_ms": 2.4,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-03-0099",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-04-0139",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-05-0179",
+      "capability": "vision",
+      "elapsed_ms": 2.6,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-06-0219",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-07-0259",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-08-0299",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-09-0339",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-10-0379",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-11-0419",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-12-0459",
+      "capability": "vision",
+      "elapsed_ms": 2.4,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-13-0499",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-14-0539",
+      "capability": "vision",
+      "elapsed_ms": 2.4,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-15-0579",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-16-0619",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-17-0659",
+      "capability": "vision",
+      "elapsed_ms": 2.3,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-18-0699",
+      "capability": "vision",
+      "elapsed_ms": 2.7,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-19-0739",
+      "capability": "vision",
+      "elapsed_ms": 2.5,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-20-0779",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-21-0819",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-22-0859",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-23-0899",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-24-0939",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    },
+    {
+      "agent": "vision-25-0979",
+      "capability": "vision",
+      "elapsed_ms": 2.2,
+      "error": "",
+      "output": "image: 96x64 PNG (landscape, 0.0061 MP)\nbrightness 125.74/255, contrast 56.06, colourfulness 41.99, edge density 0.0096\ndominant colours: #17171f (63%), #d39fa0 (10%), #aca3a0 (9%)\nmeasured locally from real pixels; no semantic recognition (configure FORGE_VISION_URL for a vision-language model)",
+      "routed_model": "forge-local/vision-pixels",
+      "routed_provider": "forge-local-vision",
+      "success": true
+    }
+  ],
+  "schema_version": 1,
+  "specialists_executed": 100,
+  "specialists_targeted": 100
+}

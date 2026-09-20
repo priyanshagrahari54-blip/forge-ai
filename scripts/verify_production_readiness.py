@@ -139,6 +139,8 @@ def _section_deployment_routing(plane) -> dict:
     engine = TaskEngine()
     executed: dict[str, int] = {}
     blocked: dict[str, int] = {}
+    needs_input: dict[str, int] = {}
+    examples: dict[str, str] = {}
     for name in registry.names():
         registration = registry.get(name)
         task = engine.add("deploy-" + name, "specialist smoke task")
@@ -147,8 +149,19 @@ def _section_deployment_routing(plane) -> dict:
         if response.success:
             provider = response.metadata.get("routed_provider", "")
             executed[provider] = executed.get(provider, 0) + 1
+            continue
+        required = registration.executor.required_capabilities[0]
+        error = str(response.error or "")
+        #: Two very different situations used to be reported as one. A
+        #: specialist is *blocked* only when no model provides its capability.
+        #: When a model does exist and the call failed, the honest reason is
+        #: usually that this generic smoke task carried no media (an image, a
+        #: WAV, a URL) — the capability exists and the specialist really works
+        #: with a real request, which scripts/run_capability_fleet.py proves.
+        if required in provided:
+            needs_input[required] = needs_input.get(required, 0) + 1
+            examples.setdefault(required, error[:200])
         else:
-            required = registration.executor.required_capabilities[0]
             blocked[required] = blocked.get(required, 0) + 1
     total = len(registry)
     return {
@@ -156,12 +169,16 @@ def _section_deployment_routing(plane) -> dict:
         "executed": sum(executed.values()),
         "executed_by_provider": executed,
         "blocked": blocked,
+        "needs_modality_input": needs_input,
+        "needs_input_examples": examples,
         "capabilities_provided_by_models": sorted(provided),
         "every_block_is_a_truly_missing_capability":
             all(capability not in provided for capability in blocked),
-        "note": ("a blocked specialist means no configured model provides its "
-                 "required capability; it is never rerouted to a model that "
-                 "cannot do the job"),
+        "note": ("blocked = no configured model provides the capability and the "
+                 "specialist is never rerouted to a model that cannot do the "
+                 "job; needs_modality_input = a model *does* provide it and the "
+                 "specialist answers as soon as the request carries the media "
+                 "(see docs/evidence/capability-fleet-*.json)"),
     }
 
 
@@ -547,6 +564,9 @@ def main() -> int:
           f"(by provider: {deploy['executed_by_provider']})")
     if deploy["blocked"]:
         print(f"  blocked (capability no model provides): {deploy['blocked']}")
+    if deploy.get("needs_modality_input"):
+        print(f"  a model provides the capability, the smoke task carried no "
+              f"media: {deploy['needs_modality_input']}")
     print("  models provide: "
           f"{', '.join(deploy['capabilities_provided_by_models'])}")
     fabric = report["fabric"]

@@ -386,8 +386,30 @@ def test_the_control_plane_registers_a_configured_multimodal_endpoint(
                      for report in multimodal_readiness(plane.fabric)}
         assert readiness["vision"].status == "READY"
         assert readiness["vision"].registered == 25
-        assert readiness["text-to-speech"].status == "MISSING"
-        assert "FORGE_TTS_URL" in readiness["text-to-speech"].requirement
+        #: A modality that has a *verified local backend* is READY and the
+        #: report names the model that serves it; one that has neither a local
+        #: backend nor an endpoint is MISSING and the report names the endpoint
+        #: that would enable it. Which of the two happens for text-to-speech
+        #: depends on this machine, so both branches are asserted here rather
+        #: than hard-coding a status that a working backend would falsify.
+        speech = readiness["text-to-speech"]
+        local = [name for name in speech.models
+                 if name.startswith("forge-local/")]
+        if local:
+            assert speech.status == "READY"
+            assert speech.registered == 25
+            assert "forge-local/text-to-speech" in speech.models
+            #: The gap text stays in the report even when a local backend
+            #: serves the modality: it is the upgrade path to a bigger model,
+            #: not a claim that something is missing.
+            assert "FORGE_TTS_URL" in speech.requirement
+        else:
+            assert speech.status == "MISSING"
+            assert "FORGE_TTS_URL" in speech.requirement
+        #: And in either case: READY may never be claimed without a model.
+        for report in readiness.values():
+            if report.status == "READY":
+                assert report.models and report.registered == report.defined
     finally:
         endpoint.close()
 
