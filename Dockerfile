@@ -4,7 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FORGE_AUTH_MODE=production \
     FORGE_SECURE_COOKIES=1 \
-    FORGE_DB_PATH=/data/forge/cockpit.db
+    FORGE_DB_PATH=/data/forge/cockpit.db \
+    # Speak and listen with the in-process engine instead of the simulated
+    # codec. Both stay honest if a probe fails: the provider reports the
+    # missing package and refuses the request rather than answering with
+    # synthetic speech. Set either to `simulated` to go back.
+    FORGE_VOICE_TTS_PROVIDER=local-inprocess \
+    FORGE_VOICE_STT_PROVIDER=local-inprocess
 
 WORKDIR /app
 COPY . /app

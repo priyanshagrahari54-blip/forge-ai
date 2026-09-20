@@ -552,8 +552,16 @@ class ControlConfig:
             raise ValueError(
                 f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
                 "A35 supports 'fake' only")
+        #: ``local-inprocess`` is the engine that runs inside this process
+        #: (espeak-ng / pocketsphinx) — no endpoint, no credential. It is a
+        #: separate name from ``local-whisper``/``local-tts``, which call a
+        #: self-hosted OpenAI-compatible endpoint. Accepting it here matters:
+        #: an unknown name raises at construction, so a deployment that set it
+        #: without this entry would fail to start rather than fall back.
         _VOICE_VALID = {"simulated", "openai-whisper", "openai-tts",
-                        "local-whisper", "local-tts", "unconfigured"}
+                        "local-whisper", "local-tts", "local-inprocess",
+                        "local-inprocess-stt", "local-inprocess-tts",
+                        "unconfigured"}
         for key, env_name in (("voice_stt_provider", "FORGE_VOICE_STT_PROVIDER"),
                               ("voice_tts_provider", "FORGE_VOICE_TTS_PROVIDER")):
             name = os.environ.get(env_name, "").strip()
@@ -1728,6 +1736,13 @@ class ControlPlane:
             elif stt_name == "local-whisper":
                 from forge.voice.local_audio import LocalSpeechToText
                 transcriber = LocalSpeechToText()
+            elif stt_name in ("local-inprocess", "local-inprocess-stt"):
+                #: Real recognition inside this process: no endpoint and no
+                #: credential. The provider reports its own language support
+                #: (the bundled model is English; Hindi/Hinglish need
+                #: FORGE_STT_URL) instead of pretending to hear every language.
+                from forge.voice.local_speech import LocalInProcessTranscriber
+                transcriber = LocalInProcessTranscriber()
             elif stt_name == "simulated":
                 transcriber = SimulatedSpeechToText()
             else:
@@ -1742,6 +1757,12 @@ class ControlPlane:
             elif tts_name == "local-tts":
                 from forge.voice.local_audio import LocalSpeechSynthesizer
                 synthesizer = LocalSpeechSynthesizer()
+            elif tts_name in ("local-inprocess", "local-inprocess-tts"):
+                #: Real synthesis inside this process (espeak-ng). The cockpit
+                #: reports this as the speaking engine, and it says so plainly:
+                #: a local voice, not a neural one.
+                from forge.voice.local_speech import LocalInProcessSynthesizer
+                synthesizer = LocalInProcessSynthesizer()
             elif tts_name == "simulated":
                 synthesizer = SimulatedSpeechSynthesizer()
             else:

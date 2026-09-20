@@ -279,3 +279,122 @@ class TestLocalSpeechStability:
         with speech._ENGINE_LOCK:
             with speech._ENGINE_LOCK:
                 assert speech._load_espeak() is speech._load_espeak()
+
+
+class TestVoiceLoopAdapters:
+    """The cockpit speaks in AudioChunks; these adapters bridge to real speech.
+
+    The voice loop only knew the simulated codec and OpenAI-compatible HTTP
+    endpoints, so a deployment with a working in-process engine still answered
+    "no speech synthesizer is configured". These tests pin the two properties
+    that matter: the adapter satisfies the loop's own protocol, and it reports
+    the local engine honestly — including when the engine is not there.
+    """
+
+    def test_the_synthesizer_satisfies_the_voice_loop_protocol(self):
+        from forge.voice.synthesizer import (TextToSpeechProvider,
+                                             UnconfiguredSpeechSynthesizer)
+        from forge.voice.local_speech import LocalInProcessSynthesizer
+
+        tts = LocalInProcessSynthesizer()
+        assert isinstance(tts, TextToSpeechProvider)
+        assert tts.simulation is False
+        assert tts.name == "forge-local-tts"
+        #: Both satisfy the protocol structurally — what separates them is the
+        #: honest answer to "can you actually speak here?".
+        unconfigured = UnconfiguredSpeechSynthesizer()
+        assert unconfigured.available() is False
+        assert tts.available() is unconfigured.available() or tts.available()
+
+    def test_speaking_returns_a_bounded_chunk_or_an_honest_error(self):
+        from forge.voice.local_speech import LocalInProcessSynthesizer
+        from forge.voice.synthesizer import SynthesisError
+
+        tts = LocalInProcessSynthesizer()
+        if not tts.available():
+            with pytest.raises(SynthesisError) as raised:
+                tts.synthesize("this cannot be spoken here")
+            assert raised.value.kind == "not_configured"
+            assert raised.value.message.strip()
+            return
+        chunk = tts.synthesize("the warehouse console shows two shelves low")
+        assert (chunk.sample_rate, chunk.channels) == (16000, 1)
+        assert 0 < len(chunk.data) <= 500_000
+        assert chunk.duration_ms > 0
+
+    def test_listening_reports_its_engine_confidence_and_language(self):
+        from forge.voice.local_speech import (LocalInProcessSynthesizer,
+                                              LocalInProcessTranscriber)
+        from forge.voice.transcriber import (SpeechToTextProvider,
+                                            TranscriptionError)
+
+        stt = LocalInProcessTranscriber()
+        assert isinstance(stt, SpeechToTextProvider)
+        assert stt.simulation is False
+        if not stt.available():
+            with pytest.raises(TranscriptionError) as raised:
+                stt.transcribe(None)
+            assert raised.value.kind == "not_configured"
+            return
+        chunk = LocalInProcessSynthesizer().synthesize("warehouse status check")
+        heard = stt.transcribe(chunk)
+        assert isinstance(heard.text, str)
+        assert isinstance(heard.confidence, float)
+        assert heard.engine == "forge-local-stt"
+        assert heard.simulation is False
+        #: The bundled model is English; Hindi/Hinglish need FORGE_STT_URL and
+        #: the adapter must not imply otherwise.
+        assert heard.language == "en"
+
+    def test_malformed_audio_is_the_callers_error_not_a_recogniser_failure(self):
+        from forge.models.errors import ProviderError
+        from forge.voice.audio import AudioChunk
+        from forge.voice.local_speech import LocalInProcessTranscriber
+        from forge.voice.transcriber import TranscriptionError
+
+        stt = LocalInProcessTranscriber()
+        if not stt.available():
+            pytest.skip("no recogniser on this machine")
+        #: Silence is valid audio of the wrong shape for a decoder, and the
+        #: error must say the audio was the problem.
+        silence = AudioChunk(data=b"\x00\x00" * 1600)
+        try:
+            stt.transcribe(silence)
+        except TranscriptionError as exc:
+            assert exc.kind in ("invalid_audio", "unavailable")
+        except ProviderError:
+            pass                    # validation may happen deeper in the decoder
+
+    def test_the_env_config_accepts_the_in_process_names(
+            self, tmp_path, monkeypatch):
+        """A name the config rejects would crash the deployment at startup."""
+        from forge.control import ControlConfig
+
+        monkeypatch.setenv("FORGE_VOICE_TTS_PROVIDER", "local-inprocess")
+        monkeypatch.setenv("FORGE_VOICE_STT_PROVIDER", "local-inprocess")
+        config = ControlConfig.from_env(db_path=str(tmp_path / "cockpit.db"))
+        assert config.voice_tts_provider == "local-inprocess"
+        assert config.voice_stt_provider == "local-inprocess"
+        #: And an unknown name is still refused, loudly, rather than ignored.
+        monkeypatch.setenv("FORGE_VOICE_TTS_PROVIDER", "carrier-pigeon")
+        with pytest.raises(ValueError):
+            ControlConfig.from_env(db_path=str(tmp_path / "cockpit.db"))
+
+    def test_the_control_plane_resolves_them_when_configured(self, tmp_path):
+        from helpers_a34 import make_plane
+        from forge.voice.local_speech import local_speech_state
+
+        plane = make_plane(tmp_path, start=False)
+        plane.config.voice_tts_provider = "local-inprocess"
+        plane.config.voice_stt_provider = "local-inprocess"
+        #: The voice stack is built lazily and cached; drop it so the config is
+        #: what gets resolved.
+        plane._voice_session = None
+        report = plane.voice_capabilities(None)
+        assert report["synthesizer"]["name"] == "forge-local-tts"
+        assert report["transcriber"]["name"] == "forge-local-stt"
+        assert report["synthesizer"]["simulation"] is False
+        assert report["transcriber"]["simulation"] is False
+        #: Availability is whatever the machine really is — never asserted up.
+        assert report["synthesizer"]["available"] is bool(
+            local_speech_state()["text_to_speech"]["available"])

@@ -501,3 +501,102 @@ class LocalAudioAnalysisProvider:
                 "audio": stats,
                 "semantic": False,
             })
+
+
+# -- adapters for the cockpit's voice loop ------------------------------------
+#
+# The voice loop (``forge.voice.synthesizer`` / ``forge.voice.transcriber``)
+# speaks in :class:`~forge.voice.audio.AudioChunk` — 16-bit mono 16 kHz PCM —
+# while these backends produce and consume WAV bytes at 22.05 kHz. Without
+# these two adapters the cockpit could not use them at all: the control plane
+# only knew the simulated codec and the OpenAI-compatible HTTP endpoints, so a
+# deployment with a working in-process engine still answered "no speech
+# synthesizer is configured".
+
+
+def _synthesize_chunk(text: str) -> Any:
+    """Speak ``text`` and hand back a bounded 16 kHz mono chunk."""
+    from forge.voice.audio import MAX_AUDIO_BYTES as CHUNK_LIMIT
+    from forge.voice.audio import AudioChunk, AudioError
+
+    raw = synthesize(text)
+    pcm, rate = _read_wav(raw)
+    pcm = _resample(pcm, rate)
+    if not pcm:
+        raise SpeechToolUnavailable("espeak-ng produced no audio")
+    if len(pcm) > CHUNK_LIMIT:
+        #: Bounded like every other chunk: the voice layer's contract is a
+        #: 500 KB maximum (~15.6 s at 16 kHz), so a long request is truncated
+        #: rather than handed on as something the loop cannot carry.
+        pcm = pcm[:CHUNK_LIMIT - (CHUNK_LIMIT % 2)]
+    try:
+        return AudioChunk(data=pcm)
+    except AudioError as exc:                               # pragma: no cover
+        raise SpeechToolUnavailable(str(exc)) from exc
+
+
+class LocalInProcessSynthesizer:
+    """Text-to-speech served by espeak-ng inside this process.
+
+    ``name`` is what the cockpit reports as the speaking engine, so it has to
+    be true: this is the local engine, not a neural voice. ``available()``
+    answers from the same state report the capability probe uses.
+    """
+
+    name = "forge-local-tts"
+    simulation = False
+
+    def available(self) -> bool:
+        return bool(local_speech_state()["text_to_speech"]["available"])
+
+    def synthesize(self, text: str) -> Any:
+        from forge.voice.synthesizer import SynthesisError
+
+        state = local_speech_state()["text_to_speech"]
+        if not state["available"]:
+            raise SynthesisError("not_configured", state["requirement"])
+        try:
+            return _synthesize_chunk(text)
+        except SpeechToolUnavailable as exc:
+            raise SynthesisError("unavailable", str(exc)) from exc
+
+
+class LocalInProcessTranscriber:
+    """Speech-to-text served by pocketsphinx inside this process.
+
+    The bundled model is ``en-us``, so the language reported is English. Hindi
+    and Hinglish need a multilingual endpoint (``FORGE_STT_URL``); claiming
+    otherwise would be exactly the kind of upgrade-by-assertion this codebase
+    is written to avoid.
+    """
+
+    name = "forge-local-stt"
+    simulation = False
+    language = "en"
+
+    def available(self) -> bool:
+        return bool(local_speech_state()["speech_to_text"]["available"])
+
+    def transcribe(self, chunk: Any) -> Any:
+        from forge.voice.transcriber import Transcription, TranscriptionError
+
+        state = local_speech_state()["speech_to_text"]
+        if not state["available"]:
+            raise TranscriptionError("not_configured", state["requirement"])
+        try:
+            heard = transcribe(chunk.wav())
+        except SpeechToolUnavailable as exc:
+            raise TranscriptionError("unavailable", str(exc)) from exc
+        except ProviderError as exc:
+            #: Malformed audio is the caller's error, and it must not look like
+            #: a recogniser failure.
+            raise TranscriptionError("invalid_audio", str(exc)) from exc
+        confidence = heard.get("confidence")
+        return Transcription(
+            text=str(heard.get("text") or ""),
+            confidence=float(confidence) if isinstance(confidence, (int, float))
+            else 0.0,
+            engine=self.name,
+            simulation=False,
+            language=str(heard.get("language") or self.language),
+        )
