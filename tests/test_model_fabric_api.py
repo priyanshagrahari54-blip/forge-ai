@@ -206,3 +206,15 @@ def test_model_contract_derived_properties():
     assert model.supports_structured_output is False
     assert model.supports_streaming is False
     assert model.supports_browser is False
+
+
+def test_request_model_preference_beats_fabric_default_when_eligible():
+    preferred = Model(name="preferred/model", provider="provider-a", capabilities=("coding",), reliability=0.5)
+    default = Model(name="default/model", provider="provider-b", capabilities=("coding",), reliability=1.0)
+    fabric = ModelFabric(
+        registry=ModelRegistry([preferred, default]),
+        providers=ProviderRegistry({}),
+        config=FabricConfig.from_dict({"default_model": "default/model"}),
+    )
+    decision = fabric.route(ModelRequest(prompt="x", capability="coding", preferred_models=("preferred/model",)))
+    assert decision.model.name == "preferred/model"
