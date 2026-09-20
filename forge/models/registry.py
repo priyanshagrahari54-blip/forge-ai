@@ -153,12 +153,60 @@ class Model:
 
 
 class ModelRegistry:
-    """Central, name-keyed registry of models for the fabric."""
+    """Central, name-keyed registry of models for the fabric.
+
+    Keeps an inverted capability index (capability -> model names) so
+    capability queries do not scan every registered model. The index is
+    maintained on ``register``/``replace``/``remove`` and *self-heals* on
+    query: verification/activation paths may replace a live model's
+    ``capabilities`` tuple after registration, and every such reassignment is
+    detected (tuple identity/content) and re-indexed before results are
+    computed, so the index can never silently disagree with the models.
+    """
 
     def __init__(self, models: Iterable[Model] | None = None) -> None:
         self._models: dict[str, Model] = {}
+        self._capability_index: dict[str, set[str]] = {}
+        self._indexed_capabilities: dict[str, tuple[str, ...]] = {}
         for model in models or ():
             self.register(model)
+
+    # -- capability index maintenance ------------------------------------
+
+    def _index_model(self, model: Model) -> None:
+        for capability in model.capabilities:
+            self._capability_index.setdefault(capability, set()).add(model.name)
+        self._indexed_capabilities[model.name] = model.capabilities
+
+    def _deindex_model(self, name: str) -> None:
+        indexed = self._indexed_capabilities.pop(name, None)
+        if not indexed:
+            return
+        for capability in indexed:
+            names = self._capability_index.get(capability)
+            if names is None:
+                continue
+            names.discard(name)
+            if not names:
+                del self._capability_index[capability]
+
+    def _sync_index(self) -> None:
+        """Re-index models whose capability tuple changed after registration.
+
+        Every mutation site (``oss_fabric.activate_model``,
+        ``runtime_verification.apply_probe_result``) assigns a *new* tuple,
+        so an identity check catches the change in O(1) per model; the equal
+        fallback keeps a rebound-but-identical tuple from forcing work. Models
+        are never mutated in place through the index, so this is the only
+        reconciliation ever needed.
+        """
+        for name, model in self._models.items():
+            indexed = self._indexed_capabilities.get(name)
+            if indexed is None:
+                self._index_model(model)
+            elif model.capabilities is not indexed and model.capabilities != indexed:
+                self._deindex_model(name)
+                self._index_model(model)
 
     def register(self, model: Model) -> None:
         if not model.name:
@@ -170,12 +218,17 @@ class ModelRegistry:
         if model.name in self._models:
             raise ValueError(f"Model already registered: {model.name}")
         self._models[model.name] = model
+        self._index_model(model)
 
     def replace(self, model: Model) -> None:
         """Register or overwrite a model by name."""
         if not model.name or not model.provider:
             raise ValueError("Model name and provider cannot be empty")
+        previous = self._models.get(model.name)
+        if previous is not None:
+            self._deindex_model(model.name)
         self._models[model.name] = model
+        self._index_model(model)
 
     def get(self, name: str) -> Model:
         try:
@@ -186,6 +239,7 @@ class ModelRegistry:
     def remove(self, name: str) -> None:
         if name not in self._models:
             raise KeyError(f"Unknown model: {name}")
+        self._deindex_model(name)
         del self._models[name]
 
     def has(self, name: str) -> bool:
@@ -198,15 +252,26 @@ class ModelRegistry:
         return sorted(self._models.values(), key=lambda model: model.name)
 
     def by_capability(self, capability: str) -> list[Model]:
+        self._sync_index()
+        names = self._capability_index.get(capability)
+        if not names:
+            return []
         return sorted(
-            (model for model in self._models.values() if model.supports(capability)),
+            (self._models[name] for name in names if name in self._models),
             key=lambda model: model.name,
         )
 
     def models_for_capabilities(self, capabilities: Iterable[str]) -> list[Model]:
         required = tuple(capabilities)
+        if not required:
+            return self.list()
+        self._sync_index()
+        sets = [self._capability_index.get(cap, set()) for cap in required]
+        if any(not entry for entry in sets):
+            return []
+        common = set.intersection(*sets)
         return sorted(
-            (model for model in self._models.values() if model.supports_all(required)),
+            (self._models[name] for name in common if name in self._models),
             key=lambda model: model.name,
         )
 

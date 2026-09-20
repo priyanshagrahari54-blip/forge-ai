@@ -174,12 +174,14 @@ class SupervisorExecutor(TaskExecutor):
                                  approval_store=server.approval_store, audit_log=server.audit, model_policy=self.model_policy,
                                  approval_callback=approval_callback, on_event=on_event, control=ctx.control,
                                  commit_guard=ctx.commit_guard)
-        if isinstance(outcome, dict) and outcome.get("accepted"):
-            ctx.emit("task.completed", {"run_id": outcome.get("run_id", "")})
-        elif isinstance(outcome, dict) and outcome.get("cancelled"):
-            ctx.emit("task.cancelled", {"error": outcome.get("error", "")})
-        elif isinstance(outcome, dict) and outcome.get("error"):
-            ctx.emit("task.failed", {"error": str(outcome.get("error", ""))[:2000]})
+        #: Terminal events are *not* emitted here. ``ctx.emit`` writes
+        #: straight to the event log, so publishing "completed" before the
+        #: worker's lease + attempt-fence gate would let a stale attempt
+        #: announce a result it is not authorized to publish (and would emit
+        #: a second, provenance-less copy of the event). The settlement path
+        #: in ``forge.server.workers`` performs the gated transition and
+        #: emits the single canonical terminal event with bounded inference
+        #: provenance.
         return self._finalize(ctx, outcome, identity=identity)
 
     def _finalize(self, ctx: ExecutionContext, outcome: Dict[str, Any], identity: Any = None) -> Dict[str, Any]:

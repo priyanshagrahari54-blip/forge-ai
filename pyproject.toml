@@ -55,6 +55,22 @@ dev = [
     # matrix including 3.8.
     "vermin>=1.6,<2",
 ]
+media = [
+    # Real in-process vision, speech and image backends, so the deployment
+    # needs no cloud credential and no API key for those capabilities. They are
+    # optional on purpose: without them the probes report the exact package
+    # that is missing instead of advertising a capability nothing provides.
+    # Every one of these ships manylinux wheels, so the image needs no
+    # compiler. Verified to install and probe clean on the deployment's
+    # interpreter (3.11). Pillow 11+ dropped Python 3.8 (10.4 is the newest
+    # admitting it), so the legacy floor gets its own pin like the runtime
+    # dependencies above; the media extra is not installed on the 3.8 CI leg
+    # or the Windows 7 thin client, where the probes report BLOCKED instead.
+    "Pillow>=10,<11; python_version < '3.9'",
+    "Pillow>=10,<13; python_version >= '3.9'",
+    "espeakng-loader>=0.2.4,<0.3",
+    "pocketsphinx>=5,<6",
+]
 
 [project.scripts]
 forge = "forge.cli:main"

@@ -20,6 +20,9 @@ from forge.models.model_studio import ModelArtifact, ModelProvenance, TrainingBa
 class HuggingFacePEFTBackend(TrainingBackend):
     name = "huggingface-peft"
 
+    #: Modules this trainer imports; preflight names them exactly.
+    requires: tuple[str, ...] = ("torch", "transformers", "peft")
+
     def __init__(self, *, allow_network: bool = False) -> None:
         self.allow_network = bool(allow_network)
 

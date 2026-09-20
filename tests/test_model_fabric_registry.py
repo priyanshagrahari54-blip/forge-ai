@@ -77,3 +77,70 @@ def test_snapshot_is_deterministic():
     registry = ModelRegistry([make_model("b"), make_model("a")])
     names = [entry["name"] for entry in registry.snapshot()]
     assert names == ["a", "b"]
+
+
+def test_capability_index_tracks_register_replace_remove():
+    registry = ModelRegistry()
+    registry.register(make_model("a", capabilities=("coding",)))
+    registry.register(make_model("b", capabilities=("coding", "vision")))
+
+    assert [m.name for m in registry.by_capability("coding")] == ["a", "b"]
+    assert [m.name for m in registry.by_capability("vision")] == ["b"]
+    assert [m.name for m in registry.models_for_capabilities(("coding", "vision"))] == ["b"]
+
+    # Replacing with a different capability set re-indexes atomically.
+    registry.replace(make_model("b", capabilities=("reasoning",)))
+    assert [m.name for m in registry.by_capability("vision")] == []
+    assert [m.name for m in registry.by_capability("reasoning")] == ["b"]
+    assert [m.name for m in registry.by_capability("coding")] == ["a"]
+
+    # Removing drops the index entries too.
+    registry.remove("a")
+    assert [m.name for m in registry.by_capability("coding")] == []
+    assert registry.by_capability("reasoning")[0].name == "b"
+
+
+def test_capability_index_self_heals_after_post_registration_mutation():
+    """Verification/activation paths reassign ``model.capabilities`` in place.
+
+    The index must never keep routing by the stale set: the next capability
+    query reconciles before answering.
+    """
+    from forge.models.runtime_verification import RuntimeProbeResult, apply_probe_result
+
+    registry = ModelRegistry([make_model("m", capabilities=("coding",))])
+    assert [item.name for item in registry.by_capability("vision")] == []
+
+    # Simulates a probe that upgrades the advertised capability set.
+    apply_probe_result(registry, RuntimeProbeResult(
+        "m", True, 1.0, "healthy", capabilities=("coding", "vision")))
+    assert registry.get("m").capabilities == ("coding", "vision")
+    assert [item.name for item in registry.by_capability("vision")] == ["m"]
+    assert [item.name for item in registry.models_for_capabilities(("coding", "vision"))] == ["m"]
+
+    # And a downgrade stops matching immediately as well.
+    apply_probe_result(registry, RuntimeProbeResult(
+        "m", True, 1.0, "healthy", capabilities=("coding",)))
+    assert [item.name for item in registry.by_capability("vision")] == []
+
+
+def test_indexed_queries_match_direct_scan():
+    """The index must be observational-equivalent to the old full scan."""
+    models = [
+        make_model("m1", capabilities=("coding", "reasoning")),
+        make_model("m2", capabilities=("coding",)),
+        make_model("m3", capabilities=("vision", "audio")),
+        make_model("m4", capabilities=("coding", "vision")),
+    ]
+    registry = ModelRegistry(models)
+    for capability in ("coding", "reasoning", "vision", "audio", "security"):
+        indexed = [m.name for m in registry.by_capability(capability)]
+        scanned = sorted(m.name for m in models if capability in m.capabilities)
+        assert indexed == scanned
+    for required in (("coding",), ("coding", "vision"), ("vision", "audio"),
+                     ("coding", "security"), ()):
+        indexed = [m.name for m in registry.models_for_capabilities(required)]
+        scanned = sorted(
+            m.name for m in models
+            if all(cap in m.capabilities for cap in required))
+        assert indexed == scanned

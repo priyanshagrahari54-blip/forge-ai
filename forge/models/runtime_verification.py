@@ -17,14 +17,26 @@ from forge.models.registry import Model, ModelRegistry
 
 @dataclass(frozen=True)
 class RuntimeProbeResult:
+    """Evidence produced by an adapter-supplied runtime probe.
+
+    ``conclusive`` separates "the probe ran and observed the model" from
+    "the probe could not be performed at all". An inconclusive probe is
+    *absence of evidence*: it must never be recorded as a health verdict or
+    used to take a working model out of routing. Adapters that genuinely
+    cannot enumerate models (custom HTTP providers, scripted providers,
+    gateways without a list endpoint) therefore stay honest instead of
+    being reported as unavailable.
+    """
+
     model_id: str
     ok: bool
-    latency_ms: float
-    status: str
+    latency_ms: float = 0.0
+    status: str = ""
     reason: str = ""
     capabilities: tuple[str, ...] = ()
     context_window: int | None = None
     max_output_tokens: int | None = None
+    conclusive: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,32 +48,89 @@ class RuntimeProbeResult:
             "capabilities": list(self.capabilities),
             "context_window": self.context_window,
             "max_output_tokens": self.max_output_tokens,
+            "conclusive": self.conclusive,
         }
 
 
-def apply_probe_result(registry: ModelRegistry, result: RuntimeProbeResult) -> Model:
-    """Apply a probe to an existing model; never creates unknown identities."""
-    model = registry.get(result.model_id)
-    verified = bool(result.ok) and str(result.status or "").lower() in {"healthy", "verified", "live"}
-    model.available = verified
-    model.latency_ms = max(0.0, result.latency_ms)
-    model.health.status = result.status
-    model.health.last_error = "" if result.ok else result.reason
-    model.metadata["runtime_verified"] = verified
-    model.metadata["verification_kind"] = "inference" if verified else str(result.status or "unknown").lower()
-    model.metadata["last_probe"] = result.to_dict()
+def _set_if_settable(instance: Any, attribute: str, value: Any,
+                     *, required: bool = False) -> bool:
+    """Write ``attribute`` when the target actually carries it.
+
+    Real :class:`~forge.models.registry.Model` objects declare every field
+    this module writes. Duck-typed registries (test doubles, third-party
+    adapters) may expose only a subset; missing optional fields are skipped
+    instead of raising, while ``required`` attributes are still attempted so
+    a failure surfaces where it matters.
+    """
+    if not required and not hasattr(instance, attribute):
+        return False
+    try:
+        setattr(instance, attribute, value)
+    except Exception:
+        return False
+    return True
+
+
+def apply_probe_result(registry: ModelRegistry,
+                       result: RuntimeProbeResult) -> "Model | None":
+    """Apply a probe to an existing model; never creates unknown identities.
+
+    Returns the updated model, or ``None`` when the registry cannot resolve
+    the probed identity (a duck-typed registry used by an adapter). A
+    registry that cannot resolve the model is not evidence about the model,
+    so callers keep the probe's runtime verdict.
+    """
+    try:
+        model = registry.get(result.model_id)
+    except Exception:
+        return None
+    if not result.conclusive:
+        # Inconclusive evidence is not a health verdict: leave the model
+        # exactly as it was rather than inventing availability *or* failure.
+        return model
+    # Only an inference-grade verdict activates a model: a probe that merely
+    # observed the model (discovery) reports ok without a healthy/verified/
+    # live status and therefore never makes it available or VERIFIED.
+    verified = bool(result.ok) and str(
+        result.status or "").lower() in {"healthy", "verified", "live"}
+    _set_if_settable(model, "available", verified, required=True)
+    _set_if_settable(model, "latency_ms", max(0.0, result.latency_ms))
+    health = getattr(model, "health", None)
+    if health is not None:
+        health.status = result.status
+        health.last_error = "" if result.ok else result.reason
+    record = getattr(health, "record_success", None)
+    fail = getattr(health, "record_failure", None)
+    metadata = getattr(model, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["runtime_verified"] = verified
+        metadata["verification_kind"] = (
+            "inference" if verified
+            else str(result.status or "unknown").lower())
+        metadata["last_probe"] = result.to_dict()
     if verified:
-        model.health.record_success()
+        if callable(record):
+            record()
         if result.capabilities:
-            model.capabilities = tuple(dict.fromkeys(result.capabilities))
-            model.capability_status = {capability: "verified" for capability in model.capabilities}
+            _set_if_settable(
+                model, "capabilities",
+                tuple(dict.fromkeys(result.capabilities)))
+            _set_if_settable(model, "capability_status", {
+                capability: "verified"
+                for capability in getattr(model, "capabilities", ()) or ()
+            })
         if result.context_window is not None:
-            model.context_window = max(1, result.context_window)
+            _set_if_settable(model, "context_window",
+                             max(1, result.context_window))
         if result.max_output_tokens is not None:
-            model.max_output_tokens = max(1, result.max_output_tokens)
+            _set_if_settable(model, "max_output_tokens",
+                             max(1, result.max_output_tokens))
     else:
-        model.health.record_failure(result.reason)
-        model.reliability = max(0.0, model.reliability * 0.8)
+        if callable(fail) and result.ok is False:
+            fail(result.reason)
+        reliability = getattr(model, "reliability", None)
+        if isinstance(reliability, (int, float)) and result.ok is False:
+            _set_if_settable(model, "reliability", max(0.0, reliability * 0.8))
     return model
 
 

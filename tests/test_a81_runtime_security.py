@@ -153,20 +153,57 @@ def test_native_backend_refuses_executables_even_inside_an_allowed_dir(
     assert backend.list_models() == []
 
 
-def test_optional_engines_are_never_imported_by_the_runtime():
-    for module in ("llama_cpp", "llama_cpp_python", "torch", "transformers",
-                   "onnxruntime", "ctransformers"):
-        assert module not in sys.modules, module
+OPTIONAL_ENGINES = ("llama_cpp", "llama_cpp_python", "torch", "transformers",
+                    "onnxruntime", "ctransformers")
 
+#: Runs in a clean interpreter: the invariant is about what the *runtime*
+#: imports, not about this process's import history. Without this, the test
+#: depended on collection order — any earlier test that legitimately imported
+#: torch (the training stack is installable) would make it fail while the
+#: runtime was perfectly clean.
+_IMPORT_PROBE = """
+import sys, json
+sys.path.insert(0, {tests_dir!r})
+from forge.runtime.model_runtime import create_backend
+
+llama = create_backend("llama_cpp")
+forge = create_backend("forge")
+result = {{
+    "llama_available": llama.available()[0],
+    "llama_reason": llama.available()[1],
+    "forge_available": forge.available()[0],
+    "leaked": [name for name in {engines!r} if name in sys.modules],
+}}
+print("PROBE:" + json.dumps(result))
+"""
+
+
+def test_optional_engines_are_never_imported_by_the_runtime():
+    import subprocess
+
+    probe = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE.format(
+            tests_dir=str(Path(__file__).parent),
+            engines=OPTIONAL_ENGINES)],
+        capture_output=True, text=True, timeout=120,
+        cwd=str(Path(__file__).resolve().parents[1]))
+    assert probe.returncode == 0, probe.stderr[-800:]
+    payload = json.loads(
+        [line for line in probe.stdout.splitlines()
+         if line.startswith("PROBE:")][-1][len("PROBE:"):])
+
+    # Creating the backends must not import a single optional engine.
+    assert payload["leaked"] == [], payload["leaked"]
+    assert payload["llama_available"] is False
+    assert payload["forge_available"] is False
+    assert "explicitly provided client" in payload["llama_reason"]
+
+    # In this process too, the calls above must not have pulled anything in.
     llama = create_backend("llama_cpp")
     forge = create_backend("forge")
     assert llama.available()[0] is False
     assert forge.available()[0] is False
     assert "explicitly provided client" in llama.available()[1]
-
-    for module in ("llama_cpp", "llama_cpp_python", "torch", "transformers",
-                   "onnxruntime", "ctransformers"):
-        assert module not in sys.modules, module
 
 
 def test_client_backends_refuse_inference_without_a_client():

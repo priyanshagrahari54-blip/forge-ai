@@ -55,8 +55,13 @@ async def _http_error(request: Request,
     code = "NOT_FOUND" if exc.status_code == 404 else "INVALID_REQUEST"
     if exc.status_code == 413:
         code = "INVALID_REQUEST"
-    message = "Not found." if exc.status_code == 404 else (
-        str(exc.detail) if isinstance(exc.detail, str) else "Request failed.")
+    # API-authored 404 details ("configured runtime not found: ...") are
+    # operational facts, not secrets: carrying them makes the error envelope
+    # debuggable. Anything else keeps the generic wording, bounded in size.
+    if isinstance(exc.detail, str) and exc.detail:
+        message = exc.detail[:200]
+    else:
+        message = "Not found." if exc.status_code == 404 else "Request failed."
     return JSONResponse(
         status_code=exc.status_code,
         content=error_body(code, message, _request_id(request)))

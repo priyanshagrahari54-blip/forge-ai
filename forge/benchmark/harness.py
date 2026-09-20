@@ -67,6 +67,16 @@ def run_benchmark(fabric: Any, model_names: list[str] | None = None,
     """Run the suite against real fabric models; judge every answer."""
     registry = fabric.registry
     available = registry.names()
+    if model_names is None:
+        # The judged-code suite measures assistant models. In-process modality
+        # backends (vision/audio/browser executors registered by
+        # ``register_local_capability_models``) are real, but they do not
+        # answer chat prompts: they are verified by their own capability
+        # probes and stay selectable when named explicitly.
+        available = [
+            name for name in available
+            if not (getattr(registry.get(name), "metadata", None) or {}).get("in_process")
+        ]
     selected = [name for name in (model_names or available)
                 if name in available][:MAX_MODELS]
     unknown = [name for name in (model_names or [])
@@ -105,6 +115,10 @@ def run_benchmark(fabric: Any, model_names: list[str] | None = None,
             "checks": check_results})
     summary = {
         "models_benchmarked": len(results),
+        #: How many models the default selection considered benchmark-eligible
+        #: (assistant models; in-process modality backends excluded). Gates
+        #: compare coverage against this, not against every registered model.
+        "eligible_models": len(available),
         "checks_per_model": len(checks),
         "unknown_models": unknown,
         "passed": sum(entry["passed"] for entry in results),

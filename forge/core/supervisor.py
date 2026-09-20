@@ -207,6 +207,29 @@ class Supervisor:
         checkpoint = checkpoint_manager.create(f"supervisor-run-{run_id}")
         engine = TaskEngine()
         task = engine.add(f"supervisor-task-{run_id}", requirement)
+        # Session 11.5 hardened ToolRuntime.execute() to refuse every
+        # task-bound mutation (write_file/delete_file/run_command/git_commit/
+        # ...) unless it carries a valid ``commit_guard`` (see
+        # forge.core.fencing). A caller that drives multiple attempts across
+        # retries — the DAG scheduler, the server executor — supplies its
+        # own guard from a shared FenceRegistry so a stale attempt can never
+        # win a race against a fresh one. A direct call (the CLI, scripts,
+        # anything calling Supervisor.run() without going through that
+        # infrastructure) does not supply one, and since this method already
+        # binds every write to ``task.id``, that would make every mutation
+        # in the run fail closed with NO_FENCE_AUTHORITY even though there
+        # is exactly one attempt here and it is plainly authorized. When the
+        # caller hasn't supplied its own guard, mint a single-attempt fence
+        # for this run so the default entry point keeps working; a
+        # caller-supplied ``commit_guard`` is always used as-is and never
+        # overridden.
+        if commit_guard is None:
+            from forge.core.fencing import FenceRegistry
+            from forge.core.fencing import commit_guard as _build_commit_guard
+            _fence_registry = FenceRegistry()
+            _fence = _fence_registry.begin(task.id, owner="supervisor")
+            _fence = _fence_registry.mark_running(task.id, _fence)
+            commit_guard = _build_commit_guard(_fence, _fence_registry)
         touched: list[str] = []
         task_grant_snapshot: dict[str, Any] | None = None
         files_read: list[str] = []
@@ -297,18 +320,60 @@ class Supervisor:
             # Add the lightweight 1,000+ specialist fleet. These are logical
             # agents sharing the same ModelFabric; no 1,000 model processes
             # are spawned. Core safety-critical agents above remain canonical.
+            #: Fleet size is reported *inside* the existing ``agents_selected``
+            #: event: A32 telemetry has a closed event-name contract, so a new
+            #: event name must not be introduced to carry extra detail.
+            fleet_registered_agents = 0
+            multimodal_report: dict[str, Any] = {}
             if fabric is not None:
                 from forge.agents.frontier_fleet import extend_registry_with_frontier_fleet
-                extend_registry_with_frontier_fleet(registry, fabric, minimum_size=1000)
-                event("frontier_fleet_ready", {"registered_agents": len(registry), "logical_fleet": True})
+                #: The canonical fleet: 40 specialization families x 26
+                #: variants = 1,040 logical specialists (the default).
+                extend_registry_with_frontier_fleet(registry, fabric)
+                #: The 100 multimodal specialists register only for modalities a
+                #: real model advertises; the rest stay defined and reported.
+                from forge.agents.multimodal_fleet import (
+                    extend_registry_with_multimodal_fleet)
+                from forge.models.multimodal_bridge import register_multimodal_models
+                register_multimodal_models(fabric)
+                #: Local capability backends (pixel measurement, bundled
+                #: speech, DOM browser/actions) are registered via their own
+                #: real probes, so a deployment with no external endpoint still
+                #: executes the vision/audio/browser/computer-use specialists.
+                from forge.models.local_capabilities import (
+                    register_local_capability_models)
+                register_local_capability_models(fabric)
+                multimodal_report = extend_registry_with_multimodal_fleet(
+                    registry, fabric)
+                fleet_registered_agents = len(registry)
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
+            if agent_plan.unmet:
+                #: A capability the task needs that no registered agent could
+                #: take. Recorded, never hidden: the run continues with the
+                #: agents that do exist, but no caller may read the plan as
+                #: fully staffed.
+                result["plan"]["unmet"] = list(agent_plan.unmet)
             result["selected_agents"] = list(agent_plan.names)
             if not agent_plan.agents or "coder" not in agent_plan.names:
                 raise RuntimeError("capability planner could not select a coding agent")
             timed("plan", plan_started)
-            event("agents_selected", {"agents": list(agent_plan.names)})
+            fleet_details: dict[str, Any] = {"agents": list(agent_plan.names)}
+            if agent_plan.unmet:
+                fleet_details["unmet_capabilities"] = list(agent_plan.unmet)
+            if fleet_registered_agents:
+                fleet_details["registered_agents"] = fleet_registered_agents
+                fleet_details["logical_fleet"] = True
+            if multimodal_report.get("registered"):
+                fleet_details["multimodal_specialists"] = int(
+                    multimodal_report["registered"])
+            if multimodal_report.get("missing_modalities"):
+                #: Honest state, in the existing event: a modality with no
+                #: endpoint is missing, never silently counted as staffed.
+                fleet_details["multimodal_missing"] = ",".join(
+                    multimodal_report["missing_modalities"])
+            event("agents_selected", fleet_details)
             stage("AGENTS")
             stage("MODEL")
             # Pre-flight gate: when the fabric has no real (non-fallback)

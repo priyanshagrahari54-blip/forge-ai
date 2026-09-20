@@ -33,7 +33,12 @@ def test_task_milestones_is_authenticated_and_event_backed(tmp_path):
             headers=headers,
             json={"requirement": "Build a small verified feature"},
         )
-        assert created.status_code == 201, created.text
+        #: ``POST /api/v1/tasks`` answers 200 with the created task across the
+        #: whole repo contract (helpers_server, test_a34_api, test_a34_security,
+        #: test_a34_task_e2e all assert it); this suite originally expected
+        #: 201, which contradicted those. The task is still created durably
+        #: and returned in the body, which is what this test verifies.
+        assert created.status_code == 200, created.text
         task_id = created.json()["task"]["task_id"]
 
         drive_to_terminal(client, headers, task_id)

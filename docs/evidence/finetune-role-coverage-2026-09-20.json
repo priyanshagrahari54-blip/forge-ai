@@ -1,0 +1,95 @@
+{
+  "base_model": "SmolLM2-135M-Instruct",
+  "coverage": {
+    "command": "scripts/finetune_specialists.py --coverage",
+    "minimum_records": 8,
+    "roles": 36,
+    "trainable": 36,
+    "validated_rows": 758
+  },
+  "dataset_sources": [
+    "docs/evidence/fleet-real-run-2026-09-19.json"
+  ],
+  "date": "2026-09-20",
+  "note": "Scores are token-level F1 against the recorded reference answers on a held-out hash split of that role's rows. SmolLM2-135M at 30 steps is a small model: the honest signal is that every adapter scores above its base model, not that the answers are good.",
+  "purpose": "Broader fine-tune coverage: one adapter per specialisation, trained on that specialisation's own evidence only, each with a promotion verdict",
+  "role_filtering": "forge.training.dataset.build_dataset(roles=[...]) \u2014 case/separator-insensitive; an unknown role yields an empty dataset that fails the minimum-records preflight",
+  "runs": [
+    {
+      "artifact_id": "security-lora-1789875412",
+      "average": 0.2358,
+      "baseline_average": 0.0,
+      "cases": 3,
+      "dataset_fingerprint": "d211a07260238dc3ee16e2aed681671d17ada0f0c7e0db09c3e4a063647aba4c",
+      "delta": 0.2358,
+      "examples": 20,
+      "loss": {
+        "final": 0.0,
+        "held_out": 0.0,
+        "initial": 0.0
+      },
+      "manifest": "/home/user/forge-ai/.forge/models/security-lora-1789875412.manifest.json",
+      "role": "security",
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "promoted"
+    },
+    {
+      "artifact_id": "devops-lora-1789875499",
+      "average": 0.1382,
+      "baseline_average": 0.0,
+      "cases": 4,
+      "dataset_fingerprint": "aadacabe87891e99dc3b18e335d9113f2dfa57be2ab4441bb6d722b648de9c91",
+      "delta": 0.1382,
+      "examples": 25,
+      "loss": {
+        "final": 0.0,
+        "held_out": 0.0,
+        "initial": 0.0
+      },
+      "manifest": "/home/user/forge-ai/.forge/models/devops-lora-1789875499.manifest.json",
+      "role": "devops",
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "promoted"
+    },
+    {
+      "artifact_id": "documentation-lora-1789875598",
+      "average": 0.1595,
+      "baseline_average": 0.0,
+      "cases": 3,
+      "dataset_fingerprint": "4735d05070a29da92396b8cce5c91e98bf6a05243247ff633a41a56278d422c5",
+      "delta": 0.1595,
+      "examples": 16,
+      "loss": {
+        "final": 0.0,
+        "held_out": 0.0,
+        "initial": 0.0
+      },
+      "manifest": "/home/user/forge-ai/.forge/models/documentation-lora-1789875598.manifest.json",
+      "role": "documentation",
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "promoted"
+    },
+    {
+      "artifact_id": "privacy-lora-1789875680",
+      "average": 0.225,
+      "baseline_average": 0.0094,
+      "cases": 4,
+      "dataset_fingerprint": "70474bc1f7df8ef1ca72cc50626348bfff21f6c596616d21c4a1e715c53b916a",
+      "delta": 0.2156,
+      "examples": 19,
+      "loss": {
+        "final": 0.0,
+        "held_out": 0.0,
+        "initial": 0.0
+      },
+      "manifest": "/home/user/forge-ai/.forge/models/privacy-lora-1789875680.manifest.json",
+      "role": "privacy",
+      "state": "TRAINED",
+      "trainer": "gguf-lora",
+      "verdict": "promoted"
+    }
+  ]
+}

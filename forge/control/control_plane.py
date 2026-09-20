@@ -552,7 +552,15 @@ class ControlConfig:
             raise ValueError(
                 f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
                 "A35 supports 'fake' only")
+        #: ``local-inprocess`` is the engine that runs inside this process
+        #: (espeak-ng / pocketsphinx) — no endpoint, no credential. It is a
+        #: separate name from ``local-whisper``/``local-tts``, which call a
+        #: self-hosted OpenAI-compatible endpoint. Accepting it here matters:
+        #: an unknown name raises at construction, so a deployment that set it
+        #: without this entry would fail to start rather than fall back.
         _VOICE_VALID = {"simulated", "openai-whisper", "openai-tts",
+                        "local-whisper", "local-tts", "local-inprocess",
+                        "local-inprocess-stt", "local-inprocess-tts",
                         "unconfigured"}
         for key, env_name in (("voice_stt_provider", "FORGE_VOICE_STT_PROVIDER"),
                               ("voice_tts_provider", "FORGE_VOICE_TTS_PROVIDER")):
@@ -604,6 +612,36 @@ class ControlPlane:
         else:
             from forge.models.fabric import ModelFabric
             self.fabric = ModelFabric.from_defaults()
+        #: Self-hosted vision/speech/image endpoints become real fabric models.
+        #: Registration is offline and idempotent: a modality with no endpoint
+        #: registers nothing and stays reported as missing, so no capability is
+        #: ever claimed just because this code exists.
+        self.multimodal_report: dict[str, Any] = {}
+        try:
+            from forge.models.multimodal_bridge import register_multimodal_models
+            self.multimodal_report = register_multimodal_models(self.fabric)
+        except Exception as exc:                              # noqa: BLE001
+            #: Never fail construction over an optional capability, but never
+            #: hide it either: the reason is kept for the readiness surface.
+            self.multimodal_report = {
+                "schema_version": 1, "registered": [], "available": [],
+                "gaps": [], "error": str(exc)[:300]}
+        #: Capabilities this machine can serve itself — in-process pixel
+        #: measurement, bundled espeak-ng/pocketsphinx speech, a real HTTP+DOM
+        #: browser and a DOM action runner. Each one must pass its own real
+        #: probe before it is registered, so the 100 vision/audio/browser/
+        #: computer-use specialists are executable without a remote endpoint
+        #: and never merely because the code exists.
+        self.local_capability_report: dict[str, Any] = {}
+        try:
+            from forge.models.local_capabilities import (
+                register_local_capability_models)
+            self.local_capability_report = register_local_capability_models(
+                self.fabric)
+        except Exception as exc:                              # noqa: BLE001
+            self.local_capability_report = {
+                "schema_version": 1, "registered": [], "skipped": [],
+                "verified": [], "error": str(exc)[:300]}
         self.policy = config.policy
         # A35 Desktop Agent: controlled execution through the existing A33
         # policy/approval/audit systems. Provider defaults to the
@@ -1678,8 +1716,11 @@ class ControlPlane:
     def _voice_stack(self) -> Any:
         """Voice loop with configurable providers (simulated by default).
 
-        Real providers (openai-whisper, openai-tts) require
-        OPENAI_API_KEY and are labeled ``simulation=False``.
+        Real providers are labeled ``simulation=False``. Two families:
+        ``openai-whisper``/``openai-tts`` need ``OPENAI_API_KEY``, while
+        ``local-whisper``/``local-tts`` need no credential at all — they call
+        an OpenAI-compatible audio endpoint you host yourself
+        (``FORGE_STT_URL`` / ``FORGE_TTS_URL``).
         """
         from forge.voice import (SimulatedSpeechSynthesizer,
                                  SimulatedSpeechToText,
@@ -1692,6 +1733,16 @@ class ControlPlane:
             if stt_name == "openai-whisper":
                 from forge.voice.openai_stt import OpenAISpeechToText
                 transcriber: Any = OpenAISpeechToText()
+            elif stt_name == "local-whisper":
+                from forge.voice.local_audio import LocalSpeechToText
+                transcriber = LocalSpeechToText()
+            elif stt_name in ("local-inprocess", "local-inprocess-stt"):
+                #: Real recognition inside this process: no endpoint and no
+                #: credential. The provider reports its own language support
+                #: (the bundled model is English; Hindi/Hinglish need
+                #: FORGE_STT_URL) instead of pretending to hear every language.
+                from forge.voice.local_speech import LocalInProcessTranscriber
+                transcriber = LocalInProcessTranscriber()
             elif stt_name == "simulated":
                 transcriber = SimulatedSpeechToText()
             else:
@@ -1703,6 +1754,15 @@ class ControlPlane:
             if tts_name == "openai-tts":
                 from forge.voice.openai_tts import OpenAISpeechSynthesizer
                 synthesizer: Any = OpenAISpeechSynthesizer()
+            elif tts_name == "local-tts":
+                from forge.voice.local_audio import LocalSpeechSynthesizer
+                synthesizer = LocalSpeechSynthesizer()
+            elif tts_name in ("local-inprocess", "local-inprocess-tts"):
+                #: Real synthesis inside this process (espeak-ng). The cockpit
+                #: reports this as the speaking engine, and it says so plainly:
+                #: a local voice, not a neural one.
+                from forge.voice.local_speech import LocalInProcessSynthesizer
+                synthesizer = LocalInProcessSynthesizer()
             elif tts_name == "simulated":
                 synthesizer = SimulatedSpeechSynthesizer()
             else:
@@ -1920,6 +1980,15 @@ class ControlPlane:
                 except Exception:
                     text = "Status is unavailable right now."
                 return {"kind": "reply", "text": text}
+            #: Communication intents deliver through a configured channel.
+            #: Delivery happens *after* the voice permission check (the caller
+            #: runs this factory only for an approved intent), and only when a
+            #: channel is actually configured and the message body is known —
+            #: otherwise the intent falls through to the task path, which is
+            #: honest about not being able to send.
+            delivery = self._deliver_voice_message(name, slots)
+            if delivery is not None:
+                return delivery
             requirement = self.VOICE_INTENT_REQUIREMENTS.get(name)
             if requirement is None:
                 return {"kind": "unhandled", "intent": name}
@@ -1933,6 +2002,77 @@ class ControlPlane:
                         "message": str(exc)}
             return {"kind": "task", **run.to_dict()}
         return factory
+
+    #: Voice intents that map onto a real outbound channel send.
+    COMMS_INTENTS = {
+        "send_whatsapp": "send_whatsapp",
+        "make_call": "make_call",
+        "send_sms": "send_sms",
+        "send_email": "send_email",
+    }
+
+    #: Which registry channel backs each intent; an intent whose channel is not
+    #: configured is never delivered and falls through to the task path.
+    COMMS_CHANNELS = {
+        "send_whatsapp": "whatsapp-cloud",
+        "send_sms": "twilio-sms",
+        "make_call": "twilio-voice",
+        "send_email": "smtp-email",
+    }
+
+    def channels(self) -> Any:
+        """The outbound channel registry for this deployment (cached)."""
+        registry = getattr(self, "_channel_registry", None)
+        if registry is None:
+            from forge.comms import ChannelRegistry
+            registry = ChannelRegistry.from_env()
+            self._channel_registry = registry
+        return registry
+
+    def _deliver_voice_message(self, name: str, slots: dict) -> Any:
+        """Send through a configured channel, or return None to fall through.
+
+        The message body is taken from the parsed slots; without a body there is
+        nothing to send, and Forge must not invent one. A send result is
+        reported verbatim (provider id, status code, error), never as a bare
+        success.
+        """
+        action = self.COMMS_INTENTS.get(name)
+        if action is None:
+            return None
+        registry = self.channels()
+        if not registry.has(self.COMMS_CHANNELS[action]):
+            return None
+        body = ""
+        for key in ("text", "message", "body", "content", "target"):
+            value = slots.get(key)
+            if isinstance(value, str) and value.strip():
+                body = value.strip()
+                break
+        if not body:
+            return None
+        recipient = ""
+        for key in ("to", "recipient", "phone", "number"):
+            value = slots.get(key)
+            if isinstance(value, str) and value.strip():
+                recipient = value.strip()
+                break
+        if action == "send_whatsapp":
+            result = registry.send_whatsapp(body, to=recipient)
+        elif action == "send_sms":
+            result = registry.send_sms(body, to=recipient)
+        elif action == "send_email":
+            subject = str(slots.get("subject") or "").strip() or \
+                "Forge notification"
+            result = registry.send_email(body, to=recipient, subject=subject)
+        else:
+            result = registry.make_call(body, to=recipient)
+        self._audit("voice", result.channel, action, result.ok,
+                    reason=(f"{action} via {result.channel}: "
+                            f"{'sent' if result.ok else result.error or 'failed'}"))
+        return {"kind": "sent" if result.ok else "send_failed",
+                "channel": result.channel,
+                "result": result.to_dict()}
 
     @staticmethod
     def _voice_audio_chunk(audio_b64: str) -> Any:
@@ -2751,9 +2891,95 @@ class ControlPlane:
                 return "I don't have anything remembered for you yet."
             notes = [entry.get("content", "") for entry in entries[:5]]
             return "I remember: " + " | ".join(notes)[:800]
+        # Open-ended speech: deterministic templates are the fast path, but
+        # they are not the only conversational intelligence. When a
+        # runtime-verified live model is attached, it answers — and the reply
+        # carries that provenance. Otherwise the deterministic channel says
+        # honestly that it has no answer, instead of fabricating one.
+        model_reply = self._model_conversation_reply(session, question)
+        if model_reply is not None:
+            return model_reply
         return ("I don't have a real answer for that. I can analyze "
                 "this repository, report task status, and recall what "
                 "you asked me to remember.")
+
+    def _conversationalist(self):
+        """Lazily build the live-model conversation channel (bounded)."""
+        conversationalist = getattr(self, "_model_conversationalist", None)
+        if conversationalist is None:
+            from forge.conversation.model_reply import ModelConversationalist
+            conversationalist = ModelConversationalist(self.fabric)
+            self._model_conversationalist = conversationalist
+        return conversationalist
+
+    def conversation_capability(self) -> dict[str, Any]:
+        """Report which engine will answer open-ended conversation."""
+        try:
+            return self._conversationalist().status()
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"path": "deterministic", "available": False,
+                    "reason": f"conversation status unavailable: {exc}",
+                    "models": [], "last_error": ""}
+
+    def _conversation_state_summary(self, session: Session) -> str:
+        """Real Forge state handed to the conversational model."""
+        lines = [f"project: {session.project_id}",
+                 f"actor: {session.actor}"]
+        try:
+            counts = self.dashboard(session)["tasks"]
+            lines.append(
+                "tasks: %s running, %s waiting for approval, %s failed, "
+                "%s completed" % (counts.get("running", 0),
+                                  counts.get("waiting_approval", 0),
+                                  counts.get("failed", 0),
+                                  counts.get("completed", 0)))
+        except Exception:
+            lines.append("tasks: status unavailable")
+        try:
+            from forge.conversation.model_reply import (
+                live_model_candidates)
+            registered = len(self.fabric.registry.list())
+            live = live_model_candidates(self.fabric)
+            lines.append("models: %d registered, %d runtime-verified live (%s)"
+                         % (registered, len(live),
+                            ", ".join(str(getattr(model, "name", "?"))
+                                      for model in live[:5]) or "none"))
+        except Exception:
+            lines.append("models: status unavailable")
+        return "\n".join(lines)
+
+    def _model_conversation_reply(self, session: Session,
+                                  question: str) -> dict[str, Any] | None:
+        """Answer open-ended speech with a live model, or return None."""
+        conversationalist = self._conversationalist()
+        if not conversationalist.available():
+            return None
+        try:
+            history = self._conversation_engines.get(session.id)
+        except Exception:
+            history = None
+        turns = getattr(history, "history", None) or []
+        try:
+            reply = conversationalist.reply(
+                question, history=turns,
+                state=self._conversation_state_summary(session))
+        except Exception as exc:
+            self._audit(session.actor, "conversation", "model_error", False,
+                        reason=f"{type(exc).__name__}")
+            return None
+        if reply is None:
+            return None
+        self._audit(session.actor, "conversation", "model_reply", True,
+                    task_id=session.active_task or session.id,
+                    reason=f"model={reply.model} provider={reply.provider}")
+        return {
+            "text": reply.text,
+            "engine": f"model:{reply.model}",
+            "model": reply.model,
+            "provider": reply.provider,
+            "live_model": True,
+            "latency_ms": reply.latency_ms,
+        }
 
     def _conversation_remember(self, session: Session,
                                message: str) -> bool:
@@ -3181,6 +3407,20 @@ class ControlPlane:
         if not hasattr(self, "_agent_run_logs"):
             self._agent_run_logs: dict[str, list[dict[str, Any]]] = {}
 
+        #: A run must never look finished while it is still counted as active:
+        #: the concurrency slot is released *before* the terminal state is
+        #: published. Publishing first left observers (the cockpit, the
+        #: governance API, CI) reading a terminal run with ``active_runs``
+        #: still at 1 — observed as a real failure on the 3.13 CI job.
+        released = threading.Event()
+
+        def release_slot() -> None:
+            """Free this run's concurrency slot exactly once."""
+            if released.is_set():
+                return
+            released.set()
+            self._agent_governor().end(name)
+
         def worker():
             try:
                 result = runner.run(definition, requirement,
@@ -3194,6 +3434,7 @@ class ControlPlane:
                     report_json=json.dumps(
                         {"output": result.output[:2000],
                          "error": result.error}))
+                release_slot()
                 self._agent_run_results[(session.id, run_id)] = {
                     "status": "finished", "run": result.to_dict()}
                 self._agent_run_logs.setdefault(
@@ -3213,6 +3454,7 @@ class ControlPlane:
                 self.runs.mutate(record.id, status=RunStatus.FAILED,
                                  stage="failed", finished_at=time.time(),
                                  error=str(exc)[:500])
+                release_slot()
                 self._agent_run_results[(session.id, run_id)] = {
                     "status": "failed", "error": str(exc)[:500]}
                 self._agent_run_logs.setdefault(session.id, []).append({
@@ -3243,7 +3485,9 @@ class ControlPlane:
             try:
                 worker()
             finally:
-                self._agent_governor().end(name)
+                #: Covers the paths that never reached a terminal publish; the
+                #: event keeps a second release from freeing another run's slot.
+                release_slot()
 
         governor.begin(name)
         if self._executor is not None:
@@ -5617,14 +5861,16 @@ class ControlPlane:
             session.id, [])
         if len(owned) >= 4:
             raise Conflict("A session may hold at most 4 conversations")
-        conversation = new_conversation(self._voice_stack().voice)
+        conversation = new_conversation(
+            self._voice_stack().voice, self._conversationalist())
         self._voice_conversations[conversation.id] = conversation
         owned.append(conversation.id)
         self._audit(session.actor, "voice", "conversation_start", True,
                     task_id=session.active_task or session.id,
                     reason=f"conversation {conversation.id}")
         return {"conversation_id": conversation.id,
-                "simulation": self._voice_stack().simulation}
+                "simulation": self._voice_stack().simulation,
+                "conversation_path": self.conversation_capability()["path"]}
 
     def _voice_conversation(self, session: Session,
                             conversation_id: str):

@@ -5,6 +5,14 @@ from time import monotonic
 from typing import Any, Callable, Iterable
 
 
+def _attribute(error: BaseException, name: str):
+    """Optional attribute of somebody else's exception, or ``None``."""
+    try:
+        return getattr(error, name)
+    except (AttributeError, KeyError, IndexError, TypeError):
+        return None
+
+
 @dataclass
 class ProviderRuntime:
     """Runtime state used for honest provider/model failover.
@@ -84,8 +92,11 @@ class FailoverPool:
             try:
                 value = operation(candidate, provider)
             except Exception as exc:  # provider adapters normalize errors upstream
-                reason = getattr(exc, "reason", None) or "transient"
-                retry_after = getattr(exc, "retry_after", None)
+                #: Attribute reads are guarded: a Python 3.8 urllib HTTPError
+                #: raises KeyError (not AttributeError) for attributes it does
+                #: not have, and a failover decision must survive that.
+                reason = _attribute(exc, "reason") or "transient"
+                retry_after = _attribute(exc, "retry_after")
                 runtime.mark_failure(str(exc), retry_after=retry_after)
                 result.attempts.append(FailoverAttempt(candidate, provider, False, reason))
                 if reason not in self.RETRYABLE:

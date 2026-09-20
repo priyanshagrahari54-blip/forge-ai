@@ -44,11 +44,17 @@ class ModelRouter:
     """
 
     def __init__(self, models: list[ModelInfo] | None = None) -> None:
-        self.models = list(models or [])
+        self.models: list[ModelInfo] = []
+        #: Name index for O(1) feedback lookups; ``record`` is called at least
+        #: once per routing decision, so a linear scan is a real hot loop.
+        self._by_name: dict[str, ModelInfo] = {}
         self.history: list[dict[str, Any]] = []
+        for model in models or []:
+            self.register(model)
 
     def register(self, model: ModelInfo) -> None:
         self.models.append(model)
+        self._by_name[model.name] = model
 
     def decide(self, capability: str, *, min_context_size: int = 0,
                max_cost: float | None = None, max_latency: float | None = None,
@@ -89,9 +95,16 @@ class ModelRouter:
 
     def record(self, model_name: str, success: bool, latency: float | None = None,
                *, capability: str = "", task_complexity: float | None = None) -> None:
-        for model in self.models:
-            if model.name != model_name:
-                continue
+        model = self._by_name.get(model_name)
+        if model is None:
+            # ``models`` is a public attribute kept for legacy callers; if it
+            # was mutated outside ``register`` the index self-heals here.
+            for entry in self.models:
+                if entry.name == model_name:
+                    model = entry
+                    self._by_name[model_name] = entry
+                    break
+        if model is not None:
             # Exponential smoothing makes recent real outcomes influence the
             # next routing decision while preserving initial model metadata.
             model.historical_success_rate = (model.historical_success_rate + (1.0 if success else 0.0)) / 2
@@ -137,6 +150,19 @@ class RouteDecision:
         }
 
 
+def tier_of(model: Model) -> int:
+    """Declared relative power of a model (0 = undeclared).
+
+    Kept in model metadata rather than as a dataclass field so every existing
+    registry entry keeps its exact shape; unknown or malformed values are
+    treated as undeclared instead of raising mid-route.
+    """
+    try:
+        return int((getattr(model, "metadata", None) or {}).get("tier") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class FabricRouter:
     """Capability/context/complexity-aware router over a ``ModelRegistry``.
 
@@ -163,9 +189,17 @@ class FabricRouter:
         policy = policy or self.policy
         required = request.effective_capabilities()
 
-        capable = [model for model in self.registry if model.available]
-        if required:
-            capable = [model for model in capable if model.supports_all(required)]
+        # Capability pre-filter. The registry's inverted capability index
+        # avoids scanning every registered model per route; duck-typed
+        # registries (adapters, test doubles) fall back to the direct scan.
+        # Capability requirements are never relaxed either way.
+        indexed = getattr(self.registry, "models_for_capabilities", None)
+        if required and callable(indexed):
+            capable = [model for model in indexed(required) if model.available]
+        else:
+            capable = [model for model in self.registry if model.available]
+            if required:
+                capable = [model for model in capable if model.supports_all(required)]
 
         if not capable:
             missing = sorted(required) if required else ["<any>"]
@@ -254,32 +288,28 @@ class FabricRouter:
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
-            if model.name in preferred_order:
-                return (
-                    0,
-                    preferred_order[model.name],
-                    -_score,
-                    0 if model.free else 1,
-                    0 if model.local else 1,
-                    model.name,
-                )
-            if model.name in fallback_order:
-                return (
-                    2,
-                    fallback_order[model.name],
-                    -_score,
-                    0 if model.free else 1,
-                    0 if model.local else 1,
-                    model.name,
-                )
-            return (
-                1,
-                0,
+            # Preference buckets dominate: an explicit/preferred model always
+            # ranks ahead of an unpreferred one and a request-declared
+            # fallback ranks behind both — but only after the eligibility
+            # filtering above, so a preferred model missing a required
+            # capability can never win. Declared power (``tier``) comes next
+            # inside a bucket: when an operator runs a stronger model on their
+            # own server, "equally capable" must not silently mean "the
+            # cheaper one". ``tier`` defaults to 0 for every model that does
+            # not declare one, so registries without tiers order exactly as
+            # before. Score, then free/local/name tie-breakers, close it out.
+            tiebreak = (
+                -tier_of(model),
                 -_score,
                 0 if model.free else 1,
                 0 if model.local else 1,
                 model.name,
             )
+            if model.name in preferred_order:
+                return (0, preferred_order[model.name], *tiebreak)
+            if model.name in fallback_order:
+                return (2, fallback_order[model.name], *tiebreak)
+            return (1, *tiebreak)
 
         scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
         scored.sort(key=rank)
@@ -295,6 +325,7 @@ class FabricRouter:
             chain.extend(entry for _, entry in fallback_scored)
 
         factors = {
+            "tier": tier_of(model),
             "reliability": model.reliability,
             "latency_ms": model.latency_ms,
             "cost_per_token": model.cost_per_token,

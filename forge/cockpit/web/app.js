@@ -56,6 +56,7 @@ const ROUTES = {
   settings: { render: renderSettingsView, title: "Settings" },
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
+  city: { render: renderCityView, title: "AI City" },
   compute: { render: renderComputeView, title: "Compute" },
   agentbuilder: { render: renderAgentBuilderView,
                      title: "Agent Builder" },
@@ -3389,6 +3390,15 @@ function readVisionFile() {
     reader.onerror = () => reject(new Error("Could not read the file."));
     reader.readAsDataURL(input.files[0]);
   });
+}
+
+function renderCityView() {
+  // AI City is the live execution topology. The framed page subscribes to
+  // real task events (/api/v1/tasks/{id}/milestones + event stream) and
+  // reports connection failures instead of inventing activity; this view
+  // only hosts it, so the cockpit has one implementation of the map.
+  const frame = document.getElementById("city-frame");
+  if (frame && !frame.getAttribute("src")) frame.setAttribute("src", "/city.html");
 }
 
 function renderVision() {

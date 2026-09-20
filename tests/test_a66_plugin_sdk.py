@@ -74,15 +74,17 @@ def test_binding_reports_real_capabilities_honestly(tmp_path):
     with client:
         payload, _token, headers = login(client)
         session = plane.sessions.get(payload["session_id"])
-        # coding is backed by the real built-in coder executor; the
-        # rest are declared only (canonical but unregistered here).
+        # coding is backed by the real built-in coder executor and browser is
+        # bound by the probe-verified local DOM browser backend; documentation
+        # remains declared only (canonical but unregistered here).
         installed = plane.plugin_install(session, valid_manifest(
             capabilities=["coding", "documentation", "browser"]))
         status = plane.plugin_status(session, installed["plugin_id"])
         assert status["declared"] == ["coding", "documentation",
                                       "browser"]
         assert "coding" in status["real"]
-        assert status["unbound"] == ["documentation", "browser"]
+        assert "browser" in status["real"]
+        assert status["unbound"] == ["documentation"]
         assert status["honest"] is False
         # Declarations alone never add to the real catalog.
         real = plane._real_capabilities()

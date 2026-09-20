@@ -133,13 +133,22 @@ def check_fabric_readiness(fabric: Any, *, probe_network: bool = True,
         models = list(getattr(fabric, "registry", None).list() or [])
     except Exception:
         models = []
+    from forge.models.capabilities import TEXT_CAPABILITIES
     real_models = [m for m in models if not bool(getattr(m, "fallback", False))]
-    fallback_only = bool(models) and not real_models
-    if not real_models:
+    # This report answers "can *coding* tasks succeed?". Modality backends
+    # (in-process vision/audio/browser executors) are real models but hold no
+    # text conversation, so they must not mark the fabric coding-ready.
+    text_models = [
+        model for model in real_models
+        if any(capability in TEXT_CAPABILITIES
+               for capability in (getattr(model, "capabilities", None) or ()))
+    ]
+    fallback_only = bool(models) and not text_models
+    if not text_models:
         checks.append(ReadinessCheck(
             name="real_model_registered",
             ok=False,
-            detail="No non-fallback model is registered; only the offline placeholder exists.",
+            detail="No non-fallback text-capable model is registered; only the offline placeholder exists.",
             remediation=("Configure a model provider: install Ollama "
                          "(https://ollama.com) and pull a model, e.g. "
                          "`ollama pull llama3.2`, or set OPENAI_API_KEY to "
@@ -161,7 +170,7 @@ def check_fabric_readiness(fabric: Any, *, probe_network: bool = True,
         provider_names = set()
 
     # 2. Ollama: reachable + model pulled?
-    ollama_models = [m for m in real_models
+    ollama_models = [m for m in text_models
                      if str(getattr(m, "provider", "")) == "ollama"]
     if ollama_models and "ollama" in provider_names and providers is not None:
         try:
@@ -277,7 +286,9 @@ def check_fabric_readiness(fabric: Any, *, probe_network: bool = True,
 
     # 4. Other/unknown providers with real models: count them usable when the
     # provider object exists (custom providers, mocks in tests).
-    for model in real_models:
+    # Modality backends are excluded here too: a browser or pixel executor
+    # with a registered provider still cannot serve a coding task.
+    for model in text_models:
         provider_name = str(getattr(model, "provider", "") or "")
         if provider_name in ("ollama", "openai"):
             continue

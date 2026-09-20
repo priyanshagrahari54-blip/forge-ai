@@ -1,0 +1,36 @@
+{
+  "_comment": "Copy to model-endpoints.json and point FORGE_MODEL_ENDPOINTS at it (or paste the array into the variable). Endpoints serving the same model are pooled for quota failover; different models become different models, ordered by tier.",
+  "endpoints": [
+    {
+      "url": "http://gpu-box:8080",
+      "model": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+      "tier": 80,
+      "label": "gpu-box",
+      "context_window": 32768,
+      "timeout": 180,
+      "capabilities": "coding,reasoning,planning,debugging,testing,review,security,research,documentation,structured_output"
+    },
+    {
+      "url": "http://gpu-box-2:8080",
+      "model": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+      "tier": 80,
+      "label": "gpu-box-2",
+      "context_window": 32768
+    },
+    {
+      "url": "http://office-box:8080",
+      "model": "SmolLM2-135M-Instruct.Q4_1.gguf",
+      "tier": 10,
+      "label": "office-box",
+      "context_window": 4096
+    },
+    {
+      "url": "https://vision-box:8080/v1",
+      "model": "qwen2.5-vl-7b-instruct-q4_k_m.gguf",
+      "tier": 60,
+      "label": "vision-box",
+      "api_key": "set-a-real-key-here-and-never-commit-it",
+      "capabilities": "vision,reasoning,documentation,structured_output"
+    }
+  ]
+}

@@ -11,6 +11,12 @@ from forge.models.health import HealthStatus
 from forge.models.runtime_verification import RuntimeProbeResult
 
 
+def _bounded_reason(reason: str, limit: int = 500) -> str:
+    """Normalize a bounded, secret-free reason string."""
+    text = " ".join(str(reason or "").split())
+    return text[:limit]
+
+
 @dataclass(frozen=True)
 class RuntimeMonitorResult:
     provider: str
@@ -48,6 +54,20 @@ class RuntimeMonitor:
         result = probe(runtime.provider, runtime.model_id)
         if result.model_id != runtime.model_id:
             raise ValueError("probe returned a different model identity")
+
+        if not result.conclusive:
+            # The probe could not be performed. That is absence of evidence,
+            # not evidence of failure: keep the runtime's last known state so
+            # a working provider without a model-list endpoint stays routable,
+            # and record honestly that verification was inconclusive. The
+            # timestamp is intentionally *not* refreshed, so no fresh
+            # verification claim is minted from a probe that never ran.
+            runtime.last_reason = _bounded_reason(
+                "runtime verification inconclusive: %s" % (result.reason or result.status))
+            return RuntimeMonitorResult(
+                runtime.provider, runtime.model_id, runtime.state, result,
+                runtime.verification_id, False,
+            )
 
         if not result.ok:
             runtime.mark_unavailable(result.reason)
