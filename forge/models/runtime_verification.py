@@ -42,13 +42,14 @@ class RuntimeProbeResult:
 def apply_probe_result(registry: ModelRegistry, result: RuntimeProbeResult) -> Model:
     """Apply a probe to an existing model; never creates unknown identities."""
     model = registry.get(result.model_id)
-    model.available = result.ok
+    verified = bool(result.ok) and str(result.status or "").lower() in {"healthy", "verified", "live"}
+    model.available = verified
     model.latency_ms = max(0.0, result.latency_ms)
     model.health.status = result.status
     model.health.last_error = "" if result.ok else result.reason
     model.metadata["runtime_verified"] = result.ok
     model.metadata["last_probe"] = result.to_dict()
-    if result.ok:
+    if verified:
         model.health.record_success()
         if result.capabilities:
             model.capabilities = tuple(dict.fromkeys(result.capabilities))
