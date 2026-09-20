@@ -197,3 +197,61 @@ def test_model_generate_api(tmp_path):
                                headers=headers)
         assert approvals.status_code == 200
         assert approvals.json()["approvals"] == []
+
+
+def test_model_generate_api_preferences_are_routed(tmp_path):
+    class Preferred:
+        name = "preferred-provider"
+        def generate(self, prompt, *, context="", task=""):
+            return ModelResult("preferred", self.name)
+
+    class Default:
+        name = "default-provider"
+        def generate(self, prompt, *, context="", task=""):
+            return ModelResult("default", self.name)
+
+    fabric = _fabric_with(
+        [
+            Model(name="preferred/model", provider="preferred-provider",
+                  capabilities=("coding",), reliability=0.4),
+            Model(name="default/model", provider="default-provider",
+                  capabilities=("coding",), reliability=1.0),
+        ],
+        {
+            "preferred-provider": (Preferred(),
+                                   ProviderInfo(name="preferred-provider",
+                                                kind="remote")),
+            "default-provider": (Default(),
+                                 ProviderInfo(name="default-provider",
+                                              kind="remote")),
+        },
+    )
+    from forge.control import ControlConfig, ControlPlane
+
+    root = tmp_path / "demo"
+    root.mkdir()
+    plane = ControlPlane(ControlConfig(
+        db_path=str(tmp_path / "cockpit.db"),
+        projects={"demo": str(root)},
+        fabric=fabric,
+        policy=model_policy(),
+    ))
+    client = make_client(plane)
+    with client:
+        _session, _token, headers = login(client)
+        response = client.post(
+            "/api/v1/models/generate",
+            headers=headers,
+            json={
+                "prompt": "pick the requested model",
+                "capability": "coding",
+                "preferred_models": ["preferred/model"],
+                "fallback_models": ["default/model"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["response"]["model"] == "preferred/model"
+        assert payload["response"]["provider"] == "preferred-provider"
+        assert payload["response"]["preferred_models"] == ["preferred/model"]
+        assert payload["response"]["fallback_models"] == ["default/model"]
