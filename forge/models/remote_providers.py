@@ -5,6 +5,7 @@ import json
 import os
 import time
 import urllib.request
+import urllib.parse
 from typing import Any
 
 from forge.models.provider import ModelResult, compose_provider_prompt
@@ -127,7 +128,6 @@ class GeminiProvider(HostedProvider):
     def generate(self, prompt: str, *, context: str = "", task: str = "",
                  instructions: str = "", max_output_tokens: int | None = None,
                  temperature: float | None = None) -> ModelResult:
-        import urllib.parse
         started = time.perf_counter()
         text_prompt = compose_provider_prompt(
             prompt, context=context, task=task, instructions=instructions)
