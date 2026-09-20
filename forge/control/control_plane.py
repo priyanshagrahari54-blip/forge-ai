@@ -5330,7 +5330,9 @@ class ControlPlane:
 
     def model_generate(self, session: Session, prompt: str, *,
                        capability: str = "coding",
-                       approval_id: str = "") -> dict[str, Any]:
+                       approval_id: str = "",
+                       preferred_models: tuple[str, ...] = (),
+                       fallback_models: tuple[str, ...] = ()) -> dict[str, Any]:
         """Gated fabric generation: MODEL/call policy first, then route."""
         from forge.models.bridge import FabricBridge
         from forge.security.approvals import enforce_with_token
@@ -5376,7 +5378,12 @@ class ControlPlane:
                     "reason": evaluation.reason or "denied by policy"}
         bridge = FabricBridge(self.fabric)
         try:
-            response = bridge.generate(prompt, capability=capability)
+            response = bridge.generate(
+                prompt,
+                capability=capability,
+                preferred_models=tuple(preferred_models or ()),
+                fallback_models=tuple(fallback_models or ()),
+            )
         except ValueError as exc:
             raise InvalidRequest(str(exc)) from exc
         self._audit(session.actor, "model", "generate", True,
