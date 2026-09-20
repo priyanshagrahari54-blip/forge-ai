@@ -37,6 +37,9 @@ def build_app():
         local_dev_mode=os.environ.get("FORGE_AUTH_MODE", "production") != "production",
     )
     plane = ControlPlane(config)
+    # Production must start the durable control-plane dispatcher; otherwise
+    # tasks are persisted as QUEUED but nothing consumes the queue.
+    plane.start()
     app = create_app(
         plane,
         ApiConfig(
