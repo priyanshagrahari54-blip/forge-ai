@@ -20,7 +20,9 @@ async def generate(body: ModelGenerateRequest,
     try:
         return plane.model_generate(
             current.session, body.prompt, capability=body.capability,
-            approval_id=body.approval_id)
+            approval_id=body.approval_id,
+            preferred_models=tuple(body.preferred_models),
+            fallback_models=tuple(body.fallback_models))
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
