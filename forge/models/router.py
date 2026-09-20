@@ -245,9 +245,41 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
+        preferred_order = {
+            name: index for index, name in enumerate(request.effective_model_preferences())
+        }
+        fallback_order = {
+            name: index for index, name in enumerate(request.fallback_models)
+        }
+
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
-            return (-_score, 0 if model.free else 1, 0 if model.local else 1, model.name)
+            if model.name in preferred_order:
+                return (
+                    0,
+                    preferred_order[model.name],
+                    -_score,
+                    0 if model.free else 1,
+                    0 if model.local else 1,
+                    model.name,
+                )
+            if model.name in fallback_order:
+                return (
+                    2,
+                    fallback_order[model.name],
+                    -_score,
+                    0 if model.free else 1,
+                    0 if model.local else 1,
+                    model.name,
+                )
+            return (
+                1,
+                0,
+                -_score,
+                0 if model.free else 1,
+                0 if model.local else 1,
+                model.name,
+            )
 
         scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
         scored.sort(key=rank)
@@ -272,6 +304,11 @@ class FabricRouter:
             "health": model.health.status,
             "capability": request.capability,
             "complexity": request.complexity,
+            "preference_rank": (
+                preferred_order.get(model.name)
+                if model.name in preferred_order
+                else None
+            ),
         }
         return RouteDecision(
             model=model,
