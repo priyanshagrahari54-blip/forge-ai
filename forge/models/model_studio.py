@@ -261,6 +261,15 @@ class ModelStudio:
     def trainers(self) -> List[str]:
         return sorted(self._trainers)
 
+    def trainer(self, name: str) -> Optional[TrainingBackend]:
+        """The registered backend called *name*, or None.
+
+        Preflight asks the *selected* backend what it needs, so a backend that
+        does not use the HuggingFace stack is not blocked by that stack being
+        absent.
+        """
+        return self._trainers.get(_clean_text(name, max_chars=128))
+
     def validate_dataset(self, records: Iterable[Mapping[str, Any]]) -> Tuple[List[Dict[str, str]], DatasetReport]:
         accepted: List[Dict[str, str]] = []
         issues: List[DatasetIssue] = []

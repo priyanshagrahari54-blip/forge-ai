@@ -1,6 +1,10 @@
 # Forge AI — production readiness report
 
-Date: 2026-09-19 · Branch: `arena/01a0b955-forge-ai` (commit `46ae18b`) · PR #46
+Date: 2026-09-20 · Branch: `arena/01a0b955-forge-ai` · PR #46
+
+Sections 1-4 were verified on 2026-09-19; the multimodal, outbound-channel
+and CI sections were added on 2026-09-20 and are marked with the run that
+produced them.
 
 Everything below was observed in this checkout or against the live service.
 Nothing is claimed from a summary; states are the ones the runtime itself
@@ -22,6 +26,9 @@ reports. Reproduce with the commands in the last section.
 | Multi-server routing | numbered env / JSON endpoint lists parsed and deduped; same model pools, different models get their own providers and tiers (**8 tests**) |
 | Fine-tuning | a **real LoRA fine-tune** ran against the served GGUF: 758 examples, 24 steps, **loss 3.52 → 0.50** (held-out 0.87), 460,800 trainable params, 47 s, `adapter.gguf` + `adapter_model.safetensors` + loss curve written. Evidence: `docs/evidence/finetune-lora-2026-09-19.json` |
 | Serving the fine-tuned adapter | **verified by the runtime itself**: `llama-server --lora adapter.gguf` started and `GET /lora-adapters` returned `{"id": 0, "path": ".../adapter.gguf", "scale": 1.0}`; Forge then answered a documentation task through that endpoint (`provider=local-openai`, success) |
+| CI failure root-caused and fixed | The branch's CI had been red on all three Python versions. Reproduced in a clean venv that matches CI (`pip install -e ".[dev]"`, no torch): **4 failures** — three fine-tune preflight tests (the job demanded the HuggingFace stack even for a *registered* backend that does not use it) and the Python 3.8 compat gate (`Path.is_relative_to`). Both fixed; the same CI-shaped venv now runs **3328 passed, 7 skipped, 0 failed** (764 s) |
+| Multimodal specialists (100) | 25 per modality (vision, image generation, speech-to-text, text-to-speech). Registration is evidence-based: **0/100 registered in an unconfigured environment**, each missing modality reported with its exact env var. Backed end to end against real HTTP endpoints (data-URI chat message, multipart WAV upload, `/v1/audio/speech`, `/v1/images/generations`) — **14 tests** |
+| Outbound channels | WhatsApp Cloud API, Twilio SMS, Twilio **voice call** (TwiML) and **SMTP email** implemented and wired to the voice intents. Tested against real HTTP servers and a real SMTP dialogue (greeting, EHLO/AUTH, MAIL/RCPT/DATA) — **14 tests**. Unconfigured channels are not registered and name their exact variables |
 
 ## 2. Implementations
 
@@ -121,6 +128,36 @@ reports. Reproduce with the commands in the last section.
 - AI City is reachable from the main navigation (`#/city`) and renders backend
   state only ("REAL BACKEND EVENTS / NO SYNTHETIC PROGRESS"); its bearer token
   is kept in `sessionStorage`, not `localStorage`.
+
+**Multimodal models on your own servers** (`forge/models/multimodal_bridge.py`,
+`forge/agents/multimodal_fleet.py`, `forge/vision/local.py`,
+`forge/voice/local_audio.py`)
+- Four self-hosted endpoints are bridged into the fabric as ordinary models:
+  `FORGE_VISION_URL` (VL model on llama.cpp/vLLM/Ollama), `FORGE_STT_URL`
+  (whisper), `FORGE_TTS_URL` (Piper/Coqui), `FORGE_IMAGE_URL`
+  (LocalAI/diffusion bridge). No cloud credential is needed for any of them.
+- A model is registered **only** for a modality whose endpoint is configured, so
+  a registry entry always has a real backend. The 100 specialists register per
+  modality: 25 vision, 25 image-generation, 25 speech-to-text, 25 text-to-speech.
+- Media travels as a `data:` URI or a file path, and file paths are read only
+  under `FORGE_MULTIMODAL_INPUT_DIR` — a prompt cannot make Forge read an
+  arbitrary file. A failing endpoint raises a real error; it is never an empty
+  success. `probe_multimodal()` performs the tiny real request that moves a
+  modality to `verified`.
+- `GET /api/v1/multimodal` reports registered models and, per modality, the exact
+  requirement when it is missing.
+
+**Outbound channels: WhatsApp, SMS, voice call, email**
+(`forge/comms/channels.py`, control-plane intent delivery, `GET /api/v1/channels`)
+- Channel registry that registers a channel only when it is fully configured; a
+  half-configured channel is reported with the variables it needs instead of
+  being listed as available.
+- Sends are real provider calls returning the provider's own message id and
+  status, or the provider's own error. `send_email` prefers SMTP; the
+  completion notifier keeps the existing Resend path.
+- A missing recipient is reported as `no_recipient`; nothing is sent and no
+  address is invented. Sending stays behind the existing permission/approval
+  path (delivery happens only for an approved voice intent).
 
 ## 3. Live providers
 
@@ -257,8 +294,10 @@ resolved by self-hosting a real model)
   `scripts/run_fleet_real.py`. The state flips from CONFIGURED to LIVE only
   when a model is runtime-verified.
 
-**1b. Vision / audio / browser / computer-use specialists (100 of 1000)** —
-BLOCKED
+**1b. Vision / audio / browser / computer-use specialists (the 100 of
+1000 that a text model cannot serve)** — BLOCKED on the *endpoint* (see
+item 4 for the four implemented bridges; browser/computer-use remain
+adapter work)
 - *Reason*: the live self-hosted model is a **text** instruct model; it declares
   coding, debugging, documentation, planning, reasoning, research, review,
   security, structured_output and testing. No configured model declares
@@ -307,15 +346,36 @@ environment** — BLOCKED (quality, not plumbing)
   (or the cloud config) and re-run `scripts/run_fleet_real.py`; no code change
   is needed.
 
-**3. WhatsApp / email / phone calls** — MISSING (not implemented)
-- *Reason*: no adapter exists anywhere in the codebase (`grep -ri whatsapp`
-  finds only the voice intent and its task-description string).
-- *Already implemented*: intent recognition (`send_whatsapp`, `send_email`,
-  `make_call`) and confirm-before-execute, which creates a normal task
-  requirement.
-- *Exact requirement*: add a real provider (e.g. WhatsApp Business Cloud API
-  or Twilio) behind the existing task/agent path; until then the capability is
-  reported MISSING and no surface claims it works.
+**3. Outbound channels need the operator's credentials** — BLOCKED (only the
+credentials)
+- *Reason*: the adapters are implemented and tested, but this environment has no
+  WhatsApp/Twilio/SMTP account, so nothing can be sent from here and no send is
+  claimed. In an unconfigured deployment `GET /api/v1/channels` reports every
+  channel with `configured: false` and the variables it needs.
+- *Already implemented*: WhatsApp Cloud API, Twilio SMS, Twilio voice call
+  (TwiML), SMTP email; intent wiring for `send_whatsapp`, `send_sms`,
+  `make_call`, `send_email`; real provider-response reporting; 14 tests driving
+  real HTTP servers and a real SMTP dialogue.
+- *Exact requirement*: set `FORGE_WHATSAPP_TOKEN` + `FORGE_WHATSAPP_PHONE_ID`,
+  or `FORGE_TWILIO_ACCOUNT_SID` + `FORGE_TWILIO_AUTH_TOKEN` + `FORGE_TWILIO_FROM`,
+  or `FORGE_SMTP_HOST` + `FORGE_SMTP_FROM` (plus AUTH if required) on the
+  service; then `GET /api/v1/channels` lists them as configured and a voice
+  intent sends for real.
+
+**4. Multimodal endpoints on your servers** — BLOCKED (only the endpoints)
+- *Reason*: there is no vision, speech or diffusion server reachable from this
+  environment, so 0/100 multimodal specialists are registered here. Nothing is
+  claimed: the readiness report prints `0/100, state MISSING` with the four
+  variables.
+- *Already implemented*: the four bridges, capability-gated registration, the
+  100 specialists, `probe_multimodal()`, the API surface and 14 tests against
+  real HTTP endpoints.
+- *Exact requirement*: run the endpoint(s) on your GPU/server box and set
+  `FORGE_VISION_URL` (VL GGUF on llama.cpp/vLLM/Ollama), `FORGE_STT_URL`
+  (whisper), `FORGE_TTS_URL` (Piper/Coqui), `FORGE_IMAGE_URL` (LocalAI/SD
+  bridge); `python scripts/verify_production_readiness.py` then shows the
+  modality READY with 25/25 specialists. Steps:
+  `docs/ENABLE-MULTIMODAL-AND-COMMS.md`.
 
 ## 6b. Deployment shape: servers do the work, thin clients just connect
 

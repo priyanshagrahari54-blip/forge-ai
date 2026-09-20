@@ -45,7 +45,14 @@ _TRAINING_STACK = {
     "torch": "pip install torch (CPU build is enough for a small model)",
     "transformers": "pip install transformers",
     "peft": "pip install peft",
+    "gguf": "pip install gguf",
+    "tokenizers": "pip install tokenizers",
 }
+
+
+def _requirement_hint(module: str) -> str:
+    """The pip line for a missing module, named exactly."""
+    return _TRAINING_STACK.get(module, f"pip install {module}")
 
 
 @dataclass
@@ -77,13 +84,38 @@ class FineTuneJob:
         self.blockers = []
         self.requirements = []
 
-        missing = [name for name in _TRAINING_STACK
-                   if _importable(name) is None]
-        if missing:
-            self.blockers.append(
-                "training stack is not installed: " + ", ".join(missing))
-            self.requirements.extend(
-                _TRAINING_STACK[name] for name in missing)
+        #: What must be installed depends on *which* trainer runs. A backend
+        #: that never touches the HuggingFace stack (the GGUF LoRA trainer, or
+        #: an operator's own backend) must not be blocked because torch is
+        #: absent — that was a real bug: a registered, self-declared-available
+        #: backend could never reach READY on a machine without torch.
+        backend = (self.studio.trainer(self.trainer)
+                   if self.trainer in self.studio.trainers() else None)
+        if backend is not None:
+            declared = tuple(getattr(backend, "requires", ()) or ())
+            missing = [name for name in declared if _importable(name) is None]
+            if missing:
+                self.blockers.append(
+                    "training stack is not installed: " + ", ".join(missing))
+                self.requirements.extend(
+                    _requirement_hint(name) for name in missing)
+            elif not self._backend_available(backend):
+                #: No stack module is missing, so the backend's own reason is
+                #: reported instead of an invented requirement.
+                self.blockers.append(
+                    f"trainer {self.trainer!r} reports it cannot run here "
+                    "(its available() check fails — e.g. no base model or no "
+                    "GPU it requires)")
+                self.requirements.append(
+                    f"inspect the {self.trainer!r} trainer configuration")
+        else:
+            missing = [name for name in _TRAINING_STACK
+                       if _importable(name) is None]
+            if missing:
+                self.blockers.append(
+                    "training stack is not installed: " + ", ".join(missing))
+                self.requirements.extend(
+                    _requirement_hint(name) for name in missing)
 
         if not self.trainer:
             self.blockers.append(
@@ -110,6 +142,19 @@ class FineTuneJob:
 
         self.state = JobState.BLOCKED if self.blockers else JobState.READY
         return self.state
+
+    @staticmethod
+    def _backend_available(backend: Any) -> bool:
+        """Whether the backend itself says it can run (never assumed)."""
+        available = getattr(backend, "available", None)
+        if not callable(available):
+            #: A backend that does not implement the check is taken at its
+            #: word: the trainer contract makes ``available`` optional.
+            return True
+        try:
+            return bool(available())
+        except Exception:                                     # noqa: BLE001
+            return False
 
     # -- training ------------------------------------------------------------
 

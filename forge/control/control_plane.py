@@ -553,7 +553,7 @@ class ControlConfig:
                 f"Unknown FORGE_DESKTOP_PROVIDER {provider_name!r}; "
                 "A35 supports 'fake' only")
         _VOICE_VALID = {"simulated", "openai-whisper", "openai-tts",
-                        "unconfigured"}
+                        "local-whisper", "local-tts", "unconfigured"}
         for key, env_name in (("voice_stt_provider", "FORGE_VOICE_STT_PROVIDER"),
                               ("voice_tts_provider", "FORGE_VOICE_TTS_PROVIDER")):
             name = os.environ.get(env_name, "").strip()
@@ -604,6 +604,20 @@ class ControlPlane:
         else:
             from forge.models.fabric import ModelFabric
             self.fabric = ModelFabric.from_defaults()
+        #: Self-hosted vision/speech/image endpoints become real fabric models.
+        #: Registration is offline and idempotent: a modality with no endpoint
+        #: registers nothing and stays reported as missing, so no capability is
+        #: ever claimed just because this code exists.
+        self.multimodal_report: dict[str, Any] = {}
+        try:
+            from forge.models.multimodal_bridge import register_multimodal_models
+            self.multimodal_report = register_multimodal_models(self.fabric)
+        except Exception as exc:                              # noqa: BLE001
+            #: Never fail construction over an optional capability, but never
+            #: hide it either: the reason is kept for the readiness surface.
+            self.multimodal_report = {
+                "schema_version": 1, "registered": [], "available": [],
+                "gaps": [], "error": str(exc)[:300]}
         self.policy = config.policy
         # A35 Desktop Agent: controlled execution through the existing A33
         # policy/approval/audit systems. Provider defaults to the
@@ -1678,8 +1692,11 @@ class ControlPlane:
     def _voice_stack(self) -> Any:
         """Voice loop with configurable providers (simulated by default).
 
-        Real providers (openai-whisper, openai-tts) require
-        OPENAI_API_KEY and are labeled ``simulation=False``.
+        Real providers are labeled ``simulation=False``. Two families:
+        ``openai-whisper``/``openai-tts`` need ``OPENAI_API_KEY``, while
+        ``local-whisper``/``local-tts`` need no credential at all — they call
+        an OpenAI-compatible audio endpoint you host yourself
+        (``FORGE_STT_URL`` / ``FORGE_TTS_URL``).
         """
         from forge.voice import (SimulatedSpeechSynthesizer,
                                  SimulatedSpeechToText,
@@ -1692,6 +1709,9 @@ class ControlPlane:
             if stt_name == "openai-whisper":
                 from forge.voice.openai_stt import OpenAISpeechToText
                 transcriber: Any = OpenAISpeechToText()
+            elif stt_name == "local-whisper":
+                from forge.voice.local_audio import LocalSpeechToText
+                transcriber = LocalSpeechToText()
             elif stt_name == "simulated":
                 transcriber = SimulatedSpeechToText()
             else:
@@ -1703,6 +1723,9 @@ class ControlPlane:
             if tts_name == "openai-tts":
                 from forge.voice.openai_tts import OpenAISpeechSynthesizer
                 synthesizer: Any = OpenAISpeechSynthesizer()
+            elif tts_name == "local-tts":
+                from forge.voice.local_audio import LocalSpeechSynthesizer
+                synthesizer = LocalSpeechSynthesizer()
             elif tts_name == "simulated":
                 synthesizer = SimulatedSpeechSynthesizer()
             else:
@@ -1920,6 +1943,15 @@ class ControlPlane:
                 except Exception:
                     text = "Status is unavailable right now."
                 return {"kind": "reply", "text": text}
+            #: Communication intents deliver through a configured channel.
+            #: Delivery happens *after* the voice permission check (the caller
+            #: runs this factory only for an approved intent), and only when a
+            #: channel is actually configured and the message body is known —
+            #: otherwise the intent falls through to the task path, which is
+            #: honest about not being able to send.
+            delivery = self._deliver_voice_message(name, slots)
+            if delivery is not None:
+                return delivery
             requirement = self.VOICE_INTENT_REQUIREMENTS.get(name)
             if requirement is None:
                 return {"kind": "unhandled", "intent": name}
@@ -1933,6 +1965,77 @@ class ControlPlane:
                         "message": str(exc)}
             return {"kind": "task", **run.to_dict()}
         return factory
+
+    #: Voice intents that map onto a real outbound channel send.
+    COMMS_INTENTS = {
+        "send_whatsapp": "send_whatsapp",
+        "make_call": "make_call",
+        "send_sms": "send_sms",
+        "send_email": "send_email",
+    }
+
+    #: Which registry channel backs each intent; an intent whose channel is not
+    #: configured is never delivered and falls through to the task path.
+    COMMS_CHANNELS = {
+        "send_whatsapp": "whatsapp-cloud",
+        "send_sms": "twilio-sms",
+        "make_call": "twilio-voice",
+        "send_email": "smtp-email",
+    }
+
+    def channels(self) -> Any:
+        """The outbound channel registry for this deployment (cached)."""
+        registry = getattr(self, "_channel_registry", None)
+        if registry is None:
+            from forge.comms import ChannelRegistry
+            registry = ChannelRegistry.from_env()
+            self._channel_registry = registry
+        return registry
+
+    def _deliver_voice_message(self, name: str, slots: dict) -> Any:
+        """Send through a configured channel, or return None to fall through.
+
+        The message body is taken from the parsed slots; without a body there is
+        nothing to send, and Forge must not invent one. A send result is
+        reported verbatim (provider id, status code, error), never as a bare
+        success.
+        """
+        action = self.COMMS_INTENTS.get(name)
+        if action is None:
+            return None
+        registry = self.channels()
+        if not registry.has(self.COMMS_CHANNELS[action]):
+            return None
+        body = ""
+        for key in ("text", "message", "body", "content", "target"):
+            value = slots.get(key)
+            if isinstance(value, str) and value.strip():
+                body = value.strip()
+                break
+        if not body:
+            return None
+        recipient = ""
+        for key in ("to", "recipient", "phone", "number"):
+            value = slots.get(key)
+            if isinstance(value, str) and value.strip():
+                recipient = value.strip()
+                break
+        if action == "send_whatsapp":
+            result = registry.send_whatsapp(body, to=recipient)
+        elif action == "send_sms":
+            result = registry.send_sms(body, to=recipient)
+        elif action == "send_email":
+            subject = str(slots.get("subject") or "").strip() or \
+                "Forge notification"
+            result = registry.send_email(body, to=recipient, subject=subject)
+        else:
+            result = registry.make_call(body, to=recipient)
+        self._audit("voice", result.channel, action, result.ok,
+                    reason=(f"{action} via {result.channel}: "
+                            f"{'sent' if result.ok else result.error or 'failed'}"))
+        return {"kind": "sent" if result.ok else "send_failed",
+                "channel": result.channel,
+                "result": result.to_dict()}
 
     @staticmethod
     def _voice_audio_chunk(audio_b64: str) -> Any:

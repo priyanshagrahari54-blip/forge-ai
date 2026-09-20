@@ -301,9 +301,18 @@ class Supervisor:
             #: event: A32 telemetry has a closed event-name contract, so a new
             #: event name must not be introduced to carry extra detail.
             fleet_registered_agents = 0
+            multimodal_report: dict[str, Any] = {}
             if fabric is not None:
                 from forge.agents.frontier_fleet import extend_registry_with_frontier_fleet
                 extend_registry_with_frontier_fleet(registry, fabric, minimum_size=1000)
+                #: The 100 multimodal specialists register only for modalities a
+                #: real model advertises; the rest stay defined and reported.
+                from forge.agents.multimodal_fleet import (
+                    extend_registry_with_multimodal_fleet)
+                from forge.models.multimodal_bridge import register_multimodal_models
+                register_multimodal_models(fabric)
+                multimodal_report = extend_registry_with_multimodal_fleet(
+                    registry, fabric)
                 fleet_registered_agents = len(registry)
             planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
@@ -324,6 +333,14 @@ class Supervisor:
             if fleet_registered_agents:
                 fleet_details["registered_agents"] = fleet_registered_agents
                 fleet_details["logical_fleet"] = True
+            if multimodal_report.get("registered"):
+                fleet_details["multimodal_specialists"] = int(
+                    multimodal_report["registered"])
+            if multimodal_report.get("missing_modalities"):
+                #: Honest state, in the existing event: a modality with no
+                #: endpoint is missing, never silently counted as staffed.
+                fleet_details["multimodal_missing"] = ",".join(
+                    multimodal_report["missing_modalities"])
             event("agents_selected", fleet_details)
             stage("AGENTS")
             stage("MODEL")

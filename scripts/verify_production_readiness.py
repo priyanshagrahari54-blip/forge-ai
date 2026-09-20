@@ -335,6 +335,29 @@ def _section_failover() -> dict:
     }
 
 
+def _section_multimodal(plane) -> dict:
+    """What the multimodal specialists can really do in this deployment."""
+    from forge.agents.multimodal_fleet import (SPECIALIST_NAMES,
+                                               multimodal_readiness)
+    from forge.models.multimodal_bridge import multimodal_specs
+
+    fabric = getattr(plane, "fabric", None)
+    reports = multimodal_readiness(fabric) if fabric is not None else ()
+    configured = [spec.to_dict() for spec in multimodal_specs()]
+    return {
+        "defined_specialists": len(SPECIALIST_NAMES),
+        "registered_specialists": sum(report.registered for report in reports),
+        "configured_endpoints": configured,
+        "modalities": [report.to_dict() for report in reports],
+        "ready": [report.family for report in reports if report.registered],
+        "missing": [report.family for report in reports if not report.registered],
+        "state": ("READY" if any(report.registered for report in reports)
+                  else "MISSING"),
+        "note": ("a modality is READY only when a registered model advertises "
+                 "its capability; nothing is registered from code alone"),
+    }
+
+
 def _section_finetune() -> dict:
     """Fine-tuning: what is installed, what is registered, what was trained.
 
@@ -411,6 +434,7 @@ def main() -> int:
             "web": _section_web(),
             "failover": _section_failover(),
             "finetune": _section_finetune(),
+            "multimodal": _section_multimodal(plane),
         }
         try:
             plane.stop(wait=False)
@@ -473,6 +497,15 @@ def main() -> int:
     print(f"quota failover         : cooldown {failover['cooldown_seconds']}s "
           f"(max {failover['max_cooldown_seconds']}s), exhausted now: "
           f"{failover['exhausted_now'] or 'none'}")
+    multimodal = report["multimodal"]
+    print(f"multimodal specialists : {multimodal['registered_specialists']}/"
+          f"{multimodal['defined_specialists']} registered, state "
+          f"{multimodal['state']}")
+    for row in multimodal["modalities"]:
+        detail = (", ".join(row["models"]) if row["models"]
+                  else row["requirement"] or row["reason"])
+        print(f"  {row['family']:<17} {row['status']:<8} "
+              f"{row['registered']}/{row['defined']} — {detail}")
     finetune = report["finetune"]
     print(f"fine-tuning            : trainers={finetune['registered_trainers'] or 'none'} "
           f"stack={ {k: v for k, v in finetune['training_stack'].items() if v} }")

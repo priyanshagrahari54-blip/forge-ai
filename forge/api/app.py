@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from forge.api import (
-    routes_approvals, routes_commands, routes_core, routes_memory,
+    routes_approvals, routes_channels, routes_commands, routes_core,
+    routes_memory, routes_multimodal,
     routes_tasks, routes_views, stream, routes_orchestrations,
     routes_vision, routes_computer, routes_agents, routes_voice_conversation,
     routes_conversation, routes_collaboration, routes_council, routes_models,
@@ -240,6 +241,7 @@ def create_app(plane: ControlPlane,
         routes_autonomy.router, routes_final.router, routes_staged.router,
         routes_compute.router, routes_engine.router, routes_milestones.router,
         routes_runtimes.router, routes_workers.router, routes_readiness.router,
+        routes_channels.router, routes_multimodal.router,
         stream.router,
     ):
         app.include_router(router, prefix="/api/v1")

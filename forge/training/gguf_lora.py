@@ -127,6 +127,9 @@ class GgufLoRATrainer(TrainingBackend):
 
     name = "gguf-lora"
 
+    #: Modules this trainer imports; preflight names them exactly.
+    requires: tuple[str, ...] = ("torch", "gguf", "tokenizers")
+
     def __init__(self, base_model: str | Path | None = None, *,
                  steps: int = 30, learning_rate: float = 3e-3,
                  rank: int = 8, alpha: int = 16, batch_size: int = 2,
