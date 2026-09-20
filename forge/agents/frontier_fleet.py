@@ -10,6 +10,7 @@ from typing import Any
 
 from forge.agents.execution import AgentExecutor, AgentRequest, AgentResponse
 from forge.agents.registry import AgentRegistration, AgentRegistry
+from forge.models.capabilities import ALL_CAPABILITIES
 from forge.models.request import ModelRequest
 
 
@@ -29,6 +30,52 @@ FRONTIER_MODELS: tuple[str, ...] = (
     "anthropic/claude-sonnet-4-6",
     "anthropic/claude-sonnet-4-5",
 )
+
+
+SPECIALIZATION_CAPABILITY_MAP: dict[str, tuple[str, ...]] = {
+    "planner": ("planning", "reasoning"),
+    "architect": ("reasoning", "coding"),
+    "researcher": ("research",),
+    "coder": ("coding",),
+    "frontend": ("coding",),
+    "backend": ("coding",),
+    "database": ("coding",),
+    "devops": ("coding",),
+    "debugger": ("debugging", "coding"),
+    "tester": ("testing", "coding"),
+    "reviewer": ("review", "reasoning"),
+    "security": ("security", "reasoning"),
+    "performance": ("coding", "reasoning"),
+    "refactor": ("coding",),
+    "documentation": ("documentation", "coding"),
+    "api": ("coding",),
+    "data": ("coding",),
+    "ml": ("coding", "reasoning"),
+    "vision": ("vision",),
+    "audio": ("audio",),
+    "game": ("coding", "reasoning"),
+    "os": ("coding", "reasoning"),
+    "browser": ("browser",),
+    "computer-use": ("computer_use",),
+    "ux": ("reasoning",),
+    "product": ("planning", "research"),
+    "qa": ("testing", "review"),
+    "compliance": ("security", "review"),
+    "privacy": ("security", "review"),
+    "localization": ("documentation", "reasoning"),
+    "math": ("reasoning",),
+    "science": ("reasoning", "research"),
+    "finance": ("reasoning",),
+    "legal": ("research", "reasoning"),
+    "prompt": ("reasoning", "documentation"),
+    "agentic": ("planning", "reasoning"),
+    "memory": ("reasoning",),
+    "orchestration": ("planning", "reasoning"),
+    "integration": ("coding",),
+    "release": ("testing", "coding"),
+}
+
+
 
 # 40 specializations x 26 model/strategy variants = 1,040 logical agents.
 SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -85,12 +132,14 @@ class FrontierModelAgentExecutor(AgentExecutor):
         model_name: str,
         capabilities: tuple[str, ...],
         fabric: Any,
+        specialization_tags: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.role = role
         self.model_name = model_name
         self.capabilities = capabilities
         self.fabric = fabric
+        self.specialization_tags = specialization_tags
 
     def execute(self, request: AgentRequest) -> AgentResponse:
         context = ""
@@ -105,6 +154,7 @@ class FrontierModelAgentExecutor(AgentExecutor):
             f"You are Forge specialist {self.name} ({self.role}). "
             f"Your declared capabilities are: {', '.join(self.capabilities)}. "
             f"Preferred model target: {self.model_name}. "
+            f"Specialization tags: {", ".join(self.specialization_tags) or "none"}. "
             "Route through the shared ModelFabric. "
             "Do not claim tool execution you did not perform.\n\n"
             + prompt
@@ -117,11 +167,13 @@ class FrontierModelAgentExecutor(AgentExecutor):
             context=context,
             capability=self.capabilities[0],
             required_capabilities=self.capabilities,
+            preferred_models=(self.model_name,),
             complexity=max(1.0, float(getattr(request.task, "attempts", 0) + 1)),
             metadata={
                 "agent": self.name,
                 "role": self.role,
                 "preferred_model": self.model_name,
+                "specialization_tags": ",".join(self.specialization_tags),
                 "fleet": "frontier-1000-plus",
             },
         )
@@ -153,7 +205,8 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
     The registry is lightweight. Actual model inference happens only when a
     selected specialist executes a task.
     """
-    target = max(1000, int(minimum_size))
+    variants_per_specialization = 26
+    target = max(1000, int(minimum_size), len(SPECIALIZATIONS) * variants_per_specialization)
     registrations: list[AgentRegistration] = []
     index = 0
     while len(registrations) < target:
@@ -164,15 +217,19 @@ def build_frontier_fleet(fabric: Any, *, minimum_size: int = 1000) -> AgentRegis
                 model_name = FRONTIER_MODELS[
                     (variant + index) % len(FRONTIER_MODELS)
                 ]
+                canonical_capabilities = SPECIALIZATION_CAPABILITY_MAP[specialization]
+                if any(capability not in ALL_CAPABILITIES for capability in canonical_capabilities):
+                    raise ValueError(f"Unknown canonical capability for {specialization}")
                 name = f"{specialization}-{variant + 1:02d}-{index + 1:04d}"
                 registrations.append(
                     AgentRegistration(
                         name,
                         role,
                         FrontierModelAgentExecutor(
-                            name, role, model_name, tuple(capabilities), fabric
+                            name, role, model_name, canonical_capabilities, fabric,
+                            specialization_tags=tuple(capabilities),
                         ),
-                        tuple(capabilities),
+                        canonical_capabilities,
                     )
                 )
                 index += 1
