@@ -111,6 +111,11 @@ class CallGraph:
         Indexing only the resolved target would make the common bare-name
         lookup miss every resolved edge.
         """
+        # Performance optimization (Bolt ⚡): Fast path for call sites with no candidates
+        # to avoid list allocation and linear deduplication loops on common single-callee sites.
+        if not site.candidates:
+            return (site.callee,) if site.callee else ()
+
         keys = [site.callee]
         keys.extend(site.candidates)
         seen: List[str] = []
@@ -276,6 +281,9 @@ class CallGraphIndexer:
         self.max_files = max(1, max_files)
 
     def build(self) -> CallGraph:
+        # Performance optimization (Bolt ⚡): Cache file reads and parsed AST trees
+        # in a single pass to eliminate 100% of duplicate filesystem I/O syscalls,
+        # relative path operations, and ast.parse overhead between Pass 1 and Pass 2.
         graph = CallGraph()
         suffixes = AST_SUFFIXES + (LEXICAL_SUFFIXES if self.include_lexical
                                    else ())
@@ -286,37 +294,87 @@ class CallGraphIndexer:
                 graph.truncated = True
                 break
 
-        # Pass 1: collect every function-like symbol so call edges can be
-        # resolved against real repository definitions.
-        definitions = self._collect_definitions(files)
+        definitions: Dict[str, Set[str]] = defaultdict(set)
+        cached_files: List[Tuple[str, Path, Optional[str], Optional[ast.AST], Optional[str]]] = []
+
+        # Pass 1: Read files, parse ASTs, and collect symbol definitions.
+        for path in files:
+            rel = path.relative_to(self.root).as_posix()
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                cached_files.append((rel, path, None, None, str(exc)))
+                continue
+
+            encoded_len = len(source.encode("utf-8", "replace"))
+            if encoded_len > MAX_FILE_BYTES:
+                cached_files.append(
+                    (rel, path, None, None, "file exceeds the size bound")
+                )
+                continue
+
+            suffix = path.suffix.lower()
+            if suffix in AST_SUFFIXES:
+                try:
+                    tree = ast.parse(source, filename=rel)
+                except (SyntaxError, ValueError) as exc:
+                    cached_files.append((rel, path, None, None, str(exc)))
+                    continue
+
+                self._collect_py_defs(tree, rel, definitions)
+                cached_files.append((rel, path, source, tree, None))
+            else:
+                for name in _lexical_definitions(source):
+                    definitions[name].add("%s:%s" % (rel, name))
+                cached_files.append((rel, path, source, None, None))
+
         graph.known_symbols = {
             name: tuple(sorted(qualified))
             for name, qualified in sorted(definitions.items())
         }
 
-        # Pass 2: extract call sites and resolve them.
-        for path in files:
-            rel = path.relative_to(self.root).as_posix()
+        # Pass 2: Extract call sites and resolve them using cached ASTs/sources.
+        for rel, path, source, tree, error in cached_files:
             graph.files_scanned += 1
-            try:
-                source = path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                graph.parse_errors.append({"file": rel, "error": str(exc)})
+            if error:
+                graph.parse_errors.append({"file": rel, "error": error})
                 continue
-            if len(source.encode("utf-8", "replace")) > MAX_FILE_BYTES:
-                graph.parse_errors.append(
-                    {"file": rel, "error": "file exceeds the size bound"})
-                continue
-            if path.suffix.lower() in AST_SUFFIXES:
-                self._index_python(rel, source, graph)
-            else:
+
+            if tree is not None:
+                graph.files_parsed += 1
+                self._index_python_tree(rel, tree, graph)
+            elif source is not None:
                 self._index_lexical(rel, source, graph)
+
         return graph
 
     # -- pass 1 ----------------------------------------------------------
 
+    def _collect_py_defs(
+        self, tree: ast.AST, rel: str, definitions: Dict[str, Set[str]]
+    ) -> None:
+        """Performance optimization (Bolt ⚡): Direct recursive definition collector
+
+        avoiding ast.walk deque allocation and iter_child_nodes inspection overhead.
+        """
+        def visit(node: ast.AST) -> None:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = self._python_qualifier(rel, node.name)
+                definitions[node.name].add(qualified)
+            for field in node._fields:
+                val = getattr(node, field, None)
+                if isinstance(val, ast.AST):
+                    visit(val)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, ast.AST):
+                            visit(item)
+
+        visit(tree)
+
     def _collect_definitions(self, files: Sequence[Path]
                              ) -> Dict[str, Set[str]]:
+        """Legacy helper maintained for backward compatibility."""
         definitions: Dict[str, Set[str]] = defaultdict(set)
         for path in files:
             rel = path.relative_to(self.root).as_posix()
@@ -330,11 +388,7 @@ class CallGraphIndexer:
                     tree = ast.parse(source, filename=rel)
                 except (SyntaxError, ValueError):
                     continue
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef,
-                                         ast.AsyncFunctionDef)):
-                        qualified = self._python_qualifier(rel, node.name)
-                        definitions[node.name].add(qualified)
+                self._collect_py_defs(tree, rel, definitions)
             else:
                 for name in _lexical_definitions(source):
                     definitions[name].add("%s:%s" % (rel, name))
@@ -351,18 +405,29 @@ class CallGraphIndexer:
     # -- pass 2 ----------------------------------------------------------
 
     def _index_python(self, rel: str, source: str, graph: CallGraph) -> None:
+        """Parse source string and extract Python call sites."""
         try:
             tree = ast.parse(source, filename=rel)
         except (SyntaxError, ValueError) as exc:
             graph.parse_errors.append({"file": rel, "error": str(exc)})
             return
         graph.files_parsed += 1
+        self._index_python_tree(rel, tree, graph)
+
+    def _index_python_tree(self, rel: str, tree: ast.AST, graph: CallGraph) -> None:
+        """Extract Python call sites from pre-parsed AST tree.
+
+        Performance optimization (Bolt ⚡): Maintain current_caller string on scope
+        push/pop rather than re-joining scope stack strings on every call site.
+        """
         module = rel[:-3].replace("/", ".")
         if module.endswith(".__init__"):
             module = module[: -len(".__init__")]
 
         # Walk with an explicit scope stack so the caller is always known.
         stack: List[str] = []
+        scope_prefix = "%s:" % module
+        current_caller = "%s<module>" % scope_prefix
         budget = [MAX_CALL_SITES_PER_FILE]
 
         def add_site(callee: str, line: int) -> None:
@@ -373,22 +438,27 @@ class CallGraphIndexer:
                 graph.truncated = True
                 return
             budget[0] -= 1
-            caller = "%s:%s" % (module, "".join(stack).rstrip(".")
-                                 or "<module>")
-            graph.add(self._resolve(rel, callee, caller, line, "ast", graph))
+            graph.add(self._resolve(rel, callee, current_caller, line, "ast", graph))
 
         def visit(node: ast.AST) -> None:
+            nonlocal current_caller
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                stack.append(node.name + ".")
+                prev_caller = current_caller
+                stack.append(node.name)
+                current_caller = "%s%s" % (scope_prefix, ".".join(stack))
                 for child in ast.iter_child_nodes(node):
                     visit(child)
                 stack.pop()
+                current_caller = prev_caller
                 return
             if isinstance(node, ast.ClassDef):
-                stack.append(node.name + ".")
+                prev_caller = current_caller
+                stack.append(node.name)
+                current_caller = "%s%s" % (scope_prefix, ".".join(stack))
                 for child in ast.iter_child_nodes(node):
                     visit(child)
                 stack.pop()
+                current_caller = prev_caller
                 return
             if isinstance(node, ast.Call):
                 callee = _python_callee_name(node.func)

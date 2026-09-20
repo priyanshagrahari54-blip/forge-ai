@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - CallGraphIndexer Duplicate File I/O and AST Re-parsing
+
+**Learning:** `CallGraphIndexer.build` executed two separate passes over repository source files: Pass 1 read files off disk and parsed ASTs to collect definition symbols, and Pass 2 read the exact same files off disk a second time and re-parsed the exact same ASTs to extract call sites. Additionally, AST scope strings were re-joined on every call site and `ast.walk` incurred high `iter_child_nodes` overhead.
+
+**Action:** Cache pre-read file contents and pre-parsed AST trees during Pass 1 so Pass 2 reuses them directly without duplicate I/O or parsing. Use direct AST field iteration for definition collecting and maintain stateful caller strings during scope push/pop.
