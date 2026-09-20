@@ -23,6 +23,10 @@ jobs:
           if [ "${{ matrix.python-version }}" = "3.8" ]; then
             python -m pip install -r requirements/py38-dev.txt
             python -m pip install -e . --no-deps
+          elif [ "${{ matrix.python-version }}" = "3.11" ]; then
+            # 3.11 is the interpreter the deployment image runs, so this leg
+            # installs exactly the extras the Dockerfile installs.
+            python -m pip install -e ".[dev,media]"
           else
             python -m pip install -e ".[dev]"
           fi
@@ -40,6 +44,32 @@ jobs:
               payload = response.json()
               assert payload.get("status") == "ok", payload
           print("Forge Web startup smoke test passed")
+          PY
+      - name: Local capability backends (deployment configuration)
+        if: matrix.python-version == '3.11'
+        run: |
+          python - <<'PY'
+          import importlib.util
+
+          from forge.models.local_capabilities import probe_local_capabilities
+
+          report = probe_local_capabilities()
+          for name, item in sorted(report["reports"].items()):
+              print(f"{name}: {item.get('probe')} {item.get('reason', '')}")
+          verified = set(report["verified"])
+          #: The image installs these packages. If one is present but its probe
+          #: did not pass, the deployment would advertise a capability it
+          #: cannot serve — so that mismatch fails here, not in production.
+          required = {"PIL": ("vision", "image_generation"),
+                      "espeakng_loader": ("text_to_speech",),
+                      "pocketsphinx": ("speech_to_text",)}
+          for module, capabilities in required.items():
+              if importlib.util.find_spec(module) is None:
+                  print(f"{module}: not installed on this job")
+                  continue
+              for capability in capabilities:
+                  assert capability in verified, report["reports"].get(capability)
+          print("verified local capabilities:", sorted(verified))
           PY
       - run: python -m compileall -q forge
       - run: git diff --check
