@@ -90,3 +90,32 @@ def test_service_fails_closed_when_exact_model_missing(tmp_path):
     assert snapshot["live"] == 0
     assert snapshot["counts"][RuntimeState.UNAVAILABLE.value] == 1
     assert snapshot["runtimes"][0]["last_reason"] == "exact model is not available"
+
+
+class InferenceProvider:
+    model = "model-a"
+    def generate(self, prompt, *, context="", task=""):
+        from forge.models.provider import ModelResult
+        return ModelResult("OK", self.model)
+
+
+class InferenceProviders(FakeProviders):
+    def __init__(self):
+        self.provider = InferenceProvider()
+
+
+def test_service_explicit_inference_probe_promotes_exact_runtime(tmp_path):
+    class Fabric(FakeFabric):
+        def __init__(self):
+            self.providers = InferenceProviders()
+            self.registry = FakeRegistry()
+
+    fabric = Fabric()
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json")
+    service.tick(now=100.0, force=True)
+    # The periodic check proves provider/model listing; this explicit endpoint
+    # path proves that the provider can actually return an inference response.
+    result = service.inference_check("fake", "model-a")
+    assert result["ok"] is True
+    assert result["state"] == RuntimeState.LIVE.value
+    assert result["probe"]["reason"] == "real inference probe succeeded"
