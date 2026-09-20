@@ -44,6 +44,15 @@ def build_app():
             secure_cookies=secure,
         ),
     )
+    try:
+        providers = plane.fabric.providers.names()
+        models = [str(item.get("name", "")) for item in plane.fabric.registry.snapshot() if isinstance(item, dict)]
+        print("[forge-runtime] providers=" + ",".join(providers))
+        print("[forge-runtime] registered_models=%d" % len(models))
+        if models:
+            print("[forge-runtime] model_ids=" + ",".join(models[:32]))
+    except Exception as exc:
+        print("[forge-runtime] diagnostics_error=%s" % type(exc).__name__)
     app.state.forge_plane = plane
     return app
 
