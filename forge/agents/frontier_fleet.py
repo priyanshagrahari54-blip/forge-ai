@@ -154,7 +154,7 @@ class FrontierModelAgentExecutor(AgentExecutor):
             f"You are Forge specialist {self.name} ({self.role}). "
             f"Your declared capabilities are: {', '.join(self.capabilities)}. "
             f"Preferred model target: {self.model_name}. "
-            f"Specialization tags: {\", \".join(self.specialization_tags) or \"none\"}. "
+            f"Specialization tags: {', '.join(self.specialization_tags) or 'none'}. "
             "Route through the shared ModelFabric. "
             "Do not claim tool execution you did not perform.\n\n"
             + prompt
