@@ -27,7 +27,7 @@ class FabricBridge:
     def generate(self, prompt: str, *, capability: str = "coding",
                  context: str = "",
                  preferred_models: tuple[str, ...] = (),
-                 fallback_models: tuple[str, ...] = "") -> dict[str, Any]:
+                 fallback_models: tuple[str, ...] = ()) -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be non-empty")
         request = ModelRequest(
