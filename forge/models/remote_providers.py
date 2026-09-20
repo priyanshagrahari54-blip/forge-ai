@@ -6,6 +6,7 @@ import os
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 from typing import Any
 
 from forge.models.provider import ModelResult, compose_provider_prompt
@@ -27,8 +28,15 @@ class HostedProvider:
             url, json.dumps(body).encode("utf-8"),
             {"Content-Type": "application/json", **headers},
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            raw = response.read(4 * 1024 * 1024 + 1)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read(4 * 1024 * 1024 + 1)
+        except urllib.error.HTTPError as exc:
+            # Keep diagnostics actionable without ever exposing response bodies,
+            # which may contain provider-specific request details.
+            raise RuntimeError(f"{self.name} HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"{self.name} network error: {exc.reason}") from exc
         if len(raw) > 4 * 1024 * 1024:
             raise RuntimeError(f"{self.name} response exceeded 4 MiB limit")
         data = json.loads(raw.decode("utf-8"))
@@ -161,7 +169,7 @@ def build_remote_providers(env: dict[str, str] | None = None) -> list[tuple[str,
         ("openrouter", OpenAICompatibleProvider, "https://openrouter.ai/api/v1",
          e.get("OPENROUTER_API_KEY", ""), e.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")),
         ("groq", OpenAICompatibleProvider, "https://api.groq.com/openai/v1",
-         e.get("GROQ_API_KEY", ""), e.get("GROQ_MODEL", "llama-3.3-70b-versatile")),
+         e.get("GROQ_API_KEY", ""), e.get("GROQ_MODEL", "openai/gpt-oss-120b")),
     ]
     out = []
     for name, cls, endpoint, key, model in specs:
