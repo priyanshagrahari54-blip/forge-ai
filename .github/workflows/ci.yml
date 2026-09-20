@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `main` is what deploys. `arena/**` is included because those branches
+    # carry the work in progress: without a push trigger their only feedback
+    # comes from the pull_request event, which GitHub stops emitting the moment
+    # the branch falls behind main and the pull request turns conflicting — the
+    # exact situation where a green run is most needed.
+    branches: [main, 'arena/**']
   pull_request:
 
 jobs:
