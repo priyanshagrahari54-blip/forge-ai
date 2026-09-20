@@ -44,11 +44,16 @@ class ModelRouter:
     """
 
     def __init__(self, models: list[ModelInfo] | None = None) -> None:
-        self.models = list(models or [])
+        self.models: list[ModelInfo] = []
+        # Cache models by name for O(1) lookup during high-frequency feedback recording.
+        self._by_name: dict[str, ModelInfo] = {}
         self.history: list[dict[str, Any]] = []
+        for model in models or []:
+            self.register(model)
 
     def register(self, model: ModelInfo) -> None:
         self.models.append(model)
+        self._by_name[model.name] = model
 
     def decide(self, capability: str, *, min_context_size: int = 0,
                max_cost: float | None = None, max_latency: float | None = None,
@@ -89,15 +94,24 @@ class ModelRouter:
 
     def record(self, model_name: str, success: bool, latency: float | None = None,
                *, capability: str = "", task_complexity: float | None = None) -> None:
-        for model in self.models:
-            if model.name != model_name:
-                continue
+        # Fast path O(1) lookup via _by_name index instead of linear list scan O(N).
+        model = self._by_name.get(model_name)
+        if model is None:
+            # Fallback if self.models was mutated directly outside register()
+            for m in self.models:
+                if m.name == model_name:
+                    model = m
+                    self._by_name[model_name] = m
+                    break
+
+        if model is not None:
             # Exponential smoothing makes recent real outcomes influence the
             # next routing decision while preserving initial model metadata.
             model.historical_success_rate = (model.historical_success_rate + (1.0 if success else 0.0)) / 2
             model.failure_rate = 1.0 - model.historical_success_rate
             if latency is not None:
                 model.latency = (model.latency + latency) / 2
+
         self.history.append({
             "model": model_name,
             "capability": capability,
