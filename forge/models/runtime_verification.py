@@ -63,6 +63,64 @@ def apply_probe_result(registry: ModelRegistry, result: RuntimeProbeResult) -> M
     return model
 
 
+def probe_provider_inference(provider: Any, model_id: str) -> RuntimeProbeResult:
+    """Perform one bounded real inference probe against an exact provider/model.
+
+    This is intentionally explicit rather than part of the periodic health loop:
+    calling a paid provider every monitor tick would create hidden usage/cost.
+    The probe requires a non-empty model response and, when the adapter exposes
+    its model identity, refuses a response from a different model.
+    """
+    started = monotonic()
+    try:
+        configured = str(getattr(provider, "model", "") or "")
+        expected = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        if configured and configured != expected and configured != model_id:
+            return RuntimeProbeResult(
+                model_id=model_id,
+                ok=False,
+                latency_ms=(monotonic() - started) * 1000.0,
+                status=HealthStatus.UNHEALTHY.value,
+                reason="provider is configured for a different model",
+            )
+        result = provider.generate(
+            "Reply with exactly OK. This is a Forge runtime verification probe.",
+            task="Forge runtime verification.",
+        )
+        returned = str(getattr(result, "model", "") or "")
+        if returned and returned not in {model_id, expected, configured}:
+            return RuntimeProbeResult(
+                model_id=model_id,
+                ok=False,
+                latency_ms=(monotonic() - started) * 1000.0,
+                status=HealthStatus.UNHEALTHY.value,
+                reason="provider returned a different model identity",
+            )
+        response_text = str(getattr(result, "text", "") or "").strip()
+        if not response_text:
+            return RuntimeProbeResult(
+                model_id=model_id,
+                ok=False,
+                latency_ms=(monotonic() - started) * 1000.0,
+                status=HealthStatus.UNHEALTHY.value,
+                reason="provider returned an empty inference response",
+            )
+        return RuntimeProbeResult(
+            model_id=model_id,
+            ok=True,
+            latency_ms=(monotonic() - started) * 1000.0,
+            status=HealthStatus.HEALTHY.value,
+            reason="real inference probe succeeded",
+        )
+    except Exception as exc:
+        return RuntimeProbeResult(
+            model_id=model_id,
+            ok=False,
+            latency_ms=(monotonic() - started) * 1000.0,
+            status=HealthStatus.UNHEALTHY.value,
+            reason=f"probe-error:{type(exc).__name__}:{exc}",
+        )
+
 def verify_model(
     registry: ModelRegistry,
     model_id: str,
