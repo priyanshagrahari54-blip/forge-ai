@@ -827,6 +827,8 @@ class ServerInferenceService:
             except (TypeError, ValueError):
                 raise InvalidRequest("temperature must be a number") from None
         model = str(payload.get("model") or "")[:200]
+        preferred_models = tuple(str(item)[:200] for item in (payload.get("preferred_models") or ()) if str(item).strip())[:16]
+        fallback_models = tuple(str(item)[:200] for item in (payload.get("fallback_models") or ()) if str(item).strip())[:16]
         backend = str(payload.get("backend") or "")[:64]
         return ModelRequest(
             prompt=prompt, context=context, capability=capability,
@@ -838,7 +840,8 @@ class ServerInferenceService:
             complexity=max(0.0, min(100.0, float(payload.get("complexity")
                                                  or 1.0))),
             temperature=temperature,
-            model=model, backend=backend,
+            model=model, preferred_models=preferred_models, fallback_models=fallback_models,
+            backend=backend,
             timeout=timeout or self.config.default_timeout_seconds,
             classification=str(payload.get("classification") or "")[:16],
             network_policy=str(payload.get("network_policy") or "")[:16],
