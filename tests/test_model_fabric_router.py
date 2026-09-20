@@ -119,3 +119,32 @@ def test_regular_models_beat_fallback_models():
     assert decision.model.name == "real"
     # The no-op still appears at the end of the candidate chain for failover.
     assert decision.candidates[-1] == "noop"
+
+
+def test_preferred_model_chain_wins_only_when_eligible():
+    fast = Model(name="fast", provider="p", capabilities=("coding",), reliability=1.0)
+    preferred = Model(name="preferred", provider="p", capabilities=("coding",), reliability=0.5)
+    router = make_router([fast, preferred])
+    decision = router.route(ModelRequest(
+        prompt="x", capability="coding", preferred_models=("preferred",)
+    ))
+    assert decision.model.name == "preferred"
+    assert decision.candidates[0] == "preferred"
+    assert decision.factors["preference_rank"] == 0
+
+def test_preferred_model_cannot_bypass_capability_filter():
+    coder = Model(name="coder", provider="p", capabilities=("coding",))
+    vision = Model(name="vision", provider="p", capabilities=("vision",))
+    router = make_router([coder, vision])
+    decision = router.route(ModelRequest(
+        prompt="x", capability="coding", preferred_models=("vision",)
+    ))
+    assert decision.model.name == "coder"
+
+def test_explicit_model_is_first_preference():
+    first = Model(name="first", provider="p", capabilities=("coding",), reliability=0.5)
+    second = Model(name="second", provider="p", capabilities=("coding",), reliability=1.0)
+    router = make_router([first, second])
+    decision = router.route(ModelRequest(prompt="x", capability="coding", model="first"))
+    assert decision.model.name == "first"
+    assert decision.candidates[0] == "first"
