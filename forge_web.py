@@ -51,6 +51,23 @@ def build_app():
         print("[forge-runtime] registered_models=%d" % len(models))
         if models:
             print("[forge-runtime] model_ids=" + ",".join(models[:32]))
+        for provider_name in providers:
+            provider = plane.fabric.providers.get(provider_name)
+            list_models = getattr(provider, "list_models", None)
+            if callable(list_models):
+                try:
+                    discovered = [str(x) for x in (list_models() or []) if str(x)]
+                    configured = [m for m in models if m.startswith(provider_name + "/")]
+                    matches = any(
+                        m.split("/", 1)[1] in discovered
+                        for m in configured
+                        if "/" in m
+                    )
+                    print("[forge-runtime] discovery provider=%s advertised=%s configured_model_seen=%s count=%d"
+                          % (provider_name, bool(discovered), matches, len(discovered)))
+                except Exception as exc:
+                    print("[forge-runtime] discovery provider=%s error=%s"
+                          % (provider_name, type(exc).__name__))
     except Exception as exc:
         print("[forge-runtime] diagnostics_error=%s" % type(exc).__name__)
     app.state.forge_plane = plane
