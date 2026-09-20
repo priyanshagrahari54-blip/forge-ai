@@ -14,7 +14,8 @@ reports. Reproduce with the commands in the last section.
 
 | Check | Result |
 | --- | --- |
-| `python -m pytest -q` | **3296 passed, 6 skipped, 0 failed** (665 s) — baseline before this work was 112 failures |
+| `python -m pytest -q` | **3352 passed, 6 skipped, 0 failed** (693 s) in this checkout's dev venv (torch + the fine-tune stack installed). Baseline before this work was 112 failures |
+| **Branch CI is green** | Run [35487573208](https://github.com/priyanshagrahari54-blip/forge-ai/actions/runs/35487573208) on `f851f2f`: **all three jobs pass** — Python 3.8 (15m19s), 3.11 (13m13s), 3.13 (13m57s). The three previous runs were red; each of the three jobs was down to exactly one failure and each was a real defect, root-caused and fixed (row below) |
 | `node --test tests/web/*.test.cjs` | **11 passed, 0 failed** (4 of them failed at `HEAD`) |
 | `scripts/verify_production_readiness.py` | 1000 registered specialists / 40 roles (25 each), 40/40 representatives routed through a real `ModelFabric`, worker identity + capabilities survive restart with `live_count = 0` before a heartbeat |
 | Runtime capability states | LIVE 5 · READY 1 · SIMULATED 2 · BLOCKED 1 · ARCHITECTURE 6 (details below) |
@@ -25,6 +26,7 @@ reports. Reproduce with the commands in the last section.
 | Provider quota failover | exhausted-provider classification, same-model endpoint rotation, cooldown skip and recovery: **19 tests**, incl. real HTTP 429/500 servers |
 | Multi-server routing | numbered env / JSON endpoint lists parsed and deduped; same model pools, different models get their own providers and tiers (**8 tests**) |
 | Fine-tuning | a **real LoRA fine-tune** ran against the served GGUF: 758 examples, 24 steps, **loss 3.52 → 0.50** (held-out 0.87), 460,800 trainable params, 47 s, `adapter.gguf` + `adapter_model.safetensors` + loss curve written. Evidence: `docs/evidence/finetune-lora-2026-09-19.json` |
+| Last three CI failures root-caused (all three jobs were down to one) | **3.8**: `classify_exhaustion` read `retry_after` off a `urllib` `HTTPError`, whose Python 3.8 attribute delegate raises `KeyError('file')` instead of `AttributeError` — a real 429 could not be classified, so an exhausted provider was invisible to failover. Attribute reads now go through `safe_attribute()` (still honours the stated `Retry-After`) and `FailoverPool` guards the same reads. **3.13**: the CRUD test demanded a created task still be `created`/`queued` while the worker is *supposed* to pick it up (observed `started`) — it now accepts any non-terminal state. **3.11**: `recover_stale_running(0.001)` raced the clock (the claim→query gap can be under 1 ms on a fast runner); the heartbeat is backdated instead, as its sibling test already did. Regression tests reproduce the 3.8 delegate on every interpreter. |
 | Fine-tune promotion gate (held-out) | A real end-to-end run on the served GGUF, then honest evaluation on a held-out 25% split: base model averaged **0.0000** on 6 held-out coding cases, the trained adapter **0.1308** (delta +0.1308). Both verdicts were produced by the gate: the 0.35 absolute floor **rejected** the adapter, the no-regression gate **promoted** it. A rejected adapter stays `candidate`; training alone never claims promotion. Evidence: `docs/evidence/finetune-promotion-2026-09-20.json` |
 | Per-specialisation fine-tuning (role filter) | `build_dataset(roles=[...])` narrows the dataset to one specialist's own answers (case/separator-insensitive) and keeps the unfiltered counts in `report["roles_before_filter"]`; an unknown role yields an **empty** dataset that trips the minimum-records preflight instead of silently training on other roles. `--coverage` audits the fleet evidence first: **36/36 roles are trainable** (758 validated rows, ≥ 8 each). Real runs: security 20 rows **0.2358** vs base 0.0, devops 25 rows **0.1382** vs 0.0, documentation 16 rows **0.1595** vs 0.0, privacy 19 rows **0.2250** vs base 0.0094 — all four promoted by the gate. Evidence: `docs/evidence/finetune-role-coverage-2026-09-20.json` |
 | Serving the fine-tuned adapter | **verified by the runtime itself**: `llama-server --lora adapter.gguf` started and `GET /lora-adapters` returned `{"id": 0, "path": ".../adapter.gguf", "scale": 1.0}`; Forge then answered a documentation task through that endpoint (`provider=local-openai`, success) |
@@ -315,17 +317,24 @@ adapter work)
   vision model), plus browser/computer-use backends for those two
   specializations; re-run the readiness script and the blocked counts drop.
 
-**2. Render deployment of this commit** — BLOCKED
-- *Reason*: no Render API key or deploy hook is available here, and this
-  session may only push `arena/01a0b955-forge-ai`. The live service answers
-  `/voice-playback.js` with 404, i.e. the deployed build predates commit
-  `3ad4a27`.
+**2. Render deployment of this commit** — BLOCKED (only the deploy trigger)
+- *Reason*: no Render API key or deploy hook exists in this environment, and this
+  session may only push `arena/01a0b955-forge-ai`. The live service is up
+  (`/api/v1/health` → `{"status":"ok","auth_mode":"production","worker":true}`
+  at 2026-09-20 04:0x UTC) but serves an **older build**: `/voice-playback.js`
+  still answers `{"error":{"code":"NOT_FOUND"}}`, and `/api/v1/multimodal` /
+  `/api/v1/channels` are not mounted there either.
 - *Already implemented*: Dockerfile, `forge_web` entrypoint, CI workflow,
-  `/api/v1/health`, safe static cockpit mount.
-- *Exact requirement*: merge PR #46 into the branch Render tracks (or trigger
-  "Deploy latest commit" for `forge-ai-server` in the Render dashboard), then
-  confirm `/voice-playback.js` returns 200 and `/api/v1/health` still reports
-  `status: ok`.
+  `/api/v1/health`, safe static cockpit mount, the new routes and the shared
+  voice playback module. PR #46 is **green and mergeable** at `f851f2f`.
+- *Exact requirement* (either one, ~2 minutes): **(a)** merge PR #46 into the
+  branch `forge-ai-server` tracks — if Auto-Deploy is on for that branch Render
+  rebuilds by itself; or **(b)** Render dashboard → `forge-ai-server` →
+  *Manual Deploy → Deploy latest commit* (or pick the branch/commit), or
+  `render deploys create <service-id> --commit f851f2f` with a Render API key.
+  *Verify*: `GET /voice-playback.js` → 200,
+  `GET /api/v1/multimodal` and `/api/v1/channels` → **401** without a token
+  (they are read-only and auth-protected), `GET /api/v1/health` → `status: ok`.
 
 **2b. Model quality: only a 135M-parameter model is reachable from this
 environment** — BLOCKED (quality, not plumbing)
