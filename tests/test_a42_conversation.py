@@ -65,7 +65,7 @@ def test_affirmative_then_executes_through_gate():
     tasks = []
     factory = lambda intent: tasks.append(intent.name) or {  # noqa: E731
         "kind": "task", "task_id": "t-9", "requirement": "run tests"}
-    conversation.say("run tests", task_factory=factory)
+    conversation.say("run tests", task_factory=factory, confirm=True)
     reply = conversation.say("yes", task_factory=factory)
     assert reply["status"] == "completed"
     assert tasks == ["run_tests"]
@@ -78,7 +78,7 @@ def test_negative_cancels_without_executing():
     tasks = []
     factory = lambda intent: tasks.append(intent.name) or {  # noqa: E731
         "kind": "task", "task_id": "t", "requirement": "x"}
-    conversation.say("run tests", task_factory=factory)
+    conversation.say("run tests", task_factory=factory, confirm=True)
     reply = conversation.say("cancel", task_factory=factory)
     assert reply["status"] == "completed"
     assert tasks == []
@@ -87,7 +87,7 @@ def test_negative_cancels_without_executing():
 
 def test_ambiguous_confirmation_answer_asks_again():
     conversation = VoiceConversation(interface(), "c6")
-    conversation.say("run tests")
+    conversation.say("run tests", confirm=True)
     reply = conversation.say("maybe later")
     assert reply["status"] == "awaiting_confirmation"
     assert "yes" in reply["spoken"].lower()
@@ -98,7 +98,7 @@ def test_barge_in_prevents_actions():
     tasks = []
     factory = lambda intent: tasks.append(intent.name) or {  # noqa: E731
         "kind": "task", "task_id": "t", "requirement": "x"}
-    conversation.say("run tests", task_factory=factory)
+    conversation.say("run tests", task_factory=factory, confirm=True)
     assert conversation.interrupt() is True
     reply = conversation.say("yes", task_factory=factory)
     assert reply["status"] == "interrupted"
