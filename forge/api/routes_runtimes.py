@@ -14,3 +14,18 @@ async def runtime_status(current:Authed=Depends(authed),plane:ControlPlane=Depen
 @router.post("/runtimes/check",dependencies=[rate_limit("models")])
 async def runtime_check(current:Authed=Depends(authed_mutation),plane:ControlPlane=Depends(get_plane)):
     del current; return _monitor(plane).tick(force=True)
+
+
+@router.post("/runtimes/inference-check", dependencies=[rate_limit("models")])
+async def runtime_inference_check(payload: dict, current: Authed = Depends(authed_mutation), plane: ControlPlane = Depends(get_plane)):
+    del current
+    provider = str(payload.get("provider") or "").strip()
+    model_id = str(payload.get("model_id") or "").strip()
+    if not provider or not model_id:
+        raise HTTPException(status_code=400, detail="provider and model_id are required")
+    try:
+        return _monitor(plane).inference_check(provider, model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="runtime inference probe failed: %s" % type(exc).__name__) from exc
