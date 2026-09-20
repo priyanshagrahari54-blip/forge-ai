@@ -47,7 +47,8 @@ def apply_probe_result(registry: ModelRegistry, result: RuntimeProbeResult) -> M
     model.latency_ms = max(0.0, result.latency_ms)
     model.health.status = result.status
     model.health.last_error = "" if result.ok else result.reason
-    model.metadata["runtime_verified"] = result.ok
+    model.metadata["runtime_verified"] = verified
+    model.metadata["verification_kind"] = "inference" if verified else str(result.status or "unknown").lower()
     model.metadata["last_probe"] = result.to_dict()
     if verified:
         model.health.record_success()
