@@ -58,8 +58,10 @@ class VoiceProcessRequest(BaseModel):
     approval_id: str = Field(default="", max_length=128)
     task_id: str = Field(default="", max_length=128)
     require_wake: bool = True
-    # A42 conversation: require an explicit confirmation before acting.
-    confirm: bool = True
+    # Normal voice actions execute directly when policy permits. Consequential
+    # operations still use the existing A33 permission/approval gate.
+    # Clients can set confirm=true when extra conversational confirmation is wanted.
+    confirm: bool = False
 
 
 class VoiceSynthesizeRequest(BaseModel):
