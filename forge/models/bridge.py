@@ -25,13 +25,17 @@ class FabricBridge:
         self.fabric = fabric
 
     def generate(self, prompt: str, *, capability: str = "coding",
-                 context: str = "") -> dict[str, Any]:
+                 context: str = "",
+                 preferred_models: tuple[str, ...] = (),
+                 fallback_models: tuple[str, ...] = "") -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be non-empty")
         request = ModelRequest(
             prompt=prompt.strip()[:MAX_PROMPT],
             capability=capability or "coding",
-            context=(context or "")[:8000])
+            context=(context or "")[:8000],
+            preferred_models=tuple(str(x).strip() for x in (preferred_models or ()) if str(x).strip())[:16],
+            fallback_models=tuple(str(x).strip() for x in (fallback_models or ()) if str(x).strip())[:16])
         response = self.fabric.generate(request)
         simulated = self._provider_is_simulated(response.provider)
         try:
@@ -42,6 +46,8 @@ class FabricBridge:
         return {
             "prompt": request.prompt[:400],
             "capability": request.capability,
+            "preferred_models": list(request.preferred_models),
+            "fallback_models": list(request.fallback_models),
             "model": response.model,
             "provider": response.provider,
             "provider_kind": provider_kind,
