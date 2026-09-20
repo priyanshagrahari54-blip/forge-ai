@@ -122,7 +122,7 @@ class VoiceConversation:
     # -- turns -------------------------------------------------------------------
 
     def say(self, speech: str, *, task_factory: Callable | None = None,
-            approval_token_id: str = "", confirm: bool = True
+            approval_token_id: str = "", confirm: bool = False
             ) -> dict[str, Any]:
         """Process one user utterance into a bounded turn.
 
