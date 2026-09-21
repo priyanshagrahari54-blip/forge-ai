@@ -61,7 +61,7 @@ class VoiceProcessRequest(BaseModel):
     # Normal voice actions execute directly when policy permits. Consequential
     # operations still use the existing A33 permission/approval gate.
     # Clients can set confirm=true when extra conversational confirmation is wanted.
-    confirm: bool = False
+    confirm: bool = True
 
 
 class VoiceSynthesizeRequest(BaseModel):
