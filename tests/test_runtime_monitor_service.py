@@ -121,3 +121,163 @@ def test_service_explicit_inference_probe_promotes_exact_runtime(tmp_path):
     assert result["ok"] is True
     assert result["state"] == RuntimeState.LIVE.value
     assert result["probe"]["reason"] == "real inference probe succeeded"
+
+# -- regression: production id shapes, flapping, budgets, traffic evidence ------
+
+from forge.models.fabric import ModelFabric  # noqa: E402
+from forge.models.provider import ModelResult, ProviderInfo  # noqa: E402
+from forge.models.registry import Model, ModelRegistry  # noqa: E402
+
+
+class MultiModelProvider:
+    """Hosted-style adapter: lists bare ids, serves any of them per request."""
+
+    name = "hosted"
+
+    def __init__(self, listed, *, fail=()):
+        self.model = listed[0]
+        self.listed = list(listed)
+        self.fail = set(fail)
+        self.calls = []
+
+    def list_models(self):
+        return list(self.listed)
+
+    def generate(self, prompt, *, context="", task="", instructions="",
+                 max_output_tokens=None, temperature=None, model=None):
+        target = model or self.model
+        self.calls.append((target, max_output_tokens))
+        if target in self.fail:
+            raise RuntimeError("hosted HTTP 404")
+        return ModelResult("OK", target)
+
+
+def _hosted_fabric(provider_name, provider, model_ids, *, prefixed=True):
+    registry = ModelRegistry()
+    fabric = ModelFabric(registry=registry)
+    fabric.register_provider(provider_name, provider, ProviderInfo(
+        name=provider_name, kind="remote", local=False, free=False))
+    for model_id in model_ids:
+        name = "%s/%s" % (provider_name, model_id) if prefixed else model_id
+        fabric.register_model(Model(name=name, provider=provider_name,
+                                    capabilities=("coding",), local=False, free=False,
+                                    metadata={"runtime_verified": False}))
+    return fabric, registry
+
+
+def test_namespaced_registry_ids_match_bare_provider_inventory(tmp_path):
+    """``anthropic/claude-x`` in the registry must match ``claude-x`` in the inventory."""
+    provider = MultiModelProvider(["claude-x", "claude-y"])
+    fabric, registry = _hosted_fabric("anthropic", provider, ["claude-x", "claude-y"])
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json")
+
+    snapshot = service.tick(force=True, now=100.0)
+
+    assert snapshot["counts"][RuntimeState.LIVE.value] == 2
+    assert snapshot["counts"][RuntimeState.UNAVAILABLE.value] == 0
+    assert registry.get("anthropic/claude-x").available is True
+    assert registry.get("anthropic/claude-y").metadata["runtime_verified"] is True
+    # The probe asked the provider for the exact bare id, with a tiny budget.
+    assert ("claude-y", 8) in provider.calls
+    providers = snapshot["providers"]["anthropic"]
+    assert providers["discovered"] == 2 and providers["live"] == 2 and providers["configured"] == 2
+
+
+def test_ollama_latest_tag_matches_untagged_registry_name(tmp_path):
+    provider = MultiModelProvider(["llama3.2:latest"])
+    fabric, registry = _hosted_fabric("ollama", provider, ["llama3.2"])
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json")
+
+    snapshot = service.tick(force=True, now=100.0)
+
+    assert snapshot["counts"][RuntimeState.LIVE.value] == 1
+    assert registry.get("ollama/llama3.2").available is True
+
+
+def test_verified_runtime_does_not_flap_on_stale_discovery_recheck(tmp_path):
+    provider = MultiModelProvider(["m1"])
+    fabric, registry = _hosted_fabric("hosted", provider, ["m1"])
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json",
+                                    verification_ttl_seconds=300)
+    service.tick(force=True, now=100.0)
+    assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.LIVE.value
+    probes_after_first_tick = len(provider.calls)
+
+    # Past the TTL the monitor re-checks the inventory; the model is still
+    # listed, so it stays LIVE and routable without another paid probe.
+    service.tick(force=True, now=100.0 + 301.0)
+
+    runtime = service.registry.get("hosted", "hosted/m1")
+    assert runtime.state == RuntimeState.LIVE.value
+    assert runtime.last_checked == 401.0
+    assert registry.get("hosted/m1").available is True
+    assert registry.get("hosted/m1").metadata["runtime_verified"] is True
+    assert len(provider.calls) == probes_after_first_tick
+
+
+def test_inference_probes_are_bounded_per_tick_and_back_off_on_failure(tmp_path):
+    ids = ["m%d" % i for i in range(5)]
+    provider = MultiModelProvider(ids, fail={"m4"})
+    fabric, registry = _hosted_fabric("hosted", provider, ids)
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json",
+                                    inference_probe_budget=2, inference_retry_seconds=100)
+
+    first = service.tick(force=True, now=100.0)
+    assert first["counts"][RuntimeState.LIVE.value] == 2
+    assert first["counts"][RuntimeState.CONFIGURED.value] == 3
+    assert len(provider.calls) == 2
+
+    service.tick(force=True, now=160.0)
+    third = service.tick(force=True, now=220.0)
+    assert third["counts"][RuntimeState.LIVE.value] == 4
+    assert third["counts"][RuntimeState.UNAVAILABLE.value] == 1
+    failed = service.registry.get("hosted", "hosted/m4")
+    assert "hosted HTTP 404" in failed.last_reason
+    assert registry.get("hosted/m4").available is False
+    calls_after_failure = len(provider.calls)
+
+    # Not retried before the backoff window closes, retried after it.
+    service.tick(force=True, now=250.0)
+    assert len(provider.calls) == calls_after_failure
+    provider.fail.clear()
+    service.tick(force=True, now=400.0)
+    assert service.registry.get("hosted", "hosted/m4").state == RuntimeState.LIVE.value
+    assert registry.get("hosted/m4").available is True
+
+
+def test_real_generation_success_is_verification_evidence(tmp_path):
+    provider = MultiModelProvider(["m1"])
+    fabric, registry = _hosted_fabric("hosted", provider, ["m1"])
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json",
+                                    inference_probes=False)
+    service.tick(force=True, now=100.0)
+    assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.CONFIGURED.value
+
+    from forge.models.request import ModelRequest
+    response = fabric.generate(ModelRequest(prompt="hello", capability="coding"))
+    assert response.success and response.model == "hosted/m1"
+    assert provider.calls[-1][0] == "m1"
+    assert registry.get("hosted/m1").metadata["runtime_verified"] is True
+    assert registry.get("hosted/m1").metadata["verification_source"] == "generation"
+
+    tick = service.tick(force=True, now=160.0)
+    assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.LIVE.value
+    assert any(item.get("kind") == "traffic" for item in tick["results"])
+
+
+def test_discovery_transport_failure_is_inconclusive(tmp_path):
+    class Flaky(MultiModelProvider):
+        def list_models(self):
+            raise RuntimeError("HTTP 503")
+
+    provider = Flaky(["m1"])
+    fabric, registry = _hosted_fabric("hosted", provider, ["m1"])
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json")
+
+    snapshot = service.tick(force=True, now=100.0)
+
+    # Discovery could not run; the bounded inference probe still decides.
+    assert snapshot["providers"]["hosted"]["discovered"] is None
+    assert "discovery failed" in snapshot["providers"]["hosted"]["discovery_error"]
+    assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.LIVE.value
+    assert registry.get("hosted/m1").available is True

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
-from forge.api.app import create_app
+from forge.api.app import ApiConfig, create_app
 from forge.control import ControlPlane, ControlConfig
 from forge.models.fabric import ModelFabric
 from forge.models.provider import ModelResult, ProviderRegistry
@@ -138,8 +138,16 @@ def make_plane(tmp_path: Path, provider=None, *,
     return plane
 
 
+#: These harnesses drive the control plane with scripted providers whose
+#: ``generate`` carries test side effects (blocking until released, counting
+#: prompts). The runtime monitor's background inference probes would trip
+#: those, so the API is built without them here; runtime verification has
+#: its own tests (``tests/test_runtime_monitor_service.py``).
+API_CONFIG = ApiConfig(runtime_inference_probes=False)
+
+
 def make_client(plane: ControlPlane) -> TestClient:
-    return TestClient(create_app(plane), raise_server_exceptions=False)
+    return TestClient(create_app(plane, API_CONFIG), raise_server_exceptions=False)
 
 
 @contextmanager
@@ -147,7 +155,7 @@ def run_server(plane: ControlPlane):
     """Serve the app over a real localhost socket (for SSE tests)."""
     import uvicorn
 
-    app = create_app(plane)
+    app = create_app(plane, API_CONFIG)
     config = uvicorn.Config(app, host="127.0.0.1", port=0,
                             log_level="error")
     server = uvicorn.Server(config)

@@ -1,6 +1,6 @@
 """Execute the full specialist fleet against a real model endpoint.
 
-This is the evidence generator for "do all 1,000 agents produce real work?".
+This is the evidence generator for "do all 1,040 specialists produce real work?".
 It makes no claims of its own: it asks the configured endpoint for real
 completions, records every response verbatim (bounded), and reports the
 specialists that could not run because no configured model provides the
@@ -40,7 +40,7 @@ from forge.models.fabric import ModelFabric                       # noqa: E402
 from forge.models.runtime_monitor_service import (                # noqa: E402
     RuntimeMonitorService)
 
-#: A short budget keeps a 1000-specialist sweep affordable on CPU while still
+#: A short budget keeps a 1,040-specialist sweep affordable on CPU while still
 #: requiring the model to produce real tokens.
 DEFAULT_MAX_TOKENS = 24
 
@@ -137,7 +137,7 @@ def main() -> int:
           f"{getattr(smoke, 'provider', '')}")
 
     registry = build_frontier_fleet(
-        fabric, minimum_size=1000, max_output_tokens=args.max_tokens,
+        fabric, max_output_tokens=args.max_tokens,
         temperature=args.temperature)
     names = registry.names()
     if args.limit:

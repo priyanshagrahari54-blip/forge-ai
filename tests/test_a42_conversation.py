@@ -54,10 +54,36 @@ def test_confirm_before_executing_creates_nothing():
     tasks = []
     factory = lambda intent: tasks.append(intent.name) or {  # noqa: E731
         "kind": "task", "task_id": "t-1", "requirement": "x"}
-    reply = conversation.say("run tests", task_factory=factory)
+    # A client may ask for confirmation of a routine action...
+    reply = conversation.say("run tests", task_factory=factory, confirm=True)
     assert reply["status"] == "awaiting_confirmation"
     assert tasks == []  # NOTHING executed before confirmation
     assert "shall i run tests" in reply["spoken"].lower()
+
+
+def test_consequential_intent_always_confirms_and_routine_executes_directly():
+    conversation = VoiceConversation(interface(), "c3b")
+    tasks = []
+    factory = lambda intent: tasks.append(intent.name) or {  # noqa: E731
+        "kind": "task", "task_id": "t-2", "requirement": intent.name}
+    # ...but a consequential one confirms even when the client did not ask.
+    reply = conversation.say("commit the changes", task_factory=factory)
+    assert reply["status"] == "awaiting_confirmation"
+    assert tasks == []
+    conversation.say("no", task_factory=factory)
+    # Routine actions execute directly (policy-gated), no yes/no round trip.
+    reply = conversation.say("run tests", task_factory=factory)
+    assert reply["status"] == "completed"
+    assert tasks == ["run_tests"]
+    assert reply["task"]["task_id"] == "t-2"
+
+
+def test_informational_intents_never_ask_for_confirmation():
+    conversation = VoiceConversation(interface(), "c3c")
+    for utterance in ("hello", "how are you", "check status", "what is 2 plus 2"):
+        reply = conversation.say(utterance, confirm=True)
+        assert reply["status"] == "completed", utterance
+        assert "say yes" not in reply["spoken"].lower(), utterance
 
 
 def test_affirmative_then_executes_through_gate():
@@ -105,7 +131,8 @@ def test_barge_in_prevents_actions():
     assert tasks == []  # barge-in stopped the action
     # The next utterance starts fresh and can act again.
     reply = conversation.say("run tests", task_factory=factory)
-    assert reply["status"] == "awaiting_confirmation"
+    assert reply["status"] == "completed"
+    assert tasks == ["run_tests"]
 
 
 def test_turns_are_bounded():
@@ -139,7 +166,7 @@ def test_plane_conversation_lifecycle(tmp_path):
         conversation_id = started["conversation_id"]
         assert started["simulation"] is True
         first = plane.voice_conversation_say(
-            session, conversation_id, text="run tests")
+            session, conversation_id, text="run tests", confirm=True)
         assert first["status"] == "awaiting_confirmation"
         state = plane.voice_conversation_state(session, conversation_id)
         assert state["pending_confirmation"] is True

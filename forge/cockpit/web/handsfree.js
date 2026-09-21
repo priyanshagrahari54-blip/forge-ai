@@ -149,11 +149,12 @@
         conversation = created.conversation_id;
         log("System", created.simulation ? "Backend voice intent stack: simulation. Browser transcription is real." : "Backend voice stack connected.");
       }
-      // confirm: true keeps the A42 confirm-before-execute contract: the
-      // control plane asks ("Shall I …?"), speaks the question, and only
-      // acts on the next affirmative utterance.
+      // Confirmation is contextual and decided server-side: informational
+      // turns answer immediately, routine actions execute directly under the
+      // permission policy, and consequential ones (commits, messages, calls)
+      // ask "Shall I …?" and only act on the next affirmative utterance.
       const result = await api(`/api/v1/voice/conversations/${encodeURIComponent(conversation)}/say`,
-        {method: "POST", body: {text, confirm: true}});
+        {method: "POST", body: {text, confirm: false}});
       if (version !== generation) return;
       $("hf-api").textContent = "Control plane · connected /api/v1";
       message = result.spoken || "No spoken result returned.";

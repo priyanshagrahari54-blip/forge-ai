@@ -77,15 +77,24 @@ class RuntimeMonitor:
                 runtime.verification_id, True,
             )
 
-        # Discovery proves provider exposure, not successful inference.
+        # Discovery proves provider exposure, not successful inference. It
+        # never promotes, and it never revokes an inference verdict either: a
+        # LIVE runtime that the provider still lists stays LIVE (its check
+        # timestamp is refreshed so the periodic loop does not re-spend an
+        # inference probe on it). An UNAVAILABLE runtime that reappears in
+        # the inventory re-enters CONFIGURED, where the inference probe can
+        # promote it again.
         if str(result.status or "").lower() == "discovered":
-            if runtime.state in {RuntimeState.VERIFIED.value, RuntimeState.LIVE.value, RuntimeState.UNAVAILABLE.value}:
-                runtime.state = RuntimeState.CONFIGURED.value
+            changed = False
+            if runtime.state == RuntimeState.UNAVAILABLE.value:
+                runtime.set_configured(valid=True)
+                changed = True
             runtime.last_checked = checked
-            runtime.last_reason = result.reason
+            if runtime.state != RuntimeState.LIVE.value:
+                runtime.last_reason = result.reason
             return RuntimeMonitorResult(
                 runtime.provider, runtime.model_id, runtime.state, result,
-                runtime.verification_id, True,
+                runtime.verification_id, changed,
             )
 
         verification_id = str(uuid4())

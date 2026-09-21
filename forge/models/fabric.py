@@ -70,6 +70,25 @@ def _forwardable_kwargs(callable_obj: Any, **kwargs: Any) -> dict[str, Any]:
     return {key: value for key, value in kwargs.items() if key in accepted}
 
 
+def _routed_model_kwargs(callable_obj: Any, model: Model) -> dict[str, Any]:
+    """``{"model": <provider id>}`` when the provider selects models per call.
+
+    Only providers that *declare* a ``model`` keyword receive it (never through
+    ``**kwargs``), so a multi-model adapter always runs the model the router
+    chose instead of its constructor default, while single-model adapters and
+    test doubles are untouched.
+    """
+    try:
+        parameters = inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return {}
+    parameter = parameters.get("model")
+    if parameter is None or parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        return {}
+    return {"model": model.provider_model_id}
+
+
 def _single_local_endpoint(config: FabricConfig):
     """The pre-multi-endpoint configuration as one endpoint entry."""
     from forge.models.endpoints import LocalEndpoint
@@ -417,45 +436,48 @@ class ModelFabric:
         # Hosted providers configured through Render environment variables.
         # Each provider is registered only when its key is present; no secret
         # value is logged or copied into model metadata.
-        from forge.models.remote_providers import build_remote_providers
-        for provider_name, provider, model_name in build_remote_providers():
-            if provider_name == "anthropic" and not credentials.configured("anthropic"):
-                continue
-            if provider_name == "gemini" and not credentials.configured("gemini"):
-                continue
-            if provider_name == "openrouter" and not credentials.configured("openrouter"):
-                continue
-            if provider_name == "groq" and not credentials.configured("groq"):
+        # Every configured model id is registered (``<NAME>_MODELS`` lists or
+        # the single ``<NAME>_MODEL``); each is only "configured" here and
+        # becomes routable after the runtime monitor's real inference probe.
+        from forge.models.remote_providers import hosted_provider_specs
+        for spec in hosted_provider_specs():
+            if not credentials.configured(spec.name):
                 continue
             providers.register(
-                provider_name,
-                provider,
-                ProviderInfo(name=provider_name, kind="remote", local=False,
-                             free=False, capabilities=TEXT_CAPABILITIES),
+                spec.name,
+                spec.provider,
+                ProviderInfo(name=spec.name, kind="remote", local=False,
+                             free=False, capabilities=TEXT_CAPABILITIES,
+                             model=spec.models[0]),
             )
-            registry.register(Model(
-                name=f"{provider_name}/{model_name}", provider=provider_name,
-                capabilities=TEXT_CAPABILITIES, context_window=128000,
-                free=False, local=False,
-                metadata={"description": "Configured hosted provider."},
-            ))
+            for model_name in spec.models:
+                registry.register(Model(
+                    name=f"{spec.name}/{model_name}", provider=spec.name,
+                    capabilities=TEXT_CAPABILITIES, context_window=128000,
+                    free=False, local=False,
+                    metadata={"description": "Configured hosted provider model.",
+                              "runtime_verified": False},
+                ))
 
         if config.openai_enabled and credentials.configured("openai"):
             openai = OpenAIProvider(model=config.openai_model, api_key=credentials.get("openai"))
             providers.register(
                 "openai",
                 openai,
-                ProviderInfo(name="openai", kind="remote", local=False, free=False, capabilities=TEXT_CAPABILITIES),
+                ProviderInfo(name="openai", kind="remote", local=False, free=False,
+                             capabilities=TEXT_CAPABILITIES, model=config.openai_model),
             )
-            registry.register(Model(
-                name=f"openai/{config.openai_model}",
-                provider="openai",
-                capabilities=TEXT_CAPABILITIES,
-                context_window=128000,
-                free=False,
-                local=False,
-                metadata={"description": "Optional remote provider; enabled only with a configured key."},
-            ))
+            for model_name in config.openai_models or (config.openai_model,):
+                registry.register(Model(
+                    name=f"openai/{model_name}",
+                    provider="openai",
+                    capabilities=TEXT_CAPABILITIES,
+                    context_window=128000,
+                    free=False,
+                    local=False,
+                    metadata={"description": "Optional remote provider; enabled only with a configured key.",
+                              "runtime_verified": False},
+                ))
 
         for extra in config.extra_models:
             registry.register(Model.from_dict(extra))
@@ -633,6 +655,7 @@ class ModelFabric:
                         max_output_tokens=request.max_output_tokens,
                         temperature=request.temperature,
                     ),
+                    **_routed_model_kwargs(provider.generate, model),
                 )
             except Exception as exc:  # provider failures are feedback, not crashes
                 last_error = str(exc)
@@ -668,6 +691,7 @@ class ModelFabric:
                 response.metadata.setdefault(str(key), value)
             #: A provider that answers is healthy again, whatever its history.
             self.exhaustion.clear(model.provider, model.name)
+            self._record_inference_evidence(model, provider, response.latency_ms)
             if classification is not None:
                 response.metadata["classification"] = classification.value
             self.record_feedback(
@@ -798,14 +822,16 @@ class ModelFabric:
                 continue
 
             stream_fn = getattr(provider, "stream", None)
+            call_target = stream_fn if callable(stream_fn) else provider.generate
             call_kwargs = _forwardable_kwargs(
-                stream_fn if callable(stream_fn) else provider.generate,
+                call_target,
                 context=request.context,
                 task=request.task,
                 instructions=request.constraints_text(),
                 max_output_tokens=request.max_output_tokens,
                 temperature=request.temperature,
             )
+            call_kwargs.update(_routed_model_kwargs(call_target, model))
 
             if callable(stream_fn):
                 chunks, ok, error = self._collect_stream(
@@ -820,6 +846,7 @@ class ModelFabric:
                     )
                     continue
                 latency_ms = (perf_counter() - started) * 1000.0
+                self._record_inference_evidence(model, provider, latency_ms)
                 self.record_feedback(
                     model=model.name, provider=model.provider, capability=request.capability,
                     success=True, latency_ms=latency_ms, complexity=request.complexity,
@@ -844,6 +871,7 @@ class ModelFabric:
                 )
                 continue
             latency_ms = (perf_counter() - started) * 1000.0
+            self._record_inference_evidence(model, provider, latency_ms)
             self.record_feedback(
                 model=model.name, provider=model.provider, capability=request.capability,
                 success=True, latency_ms=latency_ms, complexity=request.complexity,
@@ -859,6 +887,19 @@ class ModelFabric:
 
         self.telemetry.record("error", trace_id=request.trace_id, capability=request.capability, error=last_error)
         raise ModelUnavailableError(last_error or "no model available")
+
+    def _record_inference_evidence(self, model: Model, provider: Any, latency_ms: float) -> None:
+        """A real, successful generation is the strongest verification evidence.
+
+        The runtime monitor reads these fields to promote the runtime to LIVE
+        without spending a separate probe. The deterministic fallback rung is
+        never "verified": it proves nothing about a model.
+        """
+        if model.fallback or getattr(provider, "name", "") == "local":
+            return
+        from forge.models.runtime_verification import record_inference_success
+
+        record_inference_success(model, latency_ms=latency_ms, source="generation")
 
     @staticmethod
     def _collect_stream(stream_fn: Any, request: ModelRequest, call_kwargs: dict[str, Any]) -> tuple[list[str], bool, str]:
@@ -1050,39 +1091,50 @@ class ModelFabric:
     def discover_models(self) -> dict[str, Any]:
         """Discover models exposed by providers that support discovery.
 
-        Only Ollama's ``/api/tags`` discovery is implemented today. This is an
-        explicit, opt-in network call — never performed automatically at
-        construction — and never downloads models. Returns per-provider results.
+        This is an explicit, opt-in network call — never performed
+        automatically at construction — and never downloads models. Every
+        provider reports the ids it *lists* (``discovered``); only local
+        providers (Ollama-style daemons) additionally get their models
+        registered as free, local, still-unverified entries (``registered``).
+        Hosted inventories
+        are evidence for the runtime monitor, not routable models — a hosted
+        id is registered when the operator configures it or verifies it
+        explicitly.
         """
         results: dict[str, Any] = {}
+        context_window = self.config.ollama_context_window if self.config else 8192
         for name, provider in self.providers.items():
             discover = getattr(provider, "list_models", None)
             if not callable(discover):
-                results[name] = {"discovered": [], "error": "provider does not support discovery"}
+                results[name] = {"discovered": [], "registered": [],
+                                 "error": "provider does not support discovery"}
                 continue
             try:
-                found = discover()
+                found = [str(item) for item in discover() if item]
             except Exception as exc:
-                results[name] = {"discovered": [], "error": str(exc)}
+                results[name] = {"discovered": [], "registered": [], "error": str(exc)}
                 continue
             registered: list[str] = []
-            for model_name in found:
-                registry_name = f"{name}/{model_name}"
-                if self.registry.has(registry_name):
-                    continue
-                capabilities = _ollama_capabilities(model_name, self.config.ollama_context_window if self.config else 8192)
-                self.registry.register(Model(
-                    name=registry_name,
-                    provider=name,
-                    capabilities=capabilities,
-                    capability_status=_ollama_capability_status(model_name, capabilities),
-                    context_window=self.config.ollama_context_window if self.config else 8192,
-                    free=True,
-                    local=True,
-                    metadata={"description": f"Discovered via {name} model discovery."},
-                ))
-                registered.append(registry_name)
-            results[name] = {"discovered": registered}
+            info = self.providers.info(name)
+            if info.local and info.kind != "fallback":
+                for model_name in found:
+                    registry_name = f"{name}/{model_name}"
+                    if self.registry.has(registry_name):
+                        continue
+                    capabilities = _ollama_capabilities(model_name, context_window)
+                    self.registry.register(Model(
+                        name=registry_name,
+                        provider=name,
+                        capabilities=capabilities,
+                        capability_status=_ollama_capability_status(model_name, capabilities),
+                        context_window=context_window,
+                        free=True,
+                        local=True,
+                        metadata={"description": f"Discovered via {name} model discovery.",
+                                  "runtime_verified": False},
+                    ))
+                    registered.append(registry_name)
+            results[name] = {"discovered": found, "registered": registered}
         return results
 
     def legacy_router(self) -> ModelRouter:

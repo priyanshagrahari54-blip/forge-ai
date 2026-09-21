@@ -39,6 +39,13 @@ class ApiConfig:
     secure_cookies: bool = False
     max_body_bytes: int = 1024 * 1024
     web_dir: Optional[Union[str, Path]] = None
+    #: Whether the runtime monitor may verify configured models with bounded
+    #: real inference probes (``None`` = ``FORGE_RUNTIME_INFERENCE_PROBES``,
+    #: default on). In-process test harnesses whose scripted providers attach
+    #: side effects to ``generate`` turn this off explicitly.
+    runtime_inference_probes: Optional[bool] = None
+    #: Most inference probes one monitor tick may spend.
+    runtime_probe_budget: int = 8
 
 
 class _RequestContextMiddleware(BaseHTTPMiddleware):
@@ -166,7 +173,10 @@ def create_app(plane: ControlPlane,
         #: (nested ``with`` blocks, in-process restart, uvicorn reload) is a
         #: stack push/pop instead of a destructive overwrite.
         previous_monitor = getattr(plane, "runtime_monitor", None)
-        monitor = RuntimeMonitorService(plane.fabric, state_path=monitor_path)
+        monitor = RuntimeMonitorService(
+            plane.fabric, state_path=monitor_path,
+            inference_probes=config.runtime_inference_probes,
+            inference_probe_budget=config.runtime_probe_budget)
         plane.runtime_monitor = monitor
         monitor.start()
 

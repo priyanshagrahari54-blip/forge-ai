@@ -1,12 +1,18 @@
 """Frontier specialist fleet for Forge.
 
-The fleet contains logical specialist agents, not 1000+ concurrent model
+The fleet contains logical specialist agents, not 1,040 concurrent model
 processes. Each specialist routes through the shared ModelFabric, so the same
-real provider/model can serve many specialists on demand.
+real provider/model can serve many specialists on demand, and each specialist
+may run on *any* eligible model: eligibility is resolved from the fabric's
+live registry at execution time (available, inference-verified, advertising
+the required capability), never from a hardcoded model list.
 
-Fleet sizing: 40 specialization families x 26 model/strategy variants = 1,040
-logical agents by default. Callers may request a smaller floor for tests or
-verification scripts; the production fleet is built with the default.
+Fleet sizing: 40 specialization families x 26 variants = 1,040 logical agents
+by default. A variant is a deterministic preference posture over the eligible
+models (variant k favours the k-th eligible model, then fails over along the
+rest), which spreads a family's work across every model that can do it.
+Callers may build a smaller fleet for tests or verification scripts; the
+production fleet is built with the default.
 """
 from __future__ import annotations
 
@@ -56,22 +62,8 @@ def required_and_preferred(
     return (canonical[0],), tuple(canonical[1:])
 
 
-FRONTIER_MODELS: tuple[str, ...] = (
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5.6-terra",
-    "openai/gpt-5.6-luna",
-    "openai/gpt-5.4",
-    "openai/gpt-4.1",
-    "openai/gpt-4o",
-    "anthropic/claude-opus-5",
-    "anthropic/claude-opus-4-8",
-    "anthropic/claude-opus-4-7",
-    "anthropic/claude-opus-4-6",
-    "anthropic/claude-opus-4-5",
-    "anthropic/claude-sonnet-5",
-    "anthropic/claude-sonnet-4-6",
-    "anthropic/claude-sonnet-4-5",
-)
+#: Fleet label carried in request/response metadata (40 families x 26 variants).
+FLEET_LABEL = "frontier-1040"
 
 #: Every capability ``TaskRequirementExtractor`` can emit (coding, testing,
 #: debugging, review, security, documentation, research, architecture,
@@ -134,8 +126,53 @@ SPECIALIZATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
+def eligible_models(fabric: Any, required: tuple[str, ...], *,
+                    variant: int = 1) -> tuple[str, ...]:
+    """Registered models that can serve ``required`` right now, best first.
+
+    Eligibility is read from the fabric's live registry — never from a
+    hardcoded list: a model qualifies when it is ``available`` (a real
+    inference verdict, see :mod:`forge.models.runtime_verification`), is not
+    the deterministic fallback rung, and advertises every required
+    capability. Inference-verified models rank ahead of merely configured
+    ones. ``variant`` rotates each group deterministically so a family's 26
+    variants spread their work across all eligible models instead of all
+    preferring the same one; the router still fails over along the rest.
+    """
+    registry = getattr(fabric, "registry", None)
+    if registry is None:
+        return ()
+    try:
+        indexed = getattr(registry, "models_for_capabilities", None)
+        models = list(indexed(required)) if callable(indexed) else [
+            model for model in registry if model.supports_all(required)]
+    except Exception:  # noqa: BLE001 - a duck-typed fabric proves nothing
+        return ()
+    usable = [model for model in models
+              if getattr(model, "available", False) and not getattr(model, "fallback", False)]
+    verified = [model.name for model in usable
+                if (getattr(model, "metadata", None) or {}).get("runtime_verified") is True]
+    unverified = [model.name for model in usable if model.name not in verified]
+
+    def rotate(names: list[str]) -> list[str]:
+        if len(names) < 2:
+            return names
+        offset = (max(1, int(variant)) - 1) % len(names)
+        return names[offset:] + names[:offset]
+
+    return tuple(rotate(verified) + rotate(unverified))
+
+
 class FrontierModelAgentExecutor(AgentExecutor):
-    """Routes one specialist persona through the shared ModelFabric."""
+    """Routes one specialist persona through the shared ModelFabric.
+
+    A specialist is a logical role, not a model binding: the models it may
+    run on are resolved at execution time from the fabric registry
+    (:func:`eligible_models`). ``model_name`` is an optional *explicit*
+    preference for callers that already hold a real registered model id (the
+    multimodal fleet passes the modality model it found); it is never
+    invented here.
+    """
 
     def __init__(
         self,
@@ -148,10 +185,12 @@ class FrontierModelAgentExecutor(AgentExecutor):
         declared_capabilities: tuple[str, ...] | None = None,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         temperature: float | None = DEFAULT_TEMPERATURE,
+        variant: int = 1,
     ) -> None:
         self.name = name
         self.role = role
-        self.model_name = model_name
+        self.model_name = model_name or ""
+        self.variant = max(1, int(variant))
         #: Rich specialization labels stay on the agent: they are identity,
         #: prompting and observability metadata — never routing requirements.
         self.declared_capabilities = tuple(
@@ -176,6 +215,16 @@ class FrontierModelAgentExecutor(AgentExecutor):
         """Alias for the declared specialization labels (routing metadata)."""
         return self.declared_capabilities
 
+    def eligible_models(self) -> tuple[str, ...]:
+        """Models that can serve this specialist right now (see module doc)."""
+        return eligible_models(self.fabric, self.required_capabilities,
+                               variant=self.variant)
+
+    def preferred_models(self) -> tuple[str, ...]:
+        """Explicit preference (if any) followed by the live eligible models."""
+        explicit = (self.model_name,) if self.model_name else ()
+        return tuple(dict.fromkeys(explicit + self.eligible_models()))
+
     def execute(self, request: AgentRequest) -> AgentResponse:
         context = ""
         if request.context is not None:
@@ -197,6 +246,7 @@ class FrontierModelAgentExecutor(AgentExecutor):
             f"Task: {prompt}"
         )
 
+        preferred = self.preferred_models()
         model_request = ModelRequest(
             prompt=model_prompt,
             task=self.role,
@@ -207,19 +257,21 @@ class FrontierModelAgentExecutor(AgentExecutor):
             #: used for this specialist.
             capability=self.required_capabilities[0],
             required_capabilities=self.required_capabilities,
-            #: Soft ordering hint only: the assigned frontier model travels as
-            #: a request-level preference, so it can win *among otherwise
-            #: eligible candidates* but can never bypass capability, health,
-            #: policy, or runtime-verification gates.
-            preferred_models=(self.model_name,),
+            #: Soft ordering hint only: the eligible models travel as a
+            #: request-level preference, so the variant's first choice can
+            #: win *among otherwise eligible candidates* but can never bypass
+            #: capability, health, policy, or runtime-verification gates.
+            preferred_models=preferred,
             max_output_tokens=self.max_output_tokens,
             temperature=self.temperature,
             complexity=max(1.0, float(getattr(request.task, "attempts", 0) + 1)),
             metadata={
                 "agent": self.name,
                 "role": self.role,
-                "preferred_model": self.model_name,
-                "fleet": "frontier-1000-plus",
+                "variant": str(self.variant),
+                "preferred_model": preferred[0] if preferred else "",
+                "eligible_models": ",".join(preferred),
+                "fleet": FLEET_LABEL,
                 #: Declared agent labels vs the canonical capabilities the
                 #: model must actually support — never conflated.
                 "declared_capabilities": ",".join(self.declared_capabilities),
@@ -232,13 +284,15 @@ class FrontierModelAgentExecutor(AgentExecutor):
 
         metadata = dict(getattr(response, "metadata", {}) or {})
         metadata.update({
-            "preferred_model": self.model_name,
+            "preferred_model": preferred[0] if preferred else "",
+            "eligible_models": ",".join(preferred),
             "routed_model": getattr(response, "model", ""),
             "routed_provider": getattr(response, "provider", ""),
             "agent_role": self.role,
+            "agent_variant": str(self.variant),
             "agent_capabilities": ",".join(self.capabilities),
             "declared_capabilities": ",".join(self.declared_capabilities),
-            "fleet": "frontier-1000-plus",
+            "fleet": FLEET_LABEL,
         })
         return AgentResponse(
             success=bool(getattr(response, "success", False)),
@@ -258,14 +312,15 @@ def build_frontier_fleet(
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float | None = DEFAULT_TEMPERATURE,
 ) -> AgentRegistry:
-    """Build 1,000+ logical specialists without spawning 1,000+ processes.
+    """Build the logical specialist fleet without spawning any processes.
 
     The registry is lightweight. Actual model inference happens only when a
     selected specialist executes a task. The default builds the canonical
     40 families x 26 variants = 1,040 logical specialists; ``minimum_size``
-    is a floor for callers that deliberately want a smaller fleet.
+    lets verification scripts and tests build a smaller fleet, never fewer
+    than one variant per specialization.
     """
-    target = max(1000, int(minimum_size))
+    target = max(len(SPECIALIZATIONS), int(minimum_size))
     registrations: list[AgentRegistration] = []
     index = 0
     # Register in specialization-major order so every declared specialization
@@ -280,22 +335,21 @@ def build_frontier_fleet(
             if len(registrations) >= target:
                 break
             name = f"{specialization}-{generation + 1:02d}-{index + 1:04d}"
-            model_name = FRONTIER_MODELS[
-                (generation + index) % len(FRONTIER_MODELS)
-            ]
             #: The registry keeps the specialist's declared labels so
             #: agent-level selection (``get_by_capability``) still works; the
             #: executor canonicalises them for the model request, which is
-            #: what makes every registered specialist routable.
+            #: what makes every registered specialist routable. No model is
+            #: bound here: eligibility is resolved from the fabric at run time.
             registrations.append(
                 AgentRegistration(
                     name,
                     role,
                     FrontierModelAgentExecutor(
-                        name, role, model_name, tuple(capabilities), fabric,
+                        name, role, "", tuple(capabilities), fabric,
                         declared_capabilities=tuple(capabilities),
                         max_output_tokens=max_output_tokens,
                         temperature=temperature,
+                        variant=generation + 1,
                     ),
                     tuple(capabilities),
                 )

@@ -28,6 +28,17 @@ def _capability_tuple(value: Any) -> tuple[str, ...]:
         if item and item.strip()))
 
 
+def _model_list(value: Any, *, primary: str = "") -> tuple[str, ...]:
+    """Parse a configured model-id list; ``primary`` is always first."""
+    if isinstance(value, (list, tuple, set)):
+        items = [str(item).strip() for item in value]
+    else:
+        items = [part.strip() for part in str(value or "").replace("\n", ",").replace(" ", ",").split(",")]
+    ordered = [primary.strip()] if primary and primary.strip() else []
+    ordered.extend(item for item in items if item)
+    return tuple(dict.fromkeys(ordered))
+
+
 def _local_endpoints(
     data: Mapping[str, Any],
     env: Mapping[str, str],
@@ -193,6 +204,9 @@ class FabricConfig:
     local_enabled: bool = True
     openai_enabled: bool = False
     openai_model: str = "gpt-4o-mini"
+    #: Every OpenAI model id the operator configured (``OPENAI_MODELS``), in
+    #: preference order; ``openai_model`` is always included first.
+    openai_models: tuple[str, ...] = ()
     default_capability: str = "coding"
     default_model: str | None = None
     default_policy: str | None = None
@@ -266,6 +280,9 @@ class FabricConfig:
             local_enabled=bool(data.get("local_enabled", True)),
             openai_enabled=bool(data.get("openai_enabled", False)) or bool(env.get("OPENAI_API_KEY")),
             openai_model=str(data.get("openai_model") or env.get("OPENAI_MODEL") or "gpt-4o-mini"),
+            openai_models=_model_list(
+                data.get("openai_models") or env.get("OPENAI_MODELS") or "",
+                primary=str(data.get("openai_model") or env.get("OPENAI_MODEL") or "gpt-4o-mini")),
             default_capability=str(data.get("default_capability", "coding")),
             default_model=data.get("default_model"),
             default_policy=data.get("default_policy"),
@@ -320,6 +337,7 @@ class FabricConfig:
             "local_enabled": self.local_enabled,
             "openai_enabled": self.openai_enabled,
             "openai_model": self.openai_model,
+            "openai_models": list(self.openai_models),
             "default_capability": self.default_capability,
             "default_model": self.default_model,
             "default_policy": self.default_policy,

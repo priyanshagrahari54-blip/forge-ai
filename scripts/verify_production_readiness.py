@@ -68,7 +68,7 @@ class _InProcessProvider:
 
 
 def _section_agents(plane) -> dict:
-    registry = build_frontier_fleet(plane.fabric, minimum_size=1000)
+    registry = build_frontier_fleet(plane.fabric)
     names = registry.names()
     roles = registry.roles()
     per_role = {role: len(registry.get_by_role(role)) for role in roles}
@@ -97,7 +97,7 @@ def _section_routing(plane) -> dict:
     fabric = ModelFabric(
         registry=ModelRegistry([model]),
         providers=ProviderRegistry({provider.name: provider}))
-    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    registry = build_frontier_fleet(fabric)
     engine = TaskEngine()
     executed, failures = [], []
     for role in registry.roles():
@@ -149,9 +149,15 @@ def _section_deployment_routing(plane) -> dict:
     media: dict[str, Any] = {}
     if needs_media:
         server, media = media_inputs(REPO / ".forge")
-    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    registry = build_frontier_fleet(fabric)
+    #: The deterministic fallback rung answers with a labelled no-op, never
+    #: with work; a specialist it served is reported separately so the
+    #: "executed" figure only ever counts real models.
+    fallback_models = {model.name for model in fabric.registry
+                       if getattr(model, "fallback", False)}
     engine = TaskEngine()
     executed: dict[str, int] = {}
+    fallback_answers: dict[str, int] = {}
     blocked: dict[str, int] = {}
     failed: dict[str, int] = {}
     examples: dict[str, str] = {}
@@ -169,7 +175,11 @@ def _section_deployment_routing(plane) -> dict:
                 AgentRequest(task, TaskStatus.CODING, instructions=instructions))
             if response.success and response.output:
                 provider = response.metadata.get("routed_provider", "")
-                executed[provider] = executed.get(provider, 0) + 1
+                if response.metadata.get("routed_model", "") in fallback_models:
+                    fallback_answers[capability] = (
+                        fallback_answers.get(capability, 0) + 1)
+                else:
+                    executed[provider] = executed.get(provider, 0) + 1
                 continue
             #: A specialist is *blocked* only when no model provides its
             #: capability. When a model does provide it and the call still
@@ -188,6 +198,8 @@ def _section_deployment_routing(plane) -> dict:
         "specialists": total,
         "executed": sum(executed.values()),
         "executed_by_provider": executed,
+        "answered_by_fallback_only": sum(fallback_answers.values()),
+        "answered_by_fallback_by_capability": fallback_answers,
         "blocked": blocked,
         "failed": failed,
         "failure_examples": examples,
@@ -202,9 +214,10 @@ def _section_deployment_routing(plane) -> dict:
                  "answer: media-capable specialists get real media, text "
                  "specialists get a text task; blocked means no configured "
                  "model provides the capability (never rerouted to a model "
-                 "that cannot do the job), and a specialist whose capability "
+                 "that cannot do the job), a specialist whose capability "
                  "exists but whose call failed is counted as failed, with its "
-                 "error"),
+                 "error, and a specialist that only the deterministic "
+                 "fallback answered is not counted as executed"),
     }
 
 
@@ -588,6 +601,10 @@ def main() -> int:
     print(f"this deployment's fabric: {deploy['executed']}/"
           f"{deploy['specialists']} specialists execute "
           f"(by provider: {deploy['executed_by_provider']})")
+    if deploy.get("answered_by_fallback_only"):
+        print(f"  answered only by the deterministic fallback (not real work): "
+              f"{deploy['answered_by_fallback_only']} "
+              f"{deploy['answered_by_fallback_by_capability']}")
     if deploy["blocked"]:
         print(f"  blocked (capability no model provides): {deploy['blocked']}")
     if deploy.get("failed"):

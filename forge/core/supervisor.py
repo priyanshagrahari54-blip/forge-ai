@@ -317,9 +317,10 @@ class Supervisor:
                 AgentRegistration("tester", "testing", TesterAgent(str(self.root)), ("testing",)),
                 AgentRegistration("security", "security", build_security_executor(str(self.root)), ("security",)),
             ])
-            # Add the lightweight 1,000+ specialist fleet. These are logical
-            # agents sharing the same ModelFabric; no 1,000 model processes
-            # are spawned. Core safety-critical agents above remain canonical.
+            # Add the lightweight 1,040-specialist fleet (40 families x 26
+            # variants). These are logical roles that resolve eligible models
+            # from the shared ModelFabric per request; no model processes are
+            # spawned. Core safety-critical agents above remain canonical.
             #: Fleet size is reported *inside* the existing ``agents_selected``
             #: event: A32 telemetry has a closed event-name contract, so a new
             #: event name must not be introduced to carry extra detail.

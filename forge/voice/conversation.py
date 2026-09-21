@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
 
-from forge.voice.base import VoiceCommand, VoiceInterface
+from forge.voice.base import VoiceCommand, VoiceInterface, confirmation_required
 
 MAX_TURNS = 24
 AFFIRMATIVES = ("yes", "yeah", "yep", "confirm", "ok", "okay", "sure",
@@ -129,6 +129,10 @@ class VoiceConversation:
         Returns the assistant reply dict: spoken text, status, and the
         task when one was created. Interrupted turns never create
         tasks and never speak replies.
+
+        ``confirm`` asks for conversational confirmation of *routine*
+        actions. Confirmation is contextual (:func:`confirmation_required`):
+        informational turns never ask, consequential ones always do.
         """
         with self._lock:
             speech = str(speech).strip()
@@ -173,7 +177,7 @@ class VoiceConversation:
                 return self._reply(spoken, "", status="awaiting_answer",
                                    user_turn=user_turn)
             user_turn.intent = intent.name
-            if confirm:
+            if confirmation_required(intent.name, requested=confirm):
                 user_turn.status = "awaiting_confirmation"
                 spoken = (f"Shall I {intent.name.replace('_', ' ')}? "
                           "Say yes to proceed or no to cancel.")

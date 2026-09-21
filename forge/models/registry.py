@@ -52,6 +52,21 @@ class Model:
                     f"Model {self.name!r} records status for unknown capability {capability!r}"
                 )
 
+    @property
+    def provider_model_id(self) -> str:
+        """The id the provider itself knows this model by.
+
+        Registry names are namespaced (``ollama/llama3.2``,
+        ``openrouter/openai/gpt-4o-mini``) so two providers can serve the same
+        upstream model; the provider API only understands the bare id. Names
+        that are not namespaced (a self-hosted endpoint registered under its
+        served model id) are returned unchanged.
+        """
+        prefix = f"{self.provider}/"
+        if self.provider and self.name.startswith(prefix) and len(self.name) > len(prefix):
+            return self.name[len(prefix):]
+        return self.name
+
     def capability_status_for(self, capability: str) -> str:
         """Return the verification level for a capability.
 

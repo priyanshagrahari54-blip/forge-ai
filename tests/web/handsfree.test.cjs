@@ -28,14 +28,14 @@ test('opt-in, auto-restart lifecycle and stop command never reaches API', async(
   assert.match(h.get('hf-status').textContent,/Microphone off/);
   assert.equal(h.calls.length,0);
 });
-test('typed command uses conversation endpoint and always requests confirmation', async()=>{
+test('typed command uses conversation endpoint and leaves confirmation to the contextual server policy', async()=>{
   const h=setup();
   h.get('hf-text').value='review the code';
   h.get('hf-form').onsubmit({preventDefault(){}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(h.calls.length,2);
   assert.equal(h.calls[1][0],'/api/v1/voice/conversations/c/say');
-  assert.equal(h.calls[1][1].body.confirm,true);
+  assert.equal(h.calls[1][1].body.confirm,false);
   assert.equal(h.calls[1][1].body.text,'review the code');
 });
 test('permission errors stop microphone instead of retrying indefinitely',()=>{

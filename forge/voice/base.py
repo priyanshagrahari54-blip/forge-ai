@@ -116,6 +116,7 @@ _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (r"(?:टेस्ट चलाओ|टेस्ट रन करो)", "run_tests", ()),
     (r"(?:कोड रिव्यू करो|कोड को रिव्यू करो)", "review", ("target",)),
     (r"(?:वेबसाइट अपडेट करो|वेबसाइट को अपडेट करो|वेबसाइट बदलो|वेबसाइट चेंज करो)", "update_website", ()),
+    (r"(?:how are you|how're you|how are you doing|how do you do)(?: today)?(?: forge)?", "how_are_you", ()),
     (r"(?:kaise ho|kaisa ho|kya haal hai|kaise chal raha hai)(?: forge)?", "how_are_you", ()),
     (r"(?:tum kaun ho|aap kaun ho|who are you)(?: forge)?", "identity", ()),
     (r"(?:tum kya kar rahe ho|aap kya kar rahe ho|what are you doing)(?: forge)?", "activity", ()),
@@ -126,6 +127,46 @@ _TEMPLATES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (r"(?:website update karo|website ko update karo|website badlo|website change karo)", "update_website", ()),
     (r"(?:changes commit karo|changes save karo|commit kar do)", "commit", ()),
 )
+
+
+#: Confirmation posture per intent. Confirmation is contextual, never blanket:
+#: informational intents are answered on the spot; routine actions execute
+#: directly (the A33 permission policy still gates every one of them, and
+#: task execution has its own approval path); consequential intents — the
+#: ones that leave the project (messages, calls) or rewrite history (commits)
+#: — always ask before anything is created.
+INFORMATIONAL_INTENTS: frozenset[str] = frozenset({
+    "greeting", "help", "cancel", "how_are_you", "identity", "activity",
+    "status", "calculate",
+})
+CONSEQUENTIAL_INTENTS: frozenset[str] = frozenset({
+    "commit", "send_email", "send_whatsapp", "make_call",
+})
+
+
+def confirmation_tier(intent_name: str) -> str:
+    """``informational`` / ``routine`` / ``consequential`` for one intent."""
+    if intent_name in INFORMATIONAL_INTENTS:
+        return "informational"
+    if intent_name in CONSEQUENTIAL_INTENTS:
+        return "consequential"
+    return "routine"
+
+
+def confirmation_required(intent_name: str, *, requested: bool = False) -> bool:
+    """Whether a turn must be confirmed before acting.
+
+    ``requested`` is the caller's preference (a client may ask for extra
+    conversational confirmation of routine actions). It can never make an
+    informational intent ask "yes or no", and it can never skip confirmation
+    of a consequential one.
+    """
+    tier = confirmation_tier(intent_name)
+    if tier == "informational":
+        return False
+    if tier == "consequential":
+        return True
+    return bool(requested)
 
 
 class VoiceInterface:

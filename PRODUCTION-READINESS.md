@@ -1,10 +1,38 @@
 # Forge AI — production readiness report
 
-Date: 2026-09-20 · Branch: `arena/01a0b955-forge-ai` · PR #46
+Date: 2026-09-21 · Branch: `arena/01a0c3d9-forge-ai`
 
-Sections 1-4 were verified on 2026-09-19; the multimodal, outbound-channel
-and CI sections were added on 2026-09-20 and are marked with the run that
-produced them.
+Section 0 is the current state of this branch. Sections 1-7 are the earlier
+reports (verified 2026-09-19/20) and are kept as dated evidence; where they
+say **1000 specialists / 40 × 25**, that was the fleet size at the time — the
+fleet is now **1,040 = 40 × 26** (section 0).
+
+## 0. Current state (2026-09-21) — what changed and what is verified
+
+State vocabulary used everywhere below (a stronger word is never used for a
+weaker state): *catalogued* (named in a document) → *registered* (a `Model`
+entry exists in this process) → *configured* (env/config names it) →
+*discovered* (the provider's inventory listed the id) → *reachable* (the
+endpoint answered) → *verified / live* (a real inference call succeeded) →
+*executed / successful* (a task or specialist produced output through it).
+
+| Area | State on this branch | How it was verified |
+| --- | --- | --- |
+| Hosted providers (Anthropic, Gemini, OpenRouter, Groq, OpenAI) | **Implemented and configured-only**: adapters exist and register from `<NAME>_API_KEY` + `<NAME>_MODELS`/`<NAME>_MODEL` (`OPENAI_MODELS` for OpenAI). No credential is present in this environment, so **0 hosted models are live here**. Registered hosted models start `available=False`, `runtime_verified=False` | `tests/test_live_runtime_gate.py`, `tests/test_runtime_monitor_service.py` (real HTTP servers in-process) |
+| Runtime verification | Only a successful real inference (probe or production generation) sets `runtime_verified=True` / `available=True`; discovery is inventory evidence only; a failed probe or a vanished id marks the model unavailable. The API lifespan starts `RuntimeMonitorService` with bounded probes (`FORGE_RUNTIME_INFERENCE_PROBES`, 8 per tick, back-off 5 min → 1 h); a returned model identity that differs from the requested id is rejected | same tests; production entry exercised with `forge_web.build_app()` — `ollama/llama3.2` went `available=False` after its probe failed, `/api/v1/runtimes` reported `configured=1 live=0 verified=0 unavailable=1` |
+| P0 defects fixed | prefixed registry ids vs bare provider ids (`Model.provider_model_id`); discovery-only unrouting; LIVE → unrouted flapping on stale ticks; test doubles that echo the provider name as the model identity no longer count as a mismatch | reproduced before the fix, regression tests added |
+| Specialist fleet | **1,040 registered = 40 specializations × 26 variants** (`frontier-1040`), 5 core agents, up to 100 multimodal specialists that register only with a working backend. A specialist binds **no model**: eligible models are resolved from the live registry per request (`available`, not fallback, supports all required capabilities; `runtime_verified` first; variant *k* rotates the order by *k−1*) | `scripts/verify_production_readiness.py`: `registered_specialists=1040`, `roles=40`, 26 per role; `tests/test_frontier_fleet.py` (eligibility, rotation, availability changes without rebuild) |
+| Fleet execution on *this* machine (no text model, no Pillow) | **78/1040 execute** through real local backends (`forge-local-audio` 26, `forge-browser` 26, `forge-web-actions` 26); **936 are answered only by the deterministic fallback and are no longer counted as executed**; **26 blocked** (`vision`: no backend here). With a verified text model the 936 route to it — that is the deployment's job, not a code change | `scripts/verify_production_readiness.py` (the script now reports `answered_by_fallback_only` separately) |
+| Local capability providers | Registered only after an in-process probe passes; the verified report is memoised per fabric, so per-run registry rebuilds re-use it (first probe ≈ 0.5 s before, later runs 0 ms). The browser probe's HTTP server now shuts down in 20 ms instead of 500 ms: **control-plane construction 0.55 s → 0.04 s** (measured with `tests/helpers_a34.make_plane`) | timing runs in this checkout |
+| Task execution | submit → queued → leased → started → routed → provider → verified → completed, dispatcher bounded to `max_runs_per_project=1` (sequential per project by design) | `tests/test_a34_task_e2e.py`, `tests/test_a34_approvals_e2e.py` |
+| Voice | informational intents execute directly; consequential intents (commit, email, WhatsApp, calls) always require approval; ambiguous requests get a clarifying question; the A33 voice policy still gates every intent; API/plane/web default `confirm=false` | `tests/test_a42_*.py`, `tests/test_voice*.py`, `node --test tests/web/handsfree.test.cjs` |
+| Login | `POST /api/v1/sessions` needs only `actor`/`profile`; the project resolves to the sole registered project ("forge" in the deployment); no project picker in the cockpit; unknown ids still 404 | `tests/test_a34_api.py`, `tests/test_a34_ui.py` |
+| AI City | reads only real backend state (`/tasks`, milestones, SSE event stream); no synthetic progress | `scripts/verify_production_readiness.py` `web` section |
+| Dead code removed | the older `forge/agents/fleet.py` / `routing.py` / `model_execution.py` "1000+ slot" fleet (unused by any production path, traced) and the stray `forge-ai-fixes.patch` (already applied) | `grep` trace, full suite |
+| Not done / honest gaps | no hosted credential here, so hosted inference is **configured-only** until the Render environment sets a key; same-project task concurrency stays at 1; vision needs the `media` extra (installed by the Dockerfile, not in this checkout) | — |
+
+Full suite on this branch: see the end of this section.
+
 
 Everything below was observed in this checkout or against the live service.
 Nothing is claimed from a summary; states are the ones the runtime itself
@@ -100,8 +128,9 @@ reports. Reproduce with the commands in the last section.
   `live_requires_verified`, `simulation_is_never_live`,
   `unknown_provider_is_never_assumed_ready`) and expose `id`/`state` aliases.
 
-**1,000-specialist fleet** (`forge/agents/frontier_fleet.py`)
-- All 40 specializations register before any repeat at 1,000 slots.
+**Specialist fleet** (`forge/agents/frontier_fleet.py`; 1,000 slots at the
+time of this section — now 1,040 = 40 × 26, see section 0)
+- All 40 specializations register before any repeat.
 - 23 of 40 specializations previously required labels no model can advertise
   (`web`, `database`, `multilingual`, `deployment`, …). `Model` rejects
   unknown capabilities and the router never relaxes capability requirements,
@@ -196,7 +225,7 @@ can execute.
 
 ## 4. Registered agents and executed representatives
 
-- Registered: **1000 logical specialists**, **40 specializations × 25**,
+- Registered (2026-09-19 fleet; now 1,040 = 40 × 26): **1000 logical specialists**, **40 specializations × 25**,
   covering planner, researcher, architect, coder, frontend, backend, database,
   devops, debugger, tester, reviewer, security, performance, refactor,
   documentation, API, data, ML, vision, audio, game, OS, browser,

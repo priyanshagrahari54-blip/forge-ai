@@ -850,8 +850,25 @@ class ControlPlane:
 
     # -- sessions ---------------------------------------------------------
 
-    def create_session(self, actor: str, project_id: str, *,
+    def default_project_id(self) -> str:
+        """The primary workspace a session joins when no project is named.
+
+        Deployments normally register exactly one project (``forge`` by
+        default, or ``FORGE_PROJECT_ID``); with several, the conventional
+        ``forge`` id wins and otherwise no default exists (callers must name
+        one). Never invents a project.
+        """
+        if len(self.projects) == 1:
+            return next(iter(self.projects))
+        if "forge" in self.projects:
+            return "forge"
+        return ""
+
+    def create_session(self, actor: str, project_id: str = "", *,
                        profile: str = "assisted") -> tuple[Session, str]:
+        project_id = (project_id or "").strip() or self.default_project_id()
+        if not project_id:
+            raise InvalidRequest("project_id is required: several projects are registered.")
         self.get_project(project_id)  # fail closed on unknown projects
         try:
             OperationMode(profile)
@@ -5886,9 +5903,14 @@ class ControlPlane:
     def voice_conversation_say(self, session: Session, conversation_id: str,
                                *, text: str = "", audio_b64: str = "",
                                approval_id: str = "",
-                               confirm: bool = True) -> dict[str, Any]:
+                               confirm: bool = False) -> dict[str, Any]:
         """One conversational turn: context → intent → confirm → gate →
-        act, with spoken results."""
+        act, with spoken results.
+
+        ``confirm`` requests conversational confirmation of *routine* actions.
+        Confirmation itself is contextual: informational turns never ask,
+        consequential ones (commits, messages, calls) always do.
+        """
         from forge.voice import AudioError
 
         if text and audio_b64:

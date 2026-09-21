@@ -1,6 +1,6 @@
 """One hundred multimodal specialists, registered only where they can work.
 
-Forge already has a 1,000+ text-specialist fleet. Multimodal work is different:
+Forge already has a 1,040-role text-specialist fleet. Multimodal work is different:
 a specialist that reads images, transcribes speech, speaks, or draws needs a
 model that actually advertises ``vision``, ``speech_to_text``,
 ``text_to_speech`` or ``image_generation``. A text-only model cannot answer

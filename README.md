@@ -694,6 +694,79 @@ API reference, and guarantees.
 
 The executable supervisor E2E tests cover a deliberately broken first response followed by model repair, bounded rejection rollback, unrelated work preservation, explicit staging, `.forge` exclusion, and non-bypassable review/security rejection.
 
+## Production model path and specialist fleet (2026-09-21)
+
+This section describes what the deployed service (`python forge_web.py`,
+the Render/Docker entry point) actually does. It uses a fixed state
+vocabulary; a stronger word is never used for a weaker state:
+
+| State | Meaning |
+| --- | --- |
+| catalogued | a name appears in a checked-in inventory or document — no runtime meaning |
+| registered | a `Model` entry exists in this process's `ModelRegistry` |
+| configured | an operator set the env/config that names the provider and model ids |
+| discovered | the provider's inventory endpoint listed the id (evidence the id exists, not that it answers) |
+| reachable | the provider endpoint answered an HTTP request |
+| verified / live | a **real inference call succeeded** (`metadata.runtime_verified=True`, `verification_source` ∈ {`probe`, `generation`}) |
+| executed / successful | a task, specialist or run actually produced output through that model |
+
+**Hosted providers** (`forge.models.remote_providers`): Anthropic, Gemini,
+OpenRouter and Groq adapters are enabled only by `<NAME>_API_KEY`; model ids
+come from `<NAME>_MODELS` (comma list) or `<NAME>_MODEL`; `OPENAI_API_KEY`
+plus `OPENAI_MODELS`/`OPENAI_MODEL` enable the OpenAI adapter. When a key is
+set but no id is configured, a documented operator-overridable default id is
+*registered*, nothing more. Every registered hosted model starts
+`available=False` / `runtime_verified=False`. The `RuntimeMonitorService`
+(started by the API lifespan; first tick immediately) runs bounded real
+inference probes — `FORGE_RUNTIME_INFERENCE_PROBES` (default on),
+8 probes per tick, retry back-off 5 min → 1 h — and only a successful probe or
+a successful production generation makes a model `available` and
+`runtime_verified`. Discovery (`/models`) is inventory evidence and never
+flips availability on its own; an id that vanishes from inventory, or a
+failed inference, marks the model unavailable. `/api/v1/runtimes` reports
+per-provider `configured / discovered / live / verified / unavailable` counts
+from the same evidence. Credentials never appear in responses, logs or
+telemetry.
+
+**Local capability providers** (`forge.models.local_capabilities`): vision,
+speech-to-text, text-to-speech, image, browser and computer-use backends are
+registered only after an in-process probe succeeds on this machine, and the
+verified report is cached per fabric so per-run registry rebuilds do not
+re-probe (first probe ≈ 0.5 s, later runs 0 ms).
+
+**Specialist fleet** (`forge.agents.frontier_fleet`): **1,040 logical roles =
+40 specializations × 26 variants** (`FLEET_LABEL = "frontier-1040"`), plus
+the 5 core tool-using agents and up to 100 multimodal specialists that
+register only where a real backend exists. A specialist binds **no model**:
+at request time `eligible_models()` reads the live registry and keeps every
+model that is `available`, is not a fallback, and supports all of the role's
+required capabilities — `runtime_verified` models first — and variant *k*
+rotates the preference order by *k−1*, so the 26 variants of one family
+spread over every eligible model instead of all pinning the same one. A role
+with no eligible model fails closed ("no registered model supports
+capabilities […]"); it is never answered by a fallback or a model that lacks
+the capability. Registered ≠ live: the fleet count says how many roles exist,
+the runtimes view says how many models can serve them right now.
+
+**Task execution truth**: a run goes submit → queued → leased → started →
+routed → provider → verified → completed. The dispatcher admits at most
+`max_runs_per_project` (default 1) concurrent runs per project, so a single
+project executes tasks sequentially and additional tasks wait as `queued`;
+this bound is deliberate for a low-cost instance and is measured in each run's
+`timings`.
+
+**Voice**: informational intents (status, greetings, answers) execute
+directly; consequential intents (commit, send email/WhatsApp, calls) always
+require approval; ambiguous requests get a clarifying question. The A33 voice
+policy still gates every intent. **Login**: `POST /api/v1/sessions` needs
+only `actor`/`profile`; the project resolves to the sole registered project
+(the deployment registers "forge") and the cockpit has no project picker.
+**AI City** (`/city.html`) reads real backend state only: the task list
+(`/api/v1/tasks`), the selected task's milestones and its SSE event stream;
+districts light up from observed `stage.started` events and never from
+synthetic progress. Without a session it reports "Backend unavailable" rather
+than animating.
+
 ## Model Fabric
 
 All model access is centralized in the Model Fabric (`forge.models`), the single infrastructure agents use to route and call models:
@@ -819,9 +892,11 @@ extension guide, security model, and the Runtime / Model / AI Engine separation.
 
 ## Providers
 
-- `LocalModelProvider`: offline fallback with conservative no-op output when no local synthesis engine is configured.
+- `LocalModelProvider`: offline fallback with conservative no-op output when no local synthesis engine is configured; it is flagged `fallback` and is never counted as live or offered to specialists.
 - `OllamaProvider`: first-class local Ollama HTTP endpoint (no credentials required).
-- `OpenAIProvider`: optional remote provider, enabled only when `OPENAI_API_KEY` is configured.
+- `OpenAIProvider`: optional remote provider, enabled only when `OPENAI_API_KEY` is configured (`OPENAI_MODELS` / `OPENAI_MODEL` pick the ids).
+- `AnthropicProvider`, `GeminiProvider`, `OpenAICompatibleProvider` (OpenRouter, Groq) in `forge.models.remote_providers`: enabled by `<NAME>_API_KEY`, ids from `<NAME>_MODELS` / `<NAME>_MODEL`; registered models become live only after a real inference probe or generation succeeds (see "Production model path" above).
+- `LocalOpenAIProvider` (`forge.models.local_openai`): a self-hosted OpenAI-compatible endpoint from `FORGE_LOCAL_MODEL_URL` / `FORGE_LOCAL_MODEL_NAME`, same verification rules.
 - `MockProvider`: test double only.
 
 A provider can be registered with `ModelInfo(provider=...)` (legacy router) or `ModelFabric.register_model(...)` / `register_provider(...)` (fabric). Production callers should provide a real local or remote model for code generation; no pre-written `changes` are required by `CoderAgent`.

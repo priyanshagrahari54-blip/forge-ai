@@ -17,7 +17,10 @@ COMMAND_VALUES = ("START_TASK", "PAUSE_TASK", "RESUME_TASK", "CANCEL_TASK",
 
 class CreateSessionRequest(BaseModel):
     actor: str = Field(min_length=1, max_length=64)
-    project_id: str = Field(min_length=1, max_length=64)
+    # Omitted/empty means "the primary workspace": the control plane resolves
+    # its default project (the sole registered project, else ``forge``).
+    # Unknown ids still fail closed.
+    project_id: str = Field(default="", max_length=64)
     profile: str = Field(default="assisted", max_length=32)
 
 

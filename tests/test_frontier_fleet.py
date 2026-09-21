@@ -51,7 +51,7 @@ def test_frontier_fleet_registers_1000_plus_executable_specialists():
     assert fabric.calls
     request = fabric.calls[-1]
     assert request.metadata["agent"] == "planner-01-0001"
-    assert request.metadata["fleet"] == "frontier-1000-plus"
+    assert request.metadata["fleet"] == "frontier-1040"
     assert request.capability == "planning"
     # Only the specialization-defining capability is a hard requirement: the
     # router never relaxes one, and requiring a secondary preference (here
@@ -61,10 +61,10 @@ def test_frontier_fleet_registers_1000_plus_executable_specialists():
     assert request.metadata["preferred_capabilities"] == "reasoning"
     assert request.metadata["routing_capabilities"] == "planning,reasoning"
     assert request.caller == "frontier-agent:planner-01-0001"
-    assert request.metadata["preferred_model"]
-    # The assigned model travels as a request-level preference: it may order
-    # eligible candidates but never bypass capability/health/policy gates.
-    assert request.preferred_models == (request.metadata["preferred_model"],)
+    # No model is invented: a fabric without a registry has no eligible
+    # models, so the specialist states none instead of naming one.
+    assert request.metadata["preferred_model"] == ""
+    assert request.preferred_models == ()
 
 
 def test_default_fleet_is_1040_specialists_at_26_variants_per_family():
@@ -299,7 +299,7 @@ def test_specialist_prompt_carries_no_routing_metadata():
     request = fabric.calls[-1]
 
     for leak in ("Preferred model target", "Route through the shared ModelFabric",
-                 "Do not claim tool execution", "frontier-1000-plus",
+                 "Do not claim tool execution", "frontier-1040",
                  "required capabilities"):
         assert leak not in request.prompt, leak
     # The job itself survives, and the identity is a role, not a routing table.
@@ -313,7 +313,7 @@ def test_specialist_prompt_carries_no_routing_metadata():
     assert "Route through" not in fabric.calls[-1].prompt
 
     # Routing facts did not disappear; they moved to where routing reads them.
-    assert request.metadata["preferred_model"]
+    assert "preferred_model" in request.metadata
     assert request.metadata["routing_capabilities"]
     assert request.metadata["agent"] == "backend-01-0006"
     assert request.caller == "frontier-agent:backend-01-0006"
@@ -335,3 +335,63 @@ def test_specialist_sampling_is_deterministic_by_default_and_configurable():
     unset.get("researcher-01-0003").executor.execute(
         AgentRequest(task, TaskStatus.CODING, instructions="brief"))
     assert fabric.calls[-1].temperature is None
+
+
+def test_specialists_resolve_eligible_models_from_the_live_registry():
+    """A specialist is a role with several eligible models, not a model binding.
+
+    Eligibility comes from the fabric registry at execution time: available,
+    non-fallback models advertising the required capability, inference-
+    verified ones first. Variants rotate deterministically across them so a
+    family spreads its work, and an unverified or unavailable model is never
+    preferred over a verified one.
+    """
+    registry = ModelRegistry()
+    registry.register(Model("local-fallback", "local", ("coding", "planning"), fallback=True))
+    registry.register(Model("hosted/verified-a", "hosted", ("coding", "planning"),
+                            local=False, free=False,
+                            metadata={"runtime_verified": True}))
+    registry.register(Model("hosted/verified-b", "hosted", ("coding", "planning"),
+                            local=False, free=False,
+                            metadata={"runtime_verified": True}))
+    registry.register(Model("ollama/configured", "ollama", ("coding", "planning"),
+                            metadata={"runtime_verified": False}))
+    registry.register(Model("hosted/offline", "hosted", ("coding", "planning"),
+                            available=False, metadata={"runtime_verified": False}))
+    registry.register(Model("hosted/vision-only", "hosted", ("vision",),
+                            metadata={"runtime_verified": True}))
+
+    class _RegistryFabric(_FakeFabric):
+        def __init__(self):
+            super().__init__()
+            self.registry = registry
+
+    fabric = _RegistryFabric()
+    fleet = build_frontier_fleet(fabric)
+
+    first = fleet.get("planner-01-0001").executor
+    second = fleet.get("planner-02-0041").executor
+    third = fleet.get("planner-03-0081").executor
+    assert first.variant == 1 and second.variant == 2 and third.variant == 3
+    assert first.eligible_models() == (
+        "hosted/verified-a", "hosted/verified-b", "ollama/configured")
+    assert second.eligible_models() == (
+        "hosted/verified-b", "hosted/verified-a", "ollama/configured")
+    # Rotation wraps within the verified group; the configured model stays last.
+    assert third.eligible_models() == first.eligible_models()
+    for executor in (first, second, third):
+        assert "hosted/offline" not in executor.eligible_models()
+        assert "local-fallback" not in executor.eligible_models()
+        assert "hosted/vision-only" not in executor.eligible_models()
+
+    task = TaskEngine().add("eligibility", "plan the release")
+    second.execute(AgentRequest(task, TaskStatus.CODING, instructions="brief"))
+    request = fabric.calls[-1]
+    assert request.preferred_models == second.eligible_models()
+    assert request.metadata["preferred_model"] == "hosted/verified-b"
+    assert request.metadata["eligible_models"] == ",".join(second.eligible_models())
+    assert request.metadata["variant"] == "2"
+
+    # Verification changes eligibility immediately: no rebuild required.
+    registry.get("hosted/verified-a").available = False
+    assert first.eligible_models() == ("hosted/verified-b", "ollama/configured")

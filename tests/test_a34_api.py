@@ -53,6 +53,31 @@ def test_session_lifecycle(tmp_path):
         assert gone.json()["error"]["code"] == "AUTH_REQUIRED"
 
 
+def test_session_joins_primary_workspace_when_project_is_omitted(tmp_path):
+    """The account entry has no project picker: the plane resolves the
+    primary workspace itself (its only registered project here, ``demo``)."""
+    plane, client = _setup(tmp_path)
+    with client:
+        created = client.post("/api/v1/sessions", json={"actor": "alice"})
+        assert created.status_code == 200
+        assert created.json()["session"]["project_id"] == "demo"
+        assert plane.default_project_id() == "demo"
+
+
+def test_session_requires_project_when_several_are_registered(tmp_path):
+    plane, client = _setup(tmp_path)
+    second = tmp_path / "second"
+    second.mkdir()
+    plane.register_project("second", str(second))
+    with client:
+        missing = client.post("/api/v1/sessions", json={"actor": "alice"})
+        assert missing.status_code == 400
+        assert missing.json()["error"]["code"] == "INVALID_REQUEST"
+        named = client.post("/api/v1/sessions", json={
+            "actor": "alice", "project_id": "second"})
+        assert named.status_code == 200
+
+
 def test_session_rejects_unknown_project_and_bad_actor(tmp_path):
     plane, client = _setup(tmp_path)
     with client:

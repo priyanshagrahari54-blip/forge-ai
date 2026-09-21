@@ -138,7 +138,7 @@ def main() -> int:
           f"{media['audio_bytes']} B from {media['audio_source']}, pages at "
           f"{media['base']}")
 
-    registry = build_frontier_fleet(fabric, minimum_size=1000)
+    registry = build_frontier_fleet(fabric)
     engine = TaskEngine()
     started = time.time()
     records: list[dict[str, object]] = []
@@ -178,7 +178,7 @@ def main() -> int:
     #: requests that carry the media their capability needs.
     engine = TaskEngine()
     multimodal_records: list[dict[str, object]] = []
-    multimodal_registry = build_frontier_fleet(fabric, minimum_size=1000)
+    multimodal_registry = build_frontier_fleet(fabric)
     extend_registry_with_multimodal_fleet(multimodal_registry, fabric)
     for name in multimodal_registry.names():
         capability = SPECIALIST_CAPABILITY.get(name)

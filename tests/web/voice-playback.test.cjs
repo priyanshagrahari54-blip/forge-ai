@@ -71,8 +71,8 @@ test('both Forge surfaces load and use the shared playback module', () => {
   assert.match(home, /src="\/voice-playback\.js"/);
   assert.match(home, /id="enable-voice"/);
   assert.match(home, /Playback\.speak\(/);
-  assert.match(home, /JSON\.stringify\(\{text,confirm:true\}\)/);
+  assert.match(home, /JSON\.stringify\(\{text,confirm:false\}\)/);
   assert.ok(!/speechSynthesis\.speak\(/.test(handsfree), 'handsfree.js must not speak directly');
   assert.match(handsfree, /window\.ForgeVoicePlayback/);
-  assert.match(handsfree, /body: \{text, confirm: true\}/);
+  assert.match(handsfree, /body: \{text, confirm: false\}/);
 });

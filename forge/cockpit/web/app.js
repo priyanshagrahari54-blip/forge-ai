@@ -3188,9 +3188,10 @@ async function bootstrap() {
     ev.preventDefault();
     const errBox = document.getElementById("login-error");
     errBox.textContent = "";
+    // No project picker: the control plane joins the primary workspace
+    // (its default project) when project_id is omitted.
     const body = {
       actor: document.getElementById("login-actor").value,
-      project_id: "forge",
       profile: document.getElementById("login-profile").value,
     };
     try {

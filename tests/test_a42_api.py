@@ -36,7 +36,7 @@ def test_conversation_flow_over_http(tmp_path):
         conversation_id = started.json()["conversation_id"]
         first = client.post(
             f"/api/v1/voice/conversations/{conversation_id}/say",
-            headers=headers, json={"text": "run tests"})
+            headers=headers, json={"text": "run tests", "confirm": True})
         assert first.status_code == 200
         assert first.json()["status"] == "awaiting_confirmation"
         state = client.get(
@@ -54,6 +54,28 @@ def test_conversation_flow_over_http(tmp_path):
             headers=headers, json={})
         assert stopped.status_code == 200
         assert stopped.json()["interrupted"] is True
+
+
+def test_confirmation_is_contextual_over_http(tmp_path):
+    _plane, client = _setup(tmp_path)
+    with client:
+        _session, _token, headers = login(client)
+        conversation_id = client.post("/api/v1/voice/conversations",
+                                      headers=headers, json={}).json()["conversation_id"]
+        say = f"/api/v1/voice/conversations/{conversation_id}/say"
+        # Informational: answered immediately even when confirmation is requested.
+        hello = client.post(say, headers=headers, json={"text": "hello", "confirm": True})
+        assert hello.status_code == 200 and hello.json()["status"] == "completed"
+        # Routine: executes directly, a real task is created.
+        tests = client.post(say, headers=headers, json={"text": "run tests"})
+        assert tests.status_code == 200
+        assert tests.json()["status"] == "completed"
+        assert tests.json()["task"]["kind"] == "task"
+        # Consequential: always confirms, nothing is created until "yes".
+        commit = client.post(say, headers=headers, json={"text": "commit the changes"})
+        assert commit.status_code == 200
+        assert commit.json()["status"] == "awaiting_confirmation"
+        assert commit.json()["task"] is None
 
 
 def test_auth_and_boundaries(tmp_path):

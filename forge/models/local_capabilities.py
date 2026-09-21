@@ -187,7 +187,10 @@ def _file_request(wav: bytes) -> str:
 def probe_browser(policy: BrowserPolicy | None = None) -> dict[str, Any]:
     """Fetch and act on a real page served in-process, then shut it down."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ProbePage)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    #: ``shutdown()`` waits for the serve loop's poll, so the stdlib default
+    #: (0.5 s) used to dominate every control-plane construction.
+    thread = threading.Thread(target=server.serve_forever,
+                              kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
@@ -328,16 +331,32 @@ def build_local_providers(policy: BrowserPolicy | None = None) -> dict[str, Any]
     }
 
 
+#: Attribute under which a fabric remembers this process's probe report.
+_REPORT_ATTR = "_local_capability_report"
+
+
 def register_local_capability_models(
         fabric: Any, *, policy: BrowserPolicy | None = None,
-        verify: bool = True) -> dict[str, Any]:
+        verify: bool = True, refresh: bool = False) -> dict[str, Any]:
     """Register every local capability whose real probe passed.
 
     ``verify=False`` registers nothing that has not been probed in this process
     — a capability is never advertised from the mere presence of code. Callers
     that cannot afford a probe get the reasons instead.
+
+    The probes cost real time (~0.5 s: pixel measurement, bundled speech, a
+    DOM browser round trip) and their outcome only changes with a redeploy,
+    so a fabric remembers its verified report: later calls in the same
+    process (one per task run) reuse it instead of re-probing. ``refresh``
+    forces a new probe.
     """
     from forge.models.registry import Model
+
+    if verify and not refresh:
+        cached = getattr(fabric, _REPORT_ATTR, None)
+        if isinstance(cached, dict) and all(
+                fabric.registry.has(name) for name in cached.get("registered", ())):
+            return cached
 
     policy = policy or BrowserPolicy.from_env()
     specs = {spec["capability"]: spec for spec in local_capability_specs()}
@@ -384,7 +403,7 @@ def register_local_capability_models(
                 capability_status={capability: "verified"},
             ))
         registered.append(spec["model"])
-    return {
+    report = {
         "schema_version": 1,
         "registered": sorted(registered),
         "skipped": skipped,
@@ -395,3 +414,9 @@ def register_local_capability_models(
         "note": ("a local capability is registered only when its real probe "
                  "passed; a skipped entry names exactly what is missing"),
     }
+    if verify:
+        try:
+            setattr(fabric, _REPORT_ATTR, report)
+        except Exception:  # noqa: BLE001 - duck-typed fabrics may be read-only
+            pass
+    return report

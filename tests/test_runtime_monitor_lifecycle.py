@@ -34,13 +34,15 @@ def test_runtime_monitor_start_stop_and_persist(tmp_path):
     service = RuntimeMonitorService(
         Fabric(), state_path=path, interval_seconds=60)
 
-    service.tick(force=True, now=100.0)
+    tick = service.tick(force=True, now=100.0)
     counts = service.snapshot()["counts"]
-    # A successful model-list probe is discovery evidence only: the runtime
-    # becomes CONFIGURED and is NOT promoted. Only an explicit real inference
-    # probe may move it through VERIFIED to LIVE.
-    assert counts["CONFIGURED"] == 1
-    assert counts["LIVE"] == 0
+    # The model-list hit is discovery evidence only; the runtime is promoted
+    # by the bounded real inference probe that follows it in the same tick.
+    kinds = [item.get("kind") for item in tick["results"]]
+    assert "inference" in kinds
+    assert counts["LIVE"] == 1
+    assert counts["CONFIGURED"] == 0
+    assert service.registry.get("fake", "model-a").verification_id.startswith("inference:")
 
     result = service.inference_check("fake", "model-a")
     assert result["ok"] is True
