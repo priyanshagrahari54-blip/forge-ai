@@ -115,10 +115,8 @@
       <button id="menu-toggle" class="icon-btn" aria-label="Toggle navigation" aria-expanded="false">
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 4.5h14M2 9h14M2 13.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
-      <div class="crumb" aria-label="Breadcrumb">
-        <span class="crumb-root">Forge</span>
-        <span class="crumb-sep" aria-hidden="true">/</span>
-        <a id="project-chip" class="project-chip" href="#/projects" title="Open projects">project</a>
+      <div class="crumb" aria-label="Workspace">
+        <span class="crumb-root">Forge</span><span class="crumb-live">● Live workspace</span>
       </div>
       <div class="topright">
         <button id="palette-open" class="palette-hint" aria-label="Open command palette">
@@ -159,7 +157,7 @@
 </div>
 <div id="scrim" class="scrim hidden"></div>
 
-<section id="login" class="login hidden" aria-label="Sign in">
+<section id="login" class="login hidden" aria-label="Forge account">
   <div class="login-split">
     <div class="login-brand">
       <div class="brand">
@@ -188,16 +186,14 @@
       </svg>
     </div>
     <div class="login-card surface">
-      <h2>Enter Forge</h2>
-      <p class="muted">Local-development session. The browser is never trusted:
-      every action is authorized server-side by Forge policy.</p>
+      <div class="auth-kicker">FORGE AI · PRIVATE WORKSPACE</div>
+      <h2>Welcome to Forge</h2>
+      <p class="auth-copy">One intelligent workspace for tasks, agents, models, research and AI City.</p>
       <form id="login-form">
-        <label for="login-actor">Actor (audit identity)</label>
+        <label for="login-actor">Your name</label>
         <input id="login-actor" name="actor" type="text" autocomplete="username"
-               maxlength="64" placeholder="e.g. alice" required>
-        <label for="login-project">Project id</label>
-        <input id="login-project" name="project" type="text" maxlength="64"
-               placeholder="e.g. forge" required>
+               maxlength="64" placeholder="Enter your name" required>
+        <div class="auth-auto"><span>Workspace</span><strong>Forge</strong><small>Created automatically</small></div>
         <label for="login-profile">Permission profile</label>
         <select id="login-profile" name="profile">
           <option value="assisted" selected>assisted (approve changes)</option>
@@ -206,7 +202,8 @@
           <option value="locked">locked (no modifications)</option>
         </select>
         <div id="login-error" class="error" role="alert"></div>
-        <button class="btn primary block" type="submit">Enter cockpit →</button>
+        <button class="btn primary block auth-submit" type="submit"><span>Continue to Forge</span><span>→</span></button>
+      <p class="auth-foot">Your workspace is created automatically. You can change permissions later in Settings.</p>
       </form>
     </div>
   </div>
