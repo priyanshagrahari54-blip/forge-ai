@@ -44,10 +44,14 @@ export FORGE_LOCAL_MODEL_CONTEXT=4096
 `ModelFabric.from_defaults()` registers the provider (`local-openai`) and the
 model from the environment, so `ControlPlane` picks it up with no code change.
 
-The runtime monitor then probes the endpoint's `/models` and moves the model to
-`LIVE` only if that exact model answers. Until then the model stays
-`CONFIGURED` (or `UNAVAILABLE`) and Forge routes elsewhere — configuration is
-never treated as verification.
+The runtime monitor then lists the endpoint's `/models` (inventory evidence:
+does the id exist?) and sends a bounded real inference probe
+(`FORGE_RUNTIME_INFERENCE_PROBES`, default on; 8 probes per tick with
+back-off). The model moves to `LIVE` only when that exact model answers the
+probe — or a production generation succeeds through it. Until then the model
+stays `CONFIGURED` (or `UNAVAILABLE` after a failed probe / a vanished id) and
+Forge routes elsewhere — configuration and discovery are never treated as
+verification.
 
 ## 3. What the capabilities mean here
 

@@ -117,13 +117,17 @@ def is_inference_verified(model: Any) -> bool:
     return bool(metadata and metadata.get("runtime_verified") is True)
 
 
-def _apply_verified(model: Any, result: RuntimeProbeResult) -> None:
+def _apply_verified(model: Any, result: RuntimeProbeResult, *,
+                    count_success: bool = True) -> None:
     _set_if_settable(model, "available", True, required=True)
     _set_if_settable(model, "latency_ms", max(0.0, result.latency_ms))
     health = getattr(model, "health", None)
     if health is not None:
         record = getattr(health, "record_success", None)
-        if callable(record):
+        #: A probe is a success nothing else records; production traffic is
+        #: already counted by the fabric's own feedback, so it is not counted
+        #: twice here.
+        if count_success and callable(record):
             record()
         #: ``ModelHealth.status`` is the closed ``HealthStatus`` vocabulary
         #: (``provider_health`` aggregates on it); the probe's own status
@@ -227,7 +231,7 @@ def record_inference_success(model: Any, *, latency_ms: float = 0.0,
         latency_ms=max(0.0, float(latency_ms or 0.0)),
         status=HealthStatus.HEALTHY.value,
         reason=f"real inference succeeded ({source})",
-    ))
+    ), count_success=False)
     metadata = _metadata(model)
     if metadata is not None:
         metadata["verification_source"] = source

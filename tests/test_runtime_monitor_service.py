@@ -1,3 +1,5 @@
+import time
+
 from forge.models.configured_runtime import ConfiguredRuntime, ConfiguredRuntimeRegistry, RuntimeState
 from forge.models.runtime_monitor import RuntimeMonitor
 from forge.models.runtime_monitor_service import RuntimeMonitorService
@@ -127,6 +129,7 @@ def test_service_explicit_inference_probe_promotes_exact_runtime(tmp_path):
 from forge.models.fabric import ModelFabric  # noqa: E402
 from forge.models.provider import ModelResult, ProviderInfo  # noqa: E402
 from forge.models.registry import Model, ModelRegistry  # noqa: E402
+from forge.models.request import ModelRequest  # noqa: E402
 
 
 class MultiModelProvider:
@@ -281,3 +284,52 @@ def test_discovery_transport_failure_is_inconclusive(tmp_path):
     assert "discovery failed" in snapshot["providers"]["hosted"]["discovery_error"]
     assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.LIVE.value
     assert registry.get("hosted/m1").available is True
+
+
+def test_production_generation_verifies_and_counts_one_success(tmp_path):
+    """Real traffic is verification evidence, counted exactly once in health."""
+    provider = MultiModelProvider(["m1"])
+    fabric, registry = _hosted_fabric("hosted", provider, ["m1"])
+    model = registry.get("hosted/m1")
+    model.available = True  # routable so the request reaches the provider
+    response = fabric.generate(ModelRequest(prompt="hi", capability="coding"))
+    assert response.success and response.model == "hosted/m1"
+    assert model.metadata["runtime_verified"] is True
+    assert model.metadata["verification_source"] == "generation"
+    assert model.health.total_successes == 1
+    #: The monitor promotes from that evidence without spending a probe.
+    service = RuntimeMonitorService(fabric, state_path=tmp_path / "runtime.json",
+                                    inference_probes=True)
+    service.tick(force=True, now=time.time())
+    assert service.registry.get("hosted", "hosted/m1").state == RuntimeState.LIVE.value
+    assert len(provider.calls) == 1  # the generation; no probe was spent
+
+
+# --------------------------------------------------------------------------
+# Production defaults: both entry points verify by real inference unless the
+# operator (or a test harness) says otherwise.
+# --------------------------------------------------------------------------
+
+def test_api_lifespan_probes_by_default_and_honours_api_config(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from forge.api.app import ApiConfig, create_app
+    from tests.helpers_a34 import make_plane
+
+    monkeypatch.delenv("FORGE_RUNTIME_INFERENCE_PROBES", raising=False)
+    plane = make_plane(tmp_path / "default")
+    with TestClient(create_app(plane)):
+        assert plane.runtime_monitor.inference_probes is True
+    plane = make_plane(tmp_path / "quiet")
+    with TestClient(create_app(plane, ApiConfig(runtime_inference_probes=False))):
+        assert plane.runtime_monitor.inference_probes is False
+
+
+def test_forge_server_probes_by_default_and_honours_server_config(tmp_path, monkeypatch):
+    from tests.helpers_server import make_server
+
+    monkeypatch.delenv("FORGE_RUNTIME_INFERENCE_PROBES", raising=False)
+    server = make_server(tmp_path / "default", start=False,
+                         runtime_inference_probes=None)
+    assert server.scheduler.runtime_monitor.inference_probes is True
+    server = make_server(tmp_path / "quiet", start=False)
+    assert server.scheduler.runtime_monitor.inference_probes is False

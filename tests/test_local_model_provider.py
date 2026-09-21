@@ -169,24 +169,44 @@ def test_runtime_monitor_promotes_the_model_only_after_a_real_probe(
     sync_configured_runtimes(fabric)
 
     service = RuntimeMonitorService(
-        fabric, state_path=tmp_path / "monitor.json", interval_seconds=0.05)
+        fabric, state_path=tmp_path / "monitor.json", interval_seconds=0.05,
+        inference_probes=False)
     payload = service.tick(force=True)
     by_provider = {entry["provider"]: entry for entry in payload["results"]}
     # A reachable endpoint with a model list is discovery evidence: the
-    # runtime becomes CONFIGURED, and the periodic loop alone never promotes
-    # it. The Ollama runtime in the same fabric stays UNAVAILABLE because
-    # nothing is listening — the probe never marks an unreachable model live.
+    # runtime becomes CONFIGURED, and discovery alone never promotes it. The
+    # Ollama runtime in the same fabric has nothing listening: a failed
+    # listing is recorded as inconclusive (it never marks anything live), and
+    # the outage itself is established by the inference probe below.
     assert by_provider["local-openai"]["state"] == "CONFIGURED", payload["results"]
-    assert by_provider["ollama"]["state"] == "UNAVAILABLE"
+    assert by_provider["ollama"]["state"] == "CONFIGURED"
+    assert "discovery failed" in payload["providers"]["ollama"]["discovery_error"]
+    assert fabric.registry.get(_Handler.model_id).metadata["runtime_verified"] is False
 
-    # Only an explicit *real inference* probe promotes the exact runtime
-    # through VERIFIED to LIVE — discovery alone never does.
+    # Only a *real inference* probe promotes the exact runtime through
+    # VERIFIED to LIVE.
     result = service.inference_check("local-openai", _Handler.model_id)
     assert result["ok"] is True
     assert result["state"] == "LIVE"
     model = fabric.registry.get(_Handler.model_id)
     assert model.metadata["runtime_verified"] is True
     assert model.available is True
+
+    # The production default does that probe itself: with automatic probes
+    # on, the first tick verifies the endpoint by real inference — still
+    # never by discovery — and leaves the unreachable Ollama runtime alone.
+    fresh = ModelFabric.from_defaults(config)
+    sync_configured_runtimes(fresh)
+    auto = RuntimeMonitorService(
+        fresh, state_path=tmp_path / "auto.json", interval_seconds=0.05,
+        inference_probes=True)
+    auto.tick(force=True)
+    verified = fresh.registry.get(_Handler.model_id)
+    assert verified.metadata["runtime_verified"] is True
+    assert verified.metadata.get("verification_source") == "probe"
+    assert verified.available is True
+    assert fresh.registry.get("ollama/llama3.2").available is False
+    assert auto.registry.get("ollama", "ollama/llama3.2").state == "UNAVAILABLE"
 
 
 def test_a_self_hosted_model_actually_serves_generation_through_the_fabric(

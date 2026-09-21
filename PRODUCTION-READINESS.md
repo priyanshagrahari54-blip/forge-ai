@@ -31,7 +31,15 @@ endpoint answered) → *verified / live* (a real inference call succeeded) →
 | Dead code removed | the older `forge/agents/fleet.py` / `routing.py` / `model_execution.py` "1000+ slot" fleet (unused by any production path, traced) and the stray `forge-ai-fixes.patch` (already applied) | `grep` trace, full suite |
 | Not done / honest gaps | no hosted credential here, so hosted inference is **configured-only** until the Render environment sets a key; same-project task concurrency stays at 1; vision needs the `media` extra (installed by the Dockerfile, not in this checkout) | — |
 
-Full suite on this branch: see the end of this section.
+Verification of this branch in this checkout (Python 3.11, `pip install -e ".[dev]"`,
+no `media` extra, no hosted credential):
+
+```bash
+python -m pytest -q                      # 3382 passed, 21 skipped, 0 failed (787 s)
+node --test tests/web/handsfree.test.cjs # 4 passed   (network: 3, voice-playback: 4)
+python -m compileall -q forge && vermin -t=3.8- forge && git diff --check
+python scripts/verify_production_readiness.py   # 1040 registered / 40 roles x 26
+```
 
 
 Everything below was observed in this checkout or against the live service.

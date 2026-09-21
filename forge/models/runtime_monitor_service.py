@@ -25,7 +25,8 @@ evidence, weakest first:
 
 Conclusive negative evidence (id not listed, probe failed) makes the runtime
 UNAVAILABLE and the model non-routable. Inconclusive probes (no list endpoint,
-transport failure) leave the previous state untouched.
+transport failure) leave the previous state untouched; a dead endpoint is
+caught by the inference probe, never by a failed listing alone.
 """
 from __future__ import annotations
 
@@ -247,7 +248,9 @@ class RuntimeMonitorService:
             # The probe is inconclusive (``conclusive=False``): Forge records
             # that it could not verify the runtime and leaves the model's
             # routing state untouched, rather than reporting an outage it
-            # never observed.
+            # never observed. A dead endpoint is still caught: the inference
+            # probe that follows is conclusive, and a listing that is broken
+            # while inference works must never block a working model.
             return RuntimeProbeResult(model_id=runtime.model_id, ok=False, status="unverified",
                                       reason=error or "provider has no exact model-list probe",
                                       conclusive=False)

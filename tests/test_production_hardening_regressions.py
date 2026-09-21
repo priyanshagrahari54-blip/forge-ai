@@ -40,7 +40,7 @@ from forge.core.task_queue import PersistentTaskQueue
 from forge.core.task_store import TaskStore
 from forge.models.configured_runtime import ConfiguredRuntime, ConfiguredRuntimeRegistry
 from forge.models.fabric import ModelFabric
-from forge.models.provider import MockProvider
+from forge.models.provider import MockProvider, ModelResult
 from forge.models.provider_links_http import install_provider_links_route
 from forge.models.registry import Model, ModelRegistry
 from forge.models.request import ModelRequest
@@ -54,8 +54,12 @@ class _ListlessProvider:
 
     name = "custom"
 
+    def __init__(self):
+        self.prompts = []
+
     def generate(self, prompt, **kwargs):
-        return "ok"
+        self.prompts.append(prompt)
+        return ModelResult("ok", self.name)
 
 
 class _MinimalRegistry:
@@ -84,7 +88,8 @@ def test_listless_provider_is_unverified_not_unavailable():
     fabric = ModelFabric(registry=ModelRegistry([
         Model(name="m/a34", provider="custom", capabilities=("coding",))]),
         providers=_MinimalProviderRegistry(provider))
-    service = RuntimeMonitorService(fabric, state_path=Path(tempfile.mkdtemp()) / "r.json")
+    service = RuntimeMonitorService(fabric, state_path=Path(tempfile.mkdtemp()) / "r.json",
+                                    inference_probes=False)
     service.tick(force=True, now=100.0)
     model = fabric.registry.get("m/a34")
     assert model.available is True
@@ -92,6 +97,24 @@ def test_listless_provider_is_unverified_not_unavailable():
     runtime = service.registry.get("custom:m/a34")
     assert runtime.state != "UNAVAILABLE"
     assert "inconclusive" in runtime.last_reason
+    assert provider.prompts == []
+
+
+def test_listless_provider_is_verified_by_real_inference_not_by_listing():
+    """Without a list endpoint, only a real answer makes the model live."""
+    provider = _ListlessProvider()
+    fabric = ModelFabric(registry=ModelRegistry([
+        Model(name="m/a34", provider="custom", capabilities=("coding",))]),
+        providers=_MinimalProviderRegistry(provider))
+    service = RuntimeMonitorService(fabric, state_path=Path(tempfile.mkdtemp()) / "r.json",
+                                    inference_probes=True)
+    service.tick(force=True, now=100.0)
+    model = fabric.registry.get("m/a34")
+    assert len(provider.prompts) == 1
+    assert model.available is True
+    assert model.metadata.get("runtime_verified") is True
+    assert model.metadata.get("verification_source") == "probe"
+    assert service.registry.get("custom:m/a34").state == "LIVE"
     # The task pipeline's pre-flight gate therefore still sees a real model.
     from forge.models.readiness import fabric_has_real_model
     assert fabric_has_real_model(fabric) is True
@@ -136,7 +159,8 @@ def test_probe_result_apply_tolerates_minimal_models():
 
 def test_monitor_service_survives_duck_typed_registry():
     fabric = _MinimalFabric()
-    service = RuntimeMonitorService(fabric, state_path=Path(tempfile.mkdtemp()) / "r.json")
+    service = RuntimeMonitorService(fabric, state_path=Path(tempfile.mkdtemp()) / "r.json",
+                                    inference_probes=False)
     snapshot = service.tick(force=True, now=100.0)
     assert snapshot["live"] == 0  # no list probe -> unverified, never "live"
     assert snapshot["counts"]["UNAVAILABLE"] == 0
@@ -387,10 +411,19 @@ def test_both_voice_surfaces_use_one_playback_implementation():
     assert "window.ForgeVoicePlayback" in handsfree
 
 
-def test_voice_commands_still_ask_before_executing():
+def test_voice_confirmation_is_contextual_not_blanket():
+    """The web never forces "yes or no?" on every request; the server still
+    confirms every consequential intent and the A33 gate still applies."""
+    from forge.voice.base import (CONSEQUENTIAL_INTENTS, INFORMATIONAL_INTENTS,
+                                  confirmation_required)
     handsfree = _web("handsfree.js")
     home = _web("forge-home.html")
-    assert "body: {text, confirm: true}" in handsfree
-    assert "confirm:true" in home
+    assert "body: {text, confirm: false}" in handsfree
+    assert "confirm:false" in home
+    assert "confirm: true" not in handsfree and "confirm:true" not in home
+    for intent in CONSEQUENTIAL_INTENTS:
+        assert confirmation_required(intent, requested=False) is True
+    for intent in INFORMATIONAL_INTENTS:
+        assert confirmation_required(intent, requested=True) is False
 
 

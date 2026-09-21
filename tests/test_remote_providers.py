@@ -3,15 +3,21 @@ from forge.models.remote_providers import build_remote_providers
 
 
 def test_credential_store_recognizes_all_hosted_providers():
+    secret = "sk-test-secret-value"
     env = {
-        "OPENAI_API_KEY": "x",
-        "ANTHROPIC_API_KEY": "x",
-        "GEMINI_API_KEY": "x",
-        "OPENROUTER_API_KEY": "x",
-        "GROQ_API_KEY": "x",
+        "OPENAI_API_KEY": secret,
+        "ANTHROPIC_API_KEY": secret,
+        "GEMINI_API_KEY": secret,
+        "OPENROUTER_API_KEY": secret,
+        "GROQ_API_KEY": secret,
     }
     store = CredentialStore(env=env)
-    assert all(store.configured(name) for name in env)
+    providers = ("openai", "anthropic", "gemini", "openrouter", "groq")
+    assert all(store.configured(name) for name in providers)
+    assert all(store.providers()[name] for name in providers)
+    # Never a value in the redacted views.
+    assert secret not in repr(store)
+    assert set(store.providers().values()) == {True}
 
 
 def test_remote_provider_factory_registers_only_present_keys():

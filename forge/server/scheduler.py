@@ -41,6 +41,8 @@ class Scheduler:
             state_path=runtime_root / "runtime-monitor.json",
             interval_seconds=interval,
             verification_ttl_seconds=ttl,
+            inference_probes=getattr(
+                server.config, "runtime_inference_probes", None),
         )
 
     # -- lifecycle -------------------------------------------------------------

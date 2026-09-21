@@ -110,6 +110,11 @@ class ServerConfig:
     #: not. The choice is recorded on every response and in health, so a
     #: degraded path is never silent.
     inference_path: Any = None
+    #: Whether the runtime monitor may verify this fabric's configured models
+    #: with bounded real inference probes. ``None`` defers to
+    #: ``FORGE_RUNTIME_INFERENCE_PROBES`` (default on); test harnesses whose
+    #: scripted providers attach side effects to ``generate`` turn it off.
+    runtime_inference_probes: Optional[bool] = None
     max_workers: int = 4
     #: Resource governor profile: "" (auto-detect) | default | g560.
     #: Distinct from ``profile`` above, which is the A33 *permission*

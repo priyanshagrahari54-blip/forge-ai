@@ -11,7 +11,7 @@ browser) only opens the UI.
 | --- | --- | --- |
 | Cockpit UI (`/`, `/city.html`, voice pages) | **client browser** | static HTML/CSS/JS served by the server; no local runtime |
 | API, orchestration, task state | **Forge server** | `forge_web`/FastAPI; the client never talks to a model directly |
-| 1,000 specialists, planning, routing, failover | **Forge server** | logical registrations sharing the server's model capacity |
+| 1,040 specialists, planning, routing, failover | **Forge server** | logical registrations sharing the server's model capacity |
 | Model inference (llama.cpp, vLLM, Ollama, TGI) | **your model servers**, one or many | this is the heavy part, and it is configurable per server |
 | Training / fine-tuning (LoRA) | **a server with CPU/GPU to spare** | never the thin client; see the fine-tuning section |
 | AI City, voice understanding | browser for audio I/O, **server** for decisions | the browser only plays/records |

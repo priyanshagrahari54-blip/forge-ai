@@ -202,6 +202,13 @@ def make_server(tmp_path: Path, executor: Any = None, *,
             "retry_backoff_seconds", 0.05),
         poll_interval=config_kwargs.pop("poll_interval", 0.05),
         approval_timeout=config_kwargs.pop("approval_timeout", 60.0),
+        #: Scripted providers here attach side effects to ``generate`` (they
+        #: count prompts, block until released); the runtime monitor's
+        #: background inference probes would trip them, so they are off
+        #: unless a test asks for them. Runtime verification has its own
+        #: tests (``tests/test_runtime_monitor_service.py``).
+        runtime_inference_probes=config_kwargs.pop(
+            "runtime_inference_probes", False),
         **config_kwargs)
     server = ForgeServer(config)
     if start:
