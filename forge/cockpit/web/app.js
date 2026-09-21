@@ -548,7 +548,7 @@ function statCard(label, value, sub) {
 }
 
 async function renderDashboard() {
-  renderNetworkCatalog();
+  void renderNetworkCatalog();
   const actor = state.session ? state.session.actor : "there";
   document.getElementById("d-greet").textContent = `${greet()}, ${actor}`;
   const load = async () => {
@@ -594,7 +594,7 @@ async function renderDashboard() {
     loadActiveRun();
   };
   await load();
-  state.pollers.push(setInterval(load, 5000));
+  state.pollers.push(setInterval(load, 8000));
 }
 
 function fmtCount(value) {
@@ -3190,7 +3190,7 @@ async function bootstrap() {
     errBox.textContent = "";
     const body = {
       actor: document.getElementById("login-actor").value,
-      project_id: document.getElementById("login-project").value,
+      project_id: "forge",
       profile: document.getElementById("login-profile").value,
     };
     try {
@@ -3212,9 +3212,7 @@ function enter() {
   document.getElementById("login").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
   document.getElementById("logout").classList.remove("hidden");
-  document.getElementById("project-chip").textContent = state.session.project_id;
-  document.getElementById("whoami").textContent =
-    `${state.session.actor} @ ${state.session.project_id}`;
+  document.getElementById("whoami").textContent = state.session.actor;
   document.getElementById("profile-chip").textContent = state.session.profile;
   document.getElementById("logout").addEventListener("click", async () => {
     try {
@@ -3398,7 +3396,9 @@ function renderCityView() {
   // reports connection failures instead of inventing activity; this view
   // only hosts it, so the cockpit has one implementation of the map.
   const frame = document.getElementById("city-frame");
-  if (frame && !frame.getAttribute("src")) frame.setAttribute("src", "/city.html");
+  if (!frame) return;
+  frame.setAttribute("src", "/city.html?embed=1&v=" + Date.now());
+  frame.addEventListener("load", () => frame.classList.add("ready"), { once: true });
 }
 
 function renderVision() {
