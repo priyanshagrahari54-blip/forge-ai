@@ -94,10 +94,16 @@ class TaskEngine:
             task.lease_heartbeat = 0.0
         return task
 
+    def _sync_map_if_needed(self) -> None:
+        if len(self._task_map) != len(self.tasks):
+            self._task_map = {task.id: task for task in self.tasks}
+
     def _exists(self, task_id: str) -> bool:
+        self._sync_map_if_needed()
         return task_id in self._task_map
 
     def _find(self, task_id: str) -> Task:
+        self._sync_map_if_needed()
         task = self._task_map.get(task_id)
         if task is None:
             raise KeyError(f"Task not found: {task_id}")

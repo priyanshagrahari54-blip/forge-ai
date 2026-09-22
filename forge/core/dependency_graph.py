@@ -39,11 +39,6 @@ class TaskDependencyGraph:
         visited: set[str] = set()
         path: list[str] = []
 
-        # Optimization: lookup tasks using _task_map if available to avoid O(N) linear scans per node
-        task_map = getattr(self.engine, "_task_map", None)
-        if task_map is None:
-            task_map = {task.id: task for task in self.engine.tasks}
-
         def visit(task_id: str) -> DependencyCycle | None:
             if task_id in visiting:
                 start = path.index(task_id)
@@ -55,12 +50,12 @@ class TaskDependencyGraph:
             visiting.add(task_id)
             path.append(task_id)
 
-            task = task_map.get(task_id)
-            if task is not None:
-                for dependency in task.dependencies:
-                    cycle = visit(dependency)
-                    if cycle is not None:
-                        return cycle
+            task = self.engine._find(task_id)
+
+            for dependency in task.dependencies:
+                cycle = visit(dependency)
+                if cycle is not None:
+                    return cycle
 
             path.pop()
             visiting.remove(task_id)
