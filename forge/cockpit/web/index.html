@@ -81,6 +81,9 @@
         <a href="#/conversation" data-route="conversation">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v8H6l-3 2.5v-2.5H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
           <span>Conversation</span></a>
+        <a href="#/assistant" data-route="assistant">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor"/><path d="M2.6 14c.6-3 2.8-4.6 5.4-4.6S12.8 11 13.4 14" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>Assistant</span></a>
         <a href="#/research" data-route="research">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor"/><path d="M10.4 10.4L14 14" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
           <span>Research</span></a>
@@ -282,6 +285,53 @@
       <input type="text" id="conversation-input" placeholder="e.g. what does this project do?">
       <button id="conversation-send" class="primary">Send</button>
     </div>
+  </section>
+</template>
+
+<template id="tpl-assistant">
+  <div class="view-head">
+    <h2>Assistant</h2>
+    <p class="muted">Your continuing assistant: sessions, continuity and
+    controlled memory in front of the same Supervisor, Fabric, research and
+    security paths as everything else. Ordinary messages are not stored —
+    retention is decided per record and every entry is inspectable,
+    correctable and forgettable here.</p>
+  </div>
+  <section class="surface">
+    <div class="section-header"><h3>Ask or delegate</h3></div>
+    <div id="assistant-log"></div>
+    <div class="button-row">
+      <input type="text" id="assistant-input" placeholder="continue yesterday's research; fix the parser; what do you know about X?">
+      <label class="muted"><input type="checkbox" id="assistant-web"> web</label>
+      <button id="assistant-send" class="primary">Send</button>
+    </div>
+    <div class="button-row">
+      <select id="assistant-retention">
+        <option value="">retention: (current)</option>
+        <option value="normal">normal</option>
+        <option value="disabled">disabled — short-term only</option>
+      </select>
+      <button id="assistant-retention-save">Apply</button>
+      <span class="muted">applies to this assistant session</span>
+    </div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Personal memory (user-controlled)</h3>
+      <button id="assistant-refresh-memory">Refresh</button></div>
+    <div id="assistant-memory"></div>
+    <div class="button-row">
+      <input type="text" id="assistant-clear-confirm" placeholder="type FORGET EVERYTHING IN THIS SCOPE to clear long-term memory">
+      <button id="assistant-clear">Forget everything</button>
+    </div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Declared model scale</h3></div>
+    <div id="assistant-scale" class="muted">Loading…</div>
+  </section>
+  <section class="surface">
+    <div class="section-header"><h3>Tools, patterns &amp; improvement</h3>
+      <button id="assistant-scan">Scan improvements</button></div>
+    <div id="assistant-intel" class="muted">Loading…</div>
   </section>
 </template>
 

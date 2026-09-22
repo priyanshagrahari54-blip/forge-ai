@@ -229,6 +229,19 @@ class ModelIdentity:
     #: ``None`` when unknown; a string such as ``"7B"`` may live in metadata.
     parameter_count: Optional[int] = None
     parameter_label: str = ""
+    #: Active parameters for a mixture-of-experts model (``None`` = unknown).
+    #: A disclosed total with a smaller disclosed active count is the sparse
+    #: MoE signature — recorded, never guessed.
+    active_parameter_count: Optional[int] = None
+    #: Architecture family declared by the provider/artifact ("moe", "dense",
+    #: ...) — empty means "not disclosed".
+    architecture: str = ""
+    #: Model class from the A84 vocabulary (``forge.models.model_class``).
+    #: "" means undeclared — distinct from a misdeclared class, which raises.
+    model_class: str = ""
+    #: Content modalities the identity actually advertises ("text", "image",
+    #: "audio", …). Empty tuple = not disclosed, NOT "text only by default".
+    modalities: Tuple[str, ...] = ()
     #: ``True`` for a local artifact/endpoint, ``False`` for a remote provider.
     local: bool = True
     memory_requirements: MemoryRequirements = field(
@@ -268,6 +281,13 @@ class ModelIdentity:
         self.supported_platforms = tuple(self.supported_platforms or ())
         if not self.backend_id and ":" in self.model_id:
             self.backend_id = self.model_id.split(":", 1)[0]
+        if self.model_class:
+            from forge.models.model_class import normalize_model_class
+            try:
+                self.model_class = normalize_model_class(self.model_class)
+            except ValueError as exc:
+                raise IdentityError(str(exc)) from None
+        self.modalities = tuple(self.modalities or ())
         if self.availability_state not in {s.value for s in AvailabilityState}:
             raise IdentityError(
                 "unknown availability_state %r" % (self.availability_state,))
@@ -308,6 +328,26 @@ class ModelIdentity:
     def name(self) -> str:
         """Bare model name (``model_id`` without the backend prefix)."""
         return self.model_id.split(":", 1)[-1]
+
+    @property
+    def scale(self):
+        """Parameter-scale view over *this identity's declared fields only*."""
+        from forge.models.model_class import ParameterScale
+        return ParameterScale(
+            parameter_count=self.parameter_count
+            if isinstance(self.parameter_count, int) and self.parameter_count > 0
+            else None,
+            active_parameter_count=self.active_parameter_count,
+            architecture=self.architecture,
+            quantization=self.quantization,
+            context_length=self.context_limit or None,
+            model_version=self.model_version,
+            declared_by="model identity",
+        )
+
+    @property
+    def scale_band(self) -> str:
+        return self.scale.band
 
     def supports(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -490,6 +530,11 @@ class ModelIdentity:
             "quantization": self.quantization,
             "parameter_count": self.parameter_count,
             "parameter_label": self.parameter_label,
+            "active_parameter_count": self.active_parameter_count,
+            "architecture": self.architecture or "unknown",
+            "model_class": self.model_class,
+            "modalities": list(self.modalities),
+            "scale": self.scale.to_dict(),
             "local_or_remote": "local" if self.local else "remote",
             "local": bool(self.local),
             "memory_requirements": self.memory_requirements.to_dict(),
@@ -526,6 +571,10 @@ class ModelIdentity:
             quantization=str(data.get("quantization") or ""),
             parameter_count=data.get("parameter_count"),
             parameter_label=str(data.get("parameter_label") or ""),
+            active_parameter_count=data.get("active_parameter_count"),
+            architecture=str(data.get("architecture") or ""),
+            model_class=str(data.get("model_class") or ""),
+            modalities=tuple(data.get("modalities") or ()),
             local=bool(data.get("local", data.get("local_or_remote", "local")
                        == "local")),
             memory_requirements=MemoryRequirements.from_dict(

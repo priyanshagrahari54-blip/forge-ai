@@ -55,6 +55,7 @@ const ROUTES = {
   security: { render: renderSecurityView, title: "Security" },
   settings: { render: renderSettingsView, title: "Settings" },
   conversation: { render: renderConversationView, title: "Conversation" },
+  assistant: { render: renderAssistantView, title: "Assistant" },
   research: { render: renderResearchView, title: "Research" },
   city: { render: renderCityView, title: "AI City" },
   compute: { render: renderComputeView, title: "Compute" },
@@ -2939,6 +2940,7 @@ async function renderMemory() {
 
 const PALETTE_COMMANDS = [
   ["Go to Overview", "view", () => { window.location.hash = "#/dashboard"; }],
+  ["Go to Assistant", "view", () => { window.location.hash = "#/assistant"; }],
   ["Go to Tasks", "view", () => { window.location.hash = "#/tasks"; }],
   ["Go to Projects", "view", () => { window.location.hash = "#/projects"; }],
   ["Go to Staged Builds", "view", () => { window.location.hash = "#/builds"; }],
@@ -3814,6 +3816,159 @@ function renderConversationView() {
       }
     });
   load();
+}
+
+/* ---------- assistant (A84) ---------- */
+
+function renderAssistantView() {
+  const box = document.getElementById("assistant-log");
+  const input = document.getElementById("assistant-input");
+  const memoryBox = document.getElementById("assistant-memory");
+  const scaleBox = document.getElementById("assistant-scale");
+  const intelBox = document.getElementById("assistant-intel");
+  let assistantSessionId = "";
+  let pendingConfirm = false;
+
+  const renderTurn = (payload) => {
+    const row = el("div", "surface memory-entry");
+    const head = el("p", "muted",
+      "triage: " + payload.kind + " | channel: " + payload.provenance +
+      " | quality: " + ((payload.quality && payload.quality.verdict) || "n/a") +
+      (payload.task_id ? " | task: " + payload.task_id : ""));
+    row.appendChild(head);
+    row.appendChild(el("p", null, payload.text || ""));
+    if (payload.memory && payload.memory.decision &&
+        payload.memory.decision.store) {
+      row.appendChild(el("p", "muted", "memory: retained (" +
+        payload.memory.decision.layer + " layer) — inspect below or forget"));
+    }
+    box.insertBefore(row, box.firstChild);
+  };
+
+  const loadMemory = () => {
+    api("/api/v1/assistant/memory").then((payload) => {
+      memoryBox.innerHTML = "";
+      const entries = payload.entries || [];
+      if (!entries.length) {
+        memoryBox.appendChild(el("p", "muted",
+          "Nothing stored — ordinary conversation stays ephemeral by design."));
+        return;
+      }
+      for (const entry of entries) {
+        const row = el("div", "surface memory-entry");
+        row.appendChild(el("p", null, (entry.content || entry.summary || "")
+          .slice(0, 220)));
+        const meta = el("p", "muted", entry.type + " | " + entry.retention +
+          " | conf " + (entry.confidence || 0));
+        row.appendChild(meta);
+        const forget = el("button", null, "Forget");
+        forget.addEventListener("click", async () => {
+          await api("/api/v1/assistant/memory/forget",
+            { method: "POST", body: { entry_id: entry.id } }).catch(() => {});
+          loadMemory();
+        });
+        row.appendChild(forget);
+        memoryBox.appendChild(row);
+      }
+    }).catch((err) => errorState(memoryBox, "Memory unavailable", err,
+      renderAssistantView));
+  };
+
+  document.getElementById("assistant-refresh-memory").addEventListener(
+    "click", loadMemory);
+  document.getElementById("assistant-clear").addEventListener(
+    "click", async () => {
+      const confirm = document.getElementById("assistant-clear-confirm");
+      try {
+        const payload = await api("/api/v1/assistant/memory/clear",
+          { method: "POST", body: { confirm: confirm.value || "" } });
+        confirm.value = "";
+        memoryBox.innerHTML = "";
+        memoryBox.appendChild(el("p", null, JSON.stringify(payload)));
+        loadMemory();
+      } catch (err) {
+        memoryBox.appendChild(el("p", "muted", String(err.message || err)));
+      }
+    });
+
+  document.getElementById("assistant-retention-save").addEventListener(
+    "click", async () => {
+      if (!assistantSessionId) { return; }
+      const mode = document.getElementById("assistant-retention").value;
+      if (!mode) { return; }
+      await api("/api/v1/assistant/sessions/" + assistantSessionId +
+        "/retention", { method: "POST", body: { mode: mode } })
+        .catch(() => {});
+    });
+
+  document.getElementById("assistant-send").addEventListener(
+    "click", async () => {
+      const message = input.value || "";
+      input.value = "";
+      if (!message.trim()) { return; }
+      try {
+        const body = { message: message, session_id: assistantSessionId,
+          allow_web: document.getElementById("assistant-web").checked,
+          confirmed: pendingConfirm };
+        pendingConfirm = false;
+        const payload = await api("/api/v1/assistant/respond",
+          { method: "POST", body: body });
+        assistantSessionId = payload.session_id || assistantSessionId;
+        pendingConfirm = Boolean(payload.needs_confirmation);
+        renderTurn(payload);
+      } catch (err) {
+        errorState(box, "Assistant request failed", err, renderAssistantView);
+      }
+    });
+
+  api("/api/v1/assistant/models/scale").then((payload) => {
+    scaleBox.innerHTML = "";
+    for (const model of payload.models || []) {
+      scaleBox.appendChild(el("p", null,
+        model.name + " — " + model.model_class + " — " +
+        (model.scale && model.scale.disclosed ?
+          (model.scale.parameter_count_label || "?") + " (" + model.scale.band + ")" :
+          "parameters not disclosed") +
+        (model.available ? " — available" : " — not available")));
+    }
+    scaleBox.appendChild(el("p", "muted", payload.legend || ""));
+  }).catch(() => { scaleBox.textContent = "Scale catalog unavailable."; });
+
+  const loadIntel = () => {
+    api("/api/v1/assistant/patterns").then((payload) => {
+      intelBox.innerHTML = "";
+      const summary = payload.summary || {};
+      intelBox.appendChild(el("p", null, "pattern graph: " +
+        (summary.entities || 0) + " entities, " +
+        (summary.relations || 0) + " relations, " +
+        (summary.open_conflicts || 0) + " open conflicts"));
+      for (const conflict of payload.open_conflicts || []) {
+        intelBox.appendChild(el("p", "muted", "conflict: " +
+          (conflict.subject || "") + " " + (conflict.predicate || "") +
+          " — " + (conflict.detail || JSON.stringify(conflict)).slice(0, 140)));
+      }
+    }).catch(() => { intelBox.textContent = "Intelligence layers unavailable."; });
+  };
+  document.getElementById("assistant-scan").addEventListener(
+    "click", async () => {
+      try {
+        const payload = await api("/api/v1/assistant/improvement/scan",
+          { method: "POST", body: {} });
+        const row = el("div", "surface memory-entry");
+        row.appendChild(el("p", null, "improvement scan: " + payload.count +
+          " proposal(s) — suggestions only, self-modification stays gated"));
+        for (const proposal of payload.proposals || []) {
+          row.appendChild(el("p", "muted", proposal.kind + ": " +
+            proposal.title));
+        }
+        intelBox.appendChild(row);
+      } catch (err) {
+        intelBox.appendChild(el("p", "muted", String(err.message || err)));
+      }
+    });
+
+  loadMemory();
+  loadIntel();
 }
 
 /* ---------- research (A47) ---------- */

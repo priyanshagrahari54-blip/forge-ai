@@ -482,6 +482,17 @@ class ModelFabric:
 
     # -- routing and generation ------------------------------------------
 
+    def attach_learning(self, priors: Any) -> None:
+        """Explicitly attach routing-learning priors (A84 Stage I4).
+
+        The learning layer may only *order* candidates that already passed
+        every capability/policy/health/verification filter; wiring it in is
+        an operator decision, bounded by the priors' own caps, and never
+        changes any eligibility rule. Nothing consults priors unless an
+        operator calls this method.
+        """
+        self.router.priors = priors
+
     def route(self, request: ModelRequest | str, *, policy: RoutingPolicy | None = None) -> RouteDecision:
         if isinstance(request, str):
             request = ModelRequest(prompt=request, capability=self._default_capability())

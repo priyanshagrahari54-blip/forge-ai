@@ -163,6 +163,248 @@ def _memory_type_or_none(args):
     return MemoryType.parse(raw)
 
 
+def _assistant_stacks(args):
+    """Build the standalone A84 assistant stack (thin-client local state).
+
+    No control plane here: task submission is intentionally absent, so code
+    requests answer as *proposals* through the fabric and say so. The db path
+    mirrors the memory CLI convention (``--db``, default ``.forge/assistant.db``).
+    """
+    from forge.assistant.behavior import AssistantBehavior
+    from forge.assistant.context import ContextEngine
+    from forge.assistant.core import AssistantCore
+    from forge.assistant.memory import PersonalMemoryService
+    from forge.assistant.personalization import PreferenceProfile
+    from forge.assistant.sessions import SessionLedger
+    from forge.control.db import Database
+    from forge.improvement.proposals import ImprovementEngine
+    from forge.learning.operational import OperationalLedger
+    from forge.learning.preferences import PreferenceObserver
+    from forge.learning.routing import RoutingPriors
+    from forge.memory import LongTermMemory
+    from forge.models.fabric import ModelFabric
+    from forge.models.teams import ModelTeam
+    from forge.patterns.graph import PatternGraph
+    from forge.prompt_intelligence.pipeline import PromptIntelligence
+    from forge.prompt_intelligence.strategies import PromptStrategyLedger
+    from forge.prompt_intelligence.versions import PromptLedger
+    from forge.research.deep import DeepResearchEngine
+    from forge.tools.intelligence.planner import ToolPlanner
+    from forge.tools.intelligence.registry import builtin_registry
+    from forge.tools.intelligence.verification import ToolVerifier
+    from forge.verification.critic import Critic
+    from forge.verification.loop import CritiqueLoop
+    from forge.verification.verifier import EvidenceVerifier
+
+    project = getattr(args, "project", "") or os.environ.get(
+        "FORGE_ASSISTANT_PROJECT", "") or os.path.basename(
+        os.getcwd().rstrip("/")) or "personal"
+    db = Database(getattr(args, "db", "") or ".forge/assistant.db")
+    ledger = SessionLedger(db)
+    patterns = PatternGraph(db)
+    engine = LongTermMemory(db, project=project)
+    observer = PreferenceObserver()
+    memory = PersonalMemoryService(engine, pattern_graph=patterns,
+                                    preference_observer=observer)
+    fabric = ModelFabric.from_defaults()
+    core = AssistantCore(
+        ledger=ledger, memory_service=memory,
+        context_engine=ContextEngine(memory_service=memory, ledger=ledger),
+        prompt_intelligence=PromptIntelligence(
+            strategy_ledger=PromptStrategyLedger(db)),
+        prompt_ledger=PromptLedger(db),
+        behavior=AssistantBehavior(),
+        tool_planner=ToolPlanner(builtin_registry()),
+        deep_research=DeepResearchEngine(root=os.getcwd()),
+        critique_loop=CritiqueLoop(Critic(fabric=fabric), EvidenceVerifier()),
+        model_team=ModelTeam(fabric), fabric=fabric,
+        improvement_engine=ImprovementEngine(
+            operational=OperationalLedger(db),
+            strategy_ledger=PromptStrategyLedger(db),
+            routing_priors=RoutingPriors(db), fabric=fabric),
+        profile_provider=lambda: PreferenceProfile.from_memory(
+            engine, project=project),
+        default_project=project)
+    return core, memory, engine, ledger, patterns, db, project
+
+
+def _run_assistant(args) -> int:
+    """CLI entry for the A84 personal-assistant plane (standalone mode)."""
+    sub = getattr(args, "assistant_subcommand", "status") or "status"
+    as_json = getattr(args, "json", False)
+    core, memory, engine, ledger, patterns, _db, project = _assistant_stacks(args)
+
+    if sub == "ask":
+        session_id = getattr(args, "session", "") or "cli"
+        response = core.respond(session_id, args.message, project=project,
+                                allow_web=bool(getattr(args, "web", False)))
+        payload = response.to_dict()
+        if as_json:
+            _emit_json(payload)
+        else:
+            print(payload["text"])
+            print(f"\n[channel: {payload['provenance']} | triage: "
+                  f"{payload['kind']} | prompt quality: "
+                  f"{payload['quality'].get('verdict', 'n/a')} | session: "
+                  f"{payload['session_id']}]")
+        return 0
+
+    if sub == "sessions":
+        rows = ledger.list(limit=getattr(args, "limit", 20))
+        if as_json:
+            _emit_json([r.to_dict(include_history=False) for r in rows])
+        else:
+            for row in rows:
+                print(f"{row.id}  {row.state:<8} {row.title[:60]}")
+            if not rows:
+                print("No assistant sessions yet.")
+        return 0
+
+    if sub == "memory":
+        mem_sub = getattr(args, "assistant_memory_subcommand", "inspect")
+        if mem_sub == "search":
+            hits = memory.recall(args.query, k=10, project=project)
+            rows = [_memory_row_dict(h) for h in hits]
+        elif mem_sub == "inspect":
+            view = memory.inspect(project=project,
+                                  limit=getattr(args, "limit", 20))
+            rows = [{"id": e.get("id", ""), "memory_type": e.get("type", ""),
+                     "content": (e.get("content") or "")[:200],
+                     "importance": e.get("importance", 0.0)}
+                    for e in view.get("entries", [])]
+        elif mem_sub == "forget":
+            done = memory.forget(args.memory_id, project=project)
+            rows = {"forgotten": bool(done),
+                    "note": "irreversible by design (purge + refs cleaned)"}
+            if as_json:
+                _emit_json(rows)
+            else:
+                print("Forgotten." if done else "Nothing matched that id.")
+            return 0
+        elif mem_sub == "clear":
+            try:
+                out = memory.clear_long_term(
+                    confirm=getattr(args, "confirm", ""), project=project)
+            except ValueError as exc:
+                out = {"removed": 0, "refused": str(exc)[:300]}
+            if as_json:
+                _emit_json(out)
+            else:
+                if out.get("refused"):
+                    print(f"Refused: {out['refused']}")
+                else:
+                    print(f"Cleared: {out.get('removed', 0)} records")
+            return 0
+        else:
+            raise SystemExit("Usage: forge assistant memory "
+                             "search|inspect|forget|clear")
+        if as_json:
+            _emit_json(rows)
+        else:
+            for row in rows:
+                print(f"{row['id'][:16]}  {row['memory_type']:<18} "
+                      f"{row['content'][:70]}")
+            if not rows:
+                print("No matching memories — nothing was stored by default.")
+        return 0
+
+    if sub == "tools":
+        from forge.tools.intelligence.registry import builtin_registry
+        registry = builtin_registry()
+        rows = [{"name": d.name, "capability": d.capability,
+                 "serves": list(d.serves), "risk": d.risk,
+                 "permission": [d.permission_resource,
+                                d.permission_operation],
+                 "availability": registry.availability(d.name)}
+                for d in sorted(registry.all(), key=lambda d: d.name)]
+        if as_json:
+            _emit_json({"tools": rows,
+                        "honesty": "registry descriptions are NOT "
+                                   "permissions; the standalone CLI has no "
+                                   "execution path at all"})
+        else:
+            for row in rows:
+                print(f"{row['name']:<16} {row['risk']:<8} "
+                      f"{row['availability'].get('state','?'):<12} "
+                      f"{row['capability']} -> "
+                      f"{', '.join(row['serves'])}")
+        return 0
+
+    if sub == "scale":
+        from forge.models.registry import ModelRegistry  # noqa: F401
+        rows = []
+        for model in core.fabric.models():
+            scale = model.scale
+            rows.append({"name": model.name, "provider": model.provider,
+                         "model_class": model.model_class or "undeclared",
+                         "parameters": scale.to_dict().get(
+                             "parameter_count_label", "unknown"),
+                         "disclosed": scale.disclosed,
+                         "band": scale.band, "moe": scale.is_moe,
+                         "available": model.available})
+        if as_json:
+            _emit_json({"models": rows,
+                        "legend": "disclosed=false means NOT DISCLOSED; Forge "
+                                  "never invents parameter counts and never "
+                                  "claims to host provider weights"})
+        else:
+            print(f"{'MODEL':<28} {'CLASS':<12} {'PARAMETERS':<14} "
+                  f"{'BAND':<9} AVAIL")
+            for row in rows:
+                print(f"{row['name'][:27]:<28} {row['model_class']:<12} "
+                      f"{(row['parameters'] if row['disclosed'] else 'unknown')[:13]:<14} "
+                      f"{row['band']:<9} {'yes' if row['available'] else 'no'}")
+            print("\nDisclosed scale only — unknown means the provider did "
+                  "not say; it never means small.")
+        return 0
+
+    if sub == "learning":
+        operational = getattr(core.improvement, "operational", None)
+        stats = {"operational": {
+                     "events": operational.count() if operational else 0},
+                 "patterns": patterns.summary()}
+        if as_json:
+            _emit_json(stats)
+        else:
+            print("Patterns:", stats["patterns"])
+            print("Learning can only propose; it never self-applies.")
+        return 0
+
+    if sub == "status":
+        from forge.capabilities.reality import capability_snapshot
+        snap = capability_snapshot()
+        mine = [c for c in snap["capabilities"]
+                if c["capability_id"] in (
+                    "personal-assistant-core", "personal-memory",
+                    "prompt-intelligence", "tool-intelligence",
+                    "deep-research", "safe-research-networks",
+                    "pattern-graph", "operational-learning",
+                    "cross-model-teams", "critic-verifier",
+                    "personalization", "long-context", "context-quality",
+                    "improvement-loop", "massive-model-routing")]
+        if as_json:
+            _emit_json({"capabilities": mine, "project": project,
+                        "honesty_contract": snap["honesty_contract"]})
+        else:
+            for row in mine:
+                print(f"{row['capability_id']:<26} {row['status']}")
+            print("\nLIVE = wired here; READY/ARCHITECTURE = needs the "
+                  "infrastructure named in --json details.")
+        return 0
+
+    raise SystemExit("Usage: forge assistant ask|sessions|memory|tools|scale|"
+                     "learning|status")
+
+
+def _memory_row_dict(hit):
+    record = getattr(hit, "record", hit)
+    return {"id": str(getattr(record, "id", "")),
+            "memory_type": str(getattr(record, "memory_type", "")),
+            "content": str(getattr(record, "content", ""))[:200],
+            "importance": round(float(getattr(record, "importance", 0.0)
+                                      or 0.0), 3)}
+
+
 def _run_memory(args) -> int:
     """CLI entry for the long-term memory store."""
     from forge.memory import MemoryType
@@ -3474,6 +3716,63 @@ def main() -> None:
     for _sub in memory_subs.choices.values():
         _add_memory_common(_sub)
 
+
+    # -- A84: personal-assistant plane (standalone mode) --------------------
+    assistant_parser = subparsers.add_parser(
+        "assistant",
+        help="Personal assistant (A84): ask, sessions, memory, tools, scale",
+        description="The persistent-assistant pipeline in standalone mode: "
+        "session ledger, continuity, prompt intelligence, memory user "
+        "controls, tool registry, research, declared model scale. Task "
+        "execution (writes) requires the control plane/API — the CLI keeps "
+        "its thin-client promise and answers as proposals here.",
+    )
+    assistant_parser.add_argument("--db", default="",
+                                  help="Assistant state database "
+                                       "(default .forge/assistant.db)")
+    assistant_parser.add_argument("--project", default="",
+                                  help="Memory project scope (default: "
+                                       "current directory name)")
+    assistant_subparsers = assistant_parser.add_subparsers(
+        dest="assistant_subcommand")
+    _ask = assistant_subparsers.add_parser(
+        "ask", help="Send one message through the assistant pipeline")
+    _ask.add_argument("message")
+    _ask.add_argument("--session", default="", help="Assistant session id")
+    _ask.add_argument("--web", action="store_true",
+                      help="Permit live web corroboration for research")
+    _sess = assistant_subparsers.add_parser(
+        "sessions", help="List durable assistant sessions")
+    _sess.add_argument("--limit", type=int, default=20)
+    _amem = assistant_subparsers.add_parser(
+        "memory", help="Memory user controls (inspect/search/forget/clear)")
+    _amem_subs = _amem.add_subparsers(dest="assistant_memory_subcommand")
+    _amem_s = _amem_subs.add_parser("search")
+    _amem_s.add_argument("query")
+    _amem_i = _amem_subs.add_parser("inspect")
+    _amem_i.add_argument("--limit", type=int, default=20)
+    _amem_f = _amem_subs.add_parser("forget")
+    _amem_f.add_argument("memory_id")
+    _amem_c = _amem_subs.add_parser("clear")
+    _amem_c.add_argument("--confirm", default="",
+                         help='Exact phrase: "FORGET EVERYTHING IN THIS SCOPE"')
+    assistant_subparsers.add_parser(
+        "tools", help="Tool capability registry (descriptions, not permissions)")
+    assistant_subparsers.add_parser(
+        "scale", help="Declared model scale catalog (never invented)")
+    assistant_subparsers.add_parser(
+        "learning", help="Pattern graph + learning-layer status")
+    assistant_subparsers.add_parser(
+        "status", help="Which A84 capabilities are live here (honesty view)")
+    for _sub in assistant_subparsers.choices.values():
+        _sub.add_argument("--json", action="store_true",
+                          default=argparse.SUPPRESS,
+                          help="Emit machine-readable JSON")
+    for _sub in _amem_subs.choices.values():
+        _sub.add_argument("--json", action="store_true",
+                          default=argparse.SUPPRESS,
+                          help="Emit machine-readable JSON")
+
     # Blender: procedural 3D scenes rendered headlessly
     blender_parser = subparsers.add_parser(
         "blender",
@@ -3932,6 +4231,9 @@ def main() -> None:
         raise SystemExit(_run_agents(args))
     elif args.command == "memory":
         raise SystemExit(_run_memory(args))
+
+    elif args.command == "assistant":
+        raise SystemExit(_run_assistant(args))
 
     elif args.command == "tasks":
         raise SystemExit(_run_tasks(args))

@@ -18,7 +18,13 @@ from typing import Any, Dict, Optional
 
 
 class MemoryType(str, Enum):
-    """The seven memory layers Forge remembers across tasks and sessions."""
+    """The ten memory layers Forge remembers across tasks and sessions.
+
+    The first seven are the long-term project-knowledge layers; ``PREFERENCE``,
+    ``EPISODIC`` and ``SEMANTIC`` were added with the personal-assistant plane
+    (A84 Stage C): stable user preferences, important past events, and learned
+    relationships/knowledge respectively.
+    """
 
     SESSION = "session"
     TASK = "task"
@@ -27,6 +33,9 @@ class MemoryType(str, Enum):
     DECISION = "decision"
     AGENT = "agent"
     MODEL_PERFORMANCE = "model_performance"
+    PREFERENCE = "preference"
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
 
     @classmethod
     def values(cls) -> tuple:
@@ -94,6 +103,12 @@ DEFAULT_RETENTION_BY_TYPE: Dict[str, Retention] = {
     MemoryType.DECISION.value: Retention.PERSISTENT,
     MemoryType.AGENT.value: Retention.TASK,
     MemoryType.MODEL_PERFORMANCE.value: Retention.TASK,
+    # A84 (personal-assistant plane): preferences are durable *by consent*
+    # and correctable/forgettable through the user-control path; episodic
+    # and semantic knowledge share the project-retention horizon.
+    MemoryType.PREFERENCE.value: Retention.PERSISTENT,
+    MemoryType.EPISODIC.value: Retention.PROJECT,
+    MemoryType.SEMANTIC.value: Retention.PROJECT,
 }
 
 #: Record statuses.
