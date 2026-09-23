@@ -163,6 +163,14 @@ def tier_of(model: Model) -> int:
         return 0
 
 
+_HEALTH_SCORES: dict[str, float] = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
+
+
 class FabricRouter:
     """Capability/context/complexity-aware router over a ``ModelRegistry``.
 
@@ -250,21 +258,29 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
+        min_cw = request.min_context_window
+        allow_paid = policy.allow_paid or ("paid" in relaxed)
+        max_cost = None if "paid" in relaxed else policy.max_cost_per_token
+        allow_remote = policy.allow_remote or ("remote" in relaxed)
+        max_lat = None if "latency" in relaxed else policy.max_latency_ms
+        min_rel = -1.0 if "reliability" in relaxed else policy.min_reliability
+        check_health = "health" not in relaxed
+
         candidates: list[Model] = []
         for model in capable:
-            if model.context_window < request.min_context_window:
+            if model.context_window < min_cw:
                 continue
-            if "paid" not in relaxed and not policy.allow_paid and not model.free:
+            if not allow_paid and not model.free:
                 continue
-            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+            if max_cost is not None and model.cost_per_token > max_cost:
                 continue
-            if "remote" not in relaxed and not policy.allow_remote and not model.local:
+            if not allow_remote and not model.local:
                 continue
-            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
+            if max_lat is not None and model.latency_ms > max_lat:
                 continue
-            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
+            if model.reliability < min_rel:
                 continue
-            if "health" not in relaxed and model.health.last_resort:
+            if check_health and model.health.last_resort:
                 continue
             candidates.append(model)
 
@@ -279,12 +295,10 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
-        preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
-        fallback_order = {
-            name: index for index, name in enumerate(request.fallback_models)
-        }
+        pref_list = request.effective_model_preferences()
+        preferred_order = {name: index for index, name in enumerate(pref_list)} if pref_list else None
+        fb_list = request.fallback_models
+        fallback_order = {name: index for index, name in enumerate(fb_list)} if fb_list else None
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
@@ -305,9 +319,9 @@ class FabricRouter:
                 0 if model.local else 1,
                 model.name,
             )
-            if model.name in preferred_order:
+            if preferred_order is not None and model.name in preferred_order:
                 return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
+            if fallback_order is not None and model.name in fallback_order:
                 return (2, fallback_order[model.name], *tiebreak)
             return (1, *tiebreak)
 
@@ -337,7 +351,7 @@ class FabricRouter:
             "complexity": request.complexity,
             "preference_rank": (
                 preferred_order.get(model.name)
-                if model.name in preferred_order
+                if preferred_order is not None and model.name in preferred_order
                 else None
             ),
         }
@@ -356,22 +370,30 @@ class FabricRouter:
         pref_free: bool,
         pref_local: bool,
     ) -> float:
-        reliability = max(0.0, min(1.0, model.reliability))
-        latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
-        cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
+        # Fast non-negative clamping and inline scoring calculations avoid
+        # repeated min/max call overhead and dict allocations in hot routing loops.
+        rel = model.reliability
+        reliability = 0.0 if rel < 0.0 else (1.0 if rel > 1.0 else rel)
+        lat = model.latency_ms
+        latency = 1.0 / (1.0 + ((lat / 1000.0) if lat > 0.0 else 0.0))
+        cpt = model.cost_per_token
+        cost = 1.0 / (1.0 + ((cpt * 1_000_000.0) if cpt > 0.0 else 0.0))
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
+
+        cw = model.context_window
+        req_min_cw = request.min_context_window or 1
+        context_fit = cw / req_min_cw if cw < req_min_cw else 1.0
+
+        health = _HEALTH_SCORES.get(model.health.status, 0.5)
+
         # Complexity-aware: complex requests favor models with proportionally
         # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        req_comp = request.complexity
+        comp = req_comp if (req_comp is not None and req_comp > 0.0) else 1.0
+        denom = 4096.0 * comp
+        complexity_fit = cw / denom if cw < denom else 1.0
+
         return (
             reliability * 0.30
             + latency * 0.15
