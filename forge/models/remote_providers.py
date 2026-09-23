@@ -129,9 +129,14 @@ class GeminiProvider(HostedProvider):
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
-        return sorted(str(x.get("name", "").removeprefix("models/"))
-                      for x in data.get("models", [])
-                      if isinstance(x, dict) and x.get("name"))
+        names = []
+        for x in data.get("models", []):
+            if isinstance(x, dict) and x.get("name"):
+                name = str(x["name"])
+                if name.startswith("models/"):
+                    name = name[len("models/"):]
+                names.append(name)
+        return sorted(names)
 
     def generate(self, prompt: str, *, context: str = "", task: str = "",
                  instructions: str = "", max_output_tokens: int | None = None,
