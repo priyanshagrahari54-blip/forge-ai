@@ -102,52 +102,94 @@ class RelevanceRanker:
         self.now = time.time() if now is None else now
         self._df: Dict[str, int] = {}
         self._doc_tokens: Dict[str, List[str]] = {}
+        self._doc_sets: Dict[str, Set[str]] = {}
+        self._doc_factors: Dict[str, float] = {}
+        self._term_to_records: Dict[str, List[Tuple[MemoryRecord, Set[str], float]]] = {}
+
         for record in self.records:
             tokens = set(content_tokens(record.content))
             tokens.update(content_tokens(record.summary))
+            doc_set = tokens
+            self._doc_sets[record.id] = doc_set
             self._doc_tokens[record.id] = sorted(tokens)
-            for term in self._doc_tokens[record.id]:
+
+            for term in doc_set:
                 self._df[term] = self._df.get(term, 0) + 1
+
+            importance = 0.5 + 0.5 * float(record.importance)
+            confidence = 0.5 + 0.5 * float(record.confidence)
+            type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
+            rec_factor = recency_factor(record.created_at, self.now)
+            self._doc_factors[record.id] = rec_factor * importance * confidence * type_prior
+
         self._n = max(1, len(self.records))
+        self._idf_cache: Dict[str, float] = {
+            term: math.log((self._n + 1.0) / (df + 1.0)) + 1.0
+            for term, df in self._df.items()
+        }
+
+        for record in self.records:
+            doc_set = self._doc_sets[record.id]
+            factor = self._doc_factors[record.id]
+            entry = (record, doc_set, factor)
+            for term in doc_set:
+                self._term_to_records.setdefault(term, []).append(entry)
 
     def idf(self, term: str) -> float:
+        cached = self._idf_cache.get(term)
+        if cached is not None:
+            return cached
         return math.log((self._n + 1.0) / (self._df.get(term, 0) + 1.0)) + 1.0
 
     def _lexical(self, query_terms: List[str], doc_terms: List[str]) -> float:
-        """Weighted query-coverage score in [0, 1]."""
+        """Weighted query-coverage score in [0, 1]. Kept for API compatibility."""
         if not query_terms:
             return 0.0
         doc_set = set(doc_terms)
         matched = [term for term in query_terms if term in doc_set]
         if not matched:
             return 0.0
-        matched_weight = sum(self.idf(term) for term in set(matched))
-        total_weight = sum(self.idf(term) for term in set(query_terms))
+        matched_weight = sum(self.idf(term) for term in matched)
+        total_weight = sum(self.idf(term) for term in query_terms)
         return matched_weight / total_weight if total_weight else 0.0
 
     def rank(self, query: str, *, k: int = 10,
              min_score: float = 0.0) -> List[SearchResult]:
         query_terms = sorted(set(content_tokens(query)))
+        if not query_terms:
+            return []
+
+        query_idfs = [self.idf(term) for term in query_terms]
+        total_weight = sum(query_idfs)
+        if total_weight <= 0.0:
+            return []
+
+        candidate_map: Dict[str, Tuple[MemoryRecord, Set[str], float]] = {}
+        for term in query_terms:
+            for item in self._term_to_records.get(term, []):
+                candidate_map[item[0].id] = item
+
         scored: List[SearchResult] = []
-        for record in self.records:
-            lexical = self._lexical(
-                query_terms, self._doc_tokens.get(record.id, []))
+        for record_id, (record, doc_set, base_factor) in candidate_map.items():
+            matched_terms_list = []
+            matched_weight = 0.0
+            for term, term_idf in zip(query_terms, query_idfs):
+                if term in doc_set:
+                    matched_terms_list.append(term)
+                    matched_weight += term_idf
+
+            if not matched_terms_list:
+                continue
+
+            lexical = matched_weight / total_weight
             if lexical <= 0.0:
                 continue
-            importance = 0.5 + 0.5 * float(record.importance)
-            confidence = 0.5 + 0.5 * float(record.confidence)
-            type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
-            score = (
-                lexical
-                * recency_factor(record.created_at, self.now)
-                * importance
-                * confidence
-                * type_prior
-            )
+
+            score = lexical * base_factor
             if score < min_score:
                 continue
-            matched = tuple(term for term in query_terms
-                            if term in set(self._doc_tokens.get(record.id, [])))
+
+            matched = tuple(matched_terms_list)
             scored.append(SearchResult(
                 record=record,
                 score=score,
@@ -155,6 +197,7 @@ class RelevanceRanker:
                 reason="matched: " + ", ".join(matched[:6])
                 if matched else "type/recency match",
             ))
+
         scored.sort(key=lambda item: (-item.score, -item.record.importance,
                                       -item.record.created_at, item.record.id))
         return scored[:max(0, k)]
