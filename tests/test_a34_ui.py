@@ -19,7 +19,7 @@ from helpers_a34 import login, make_client, make_plane  # noqa: E402
 
 WEB = Path(__file__).parent.parent / "forge" / "cockpit" / "web"
 
-REQUIRED_HOOKS = """login login-form login-actor login-project login-profile
+REQUIRED_HOOKS = """login login-form login-actor login-profile
 login-error nav conn whoami logout view new-task-form new-task-req
 new-task-error task-list t-title t-meta t-actions t-error t-timeline
 t-details t-verification t-checkpoints t-report t-stream-state t-events

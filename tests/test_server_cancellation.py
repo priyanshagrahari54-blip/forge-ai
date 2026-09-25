@@ -209,7 +209,7 @@ def test_retry_failed_task(tmp_path):
 
         retried = server.retry_task(task.task_id, actor="tester")
         assert retried.status == TaskStatus.QUEUED
-        done = wait_for_status(server, task.task_id,
+        done = wait_for_status(server, retried.task_id,
                                {TaskStatus.COMPLETED}, timeout=15)
         assert done.status == TaskStatus.COMPLETED
         assert done.result()["attempt"] == 2

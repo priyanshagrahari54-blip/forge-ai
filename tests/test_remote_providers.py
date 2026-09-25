@@ -10,8 +10,9 @@ def test_credential_store_recognizes_all_hosted_providers():
         "OPENROUTER_API_KEY": "x",
         "GROQ_API_KEY": "x",
     }
+    providers = ["openai", "anthropic", "gemini", "openrouter", "groq"]
     store = CredentialStore(env=env)
-    assert all(store.configured(name) for name in env)
+    assert all(store.configured(name) for name in providers)
 
 
 def test_remote_provider_factory_registers_only_present_keys():
