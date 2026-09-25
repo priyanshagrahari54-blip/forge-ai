@@ -262,7 +262,8 @@ class ProjectMemory:
             self._order,
             key=lambda item: (rank.get(self._entries[item].status, 0),
                               -self._entries[item].updated_at))[:MAX_ENTRIES]
-        dropped = [item for item in self._order if item not in set(keep)]
+        keep_set = set(keep)
+        dropped = [item for item in self._order if item not in keep_set]
         for item in dropped:
             self._entries.pop(item, None)
         self._order = keep
