@@ -31,9 +31,9 @@ class PersistentTaskQueue:
         return task
 
     def enqueue(self, task: Task, priority: int = 0) -> Task:
-        if any(existing.id == task.id for existing in self.engine.tasks):
+        if self.engine.exists(task.id):
             raise ValueError(f"Task already exists: {task.id}")
-        self.engine.tasks.append(task)
+        self.engine.update(task)
         self._priorities[task.id] = priority
         self._created_at[task.id] = datetime.now(timezone.utc).isoformat()
         self.store.save(task)
@@ -57,17 +57,16 @@ class PersistentTaskQueue:
             -self._priorities.get(task.id, 0), self._created_at.get(task.id, ""), task.id))
 
     def next(self) -> Task | None:
-        return self.ready()[0] if self.ready() else None
+        # Bolt Optimization: Avoid calling self.ready() twice when fetching the next task.
+        ready_tasks = self.ready()
+        return ready_tasks[0] if ready_tasks else None
 
     def start_next(self) -> Task | None:
         for task in self.ready():
             claimed = self.store.claim(task.id)
             if claimed is None:
                 continue
-            for index, current in enumerate(self.engine.tasks):
-                if current.id == claimed.id:
-                    self.engine.tasks[index] = claimed
-                    break
+            self.engine.update(claimed)
             return claimed
         return None
 
@@ -76,20 +75,14 @@ class PersistentTaskQueue:
         task = self.store.renew_lease(task_id, lease_id)
         if task is None:
             return None
-        for index, current in enumerate(self.engine.tasks):
-            if current.id == task_id:
-                self.engine.tasks[index] = task
-                break
+        self.engine.update(task)
         return task
 
     def recover_stale_running(self, max_idle_seconds: float) -> list[Task]:
         """Recover only leases that have exceeded the configured idle window."""
         tasks = self.store.recover_stale_running(max_idle_seconds)
-        recovered_ids = {task.id for task in tasks}
-        if recovered_ids:
-            for index, current in enumerate(self.engine.tasks):
-                if current.id in recovered_ids:
-                    self.engine.tasks[index] = next(task for task in tasks if task.id == current.id)
+        for task in tasks:
+            self.engine.update(task)
         return tasks
 
     def complete(self, task_id: str) -> Task:
@@ -101,10 +94,7 @@ class PersistentTaskQueue:
         task = self.store.complete_if_owner(task_id, lease_id)
         if task is None:
             return None
-        for index, current in enumerate(self.engine.tasks):
-            if current.id == task_id:
-                self.engine.tasks[index] = task
-                break
+        self.engine.update(task)
         return task
 
     def fail(self, task_id: str, error: str) -> Task:
@@ -116,10 +106,7 @@ class PersistentTaskQueue:
         task = self.store.fail_if_owner(task_id, lease_id, error)
         if task is None:
             return None
-        for index, current in enumerate(self.engine.tasks):
-            if current.id == task_id:
-                self.engine.tasks[index] = task
-                break
+        self.engine.update(task)
         return task
 
     def pending(self) -> list[Task]:

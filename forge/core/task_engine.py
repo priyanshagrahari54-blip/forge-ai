@@ -31,37 +31,67 @@ class Task:
 
 
 class TaskEngine:
+    """Task engine managing tasks and dependency checks.
+
+    Bolt Optimization: Uses internal `_by_id` and `_index` dictionaries for O(1)
+    task lookups and updates during dependency verification and state transitions.
+    Replaces O(N) linear scans with O(1) operations during scheduling passes.
+    """
+
     def __init__(self) -> None:
-        self.tasks: list[Task] = []
+        self._tasks: list[Task] = []
+        self._by_id: dict[str, Task] = {}
+        self._index: dict[str, int] = {}
+
+    @property
+    def tasks(self) -> list[Task]:
+        return self._tasks
+
+    @tasks.setter
+    def tasks(self, value: list[Task]) -> None:
+        self._tasks = list(value)
+        self._by_id = {task.id: task for task in self._tasks}
+        self._index = {task.id: i for i, task in enumerate(self._tasks)}
+
+    def update(self, task: Task) -> None:
+        """Add or replace a Task instance in the engine with O(1) index updating."""
+        idx = self._index.get(task.id)
+        if idx is not None and idx < len(self._tasks) and self._tasks[idx].id == task.id:
+            self._tasks[idx] = task
+            self._by_id[task.id] = task
+        else:
+            self._index[task.id] = len(self._tasks)
+            self._tasks.append(task)
+            self._by_id[task.id] = task
 
     def add(self, task_id: str, description: str, dependencies: list[str] | None = None) -> Task:
-        if self._exists(task_id):
+        if self.exists(task_id):
             raise ValueError(f"Task already exists: {task_id}")
         dependency_list = list(dependencies or [])
         for dependency in dependency_list:
             if dependency == task_id:
                 raise ValueError(f"Task cannot depend on itself: {task_id}")
-            if not self._exists(dependency):
+            if not self.exists(dependency):
                 raise KeyError(f"Task dependency not found: {dependency}")
         task = Task(id=task_id, description=description, dependencies=dependency_list)
-        self.tasks.append(task)
+        self.update(task)
         return task
 
     def add_dependency(self, task_id: str, dependency_id: str) -> Task:
-        task = self._find(task_id)
+        task = self.find(task_id)
         if task_id == dependency_id:
             raise ValueError(f"Task cannot depend on itself: {task_id}")
-        self._find(dependency_id)
+        self.find(dependency_id)
         if dependency_id not in task.dependencies:
             task.dependencies.append(dependency_id)
         return task
 
     def can_start(self, task_id: str) -> bool:
-        task = self._find(task_id)
-        return all(self._find(dependency).status == TaskStatus.COMPLETED for dependency in task.dependencies)
+        task = self.find(task_id)
+        return all(self.find(dependency).status == TaskStatus.COMPLETED for dependency in task.dependencies)
 
     def start(self, task_id: str) -> Task:
-        task = self._find(task_id)
+        task = self.find(task_id)
         if not self.can_start(task_id):
             raise RuntimeError(f"Task dependencies are not completed: {task_id}")
         task.status = TaskStatus.RUNNING
@@ -69,14 +99,14 @@ class TaskEngine:
         return task
 
     def complete(self, task_id: str) -> Task:
-        task = self._find(task_id)
+        task = self.find(task_id)
         task.status = TaskStatus.COMPLETED
         task.lease_id = ""
         task.lease_heartbeat = 0.0
         return task
 
     def fail(self, task_id: str, error: str) -> Task:
-        task = self._find(task_id)
+        task = self.find(task_id)
         task.status = TaskStatus.FAILED
         task.errors.append(error)
         task.lease_id = ""
@@ -84,18 +114,22 @@ class TaskEngine:
         return task
 
     def set_status(self, task_id: str, status: TaskStatus) -> Task:
-        task = self._find(task_id)
+        task = self.find(task_id)
         task.status = status
         if status != TaskStatus.RUNNING:
             task.lease_id = ""
             task.lease_heartbeat = 0.0
         return task
 
-    def _exists(self, task_id: str) -> bool:
-        return any(task.id == task_id for task in self.tasks)
+    def exists(self, task_id: str) -> bool:
+        return task_id in self._by_id
 
-    def _find(self, task_id: str) -> Task:
-        for task in self.tasks:
-            if task.id == task_id:
-                return task
+    def find(self, task_id: str) -> Task:
+        task = self._by_id.get(task_id)
+        if task is not None:
+            return task
         raise KeyError(f"Task not found: {task_id}")
+
+    # Aliases for backward compatibility
+    _exists = exists
+    _find = find
