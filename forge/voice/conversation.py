@@ -122,7 +122,7 @@ class VoiceConversation:
     # -- turns -------------------------------------------------------------------
 
     def say(self, speech: str, *, task_factory: Callable | None = None,
-            approval_token_id: str = "", confirm: bool = False
+            approval_token_id: str = "", confirm: bool = True
             ) -> dict[str, Any]:
         """Process one user utterance into a bounded turn.
 
@@ -173,7 +173,10 @@ class VoiceConversation:
                 return self._reply(spoken, "", status="awaiting_answer",
                                    user_turn=user_turn)
             user_turn.intent = intent.name
-            if confirm:
+            is_task_action = intent.name not in (
+                "greeting", "help", "cancel", "how_are_you", "identity", "activity", "calculate"
+            )
+            if confirm and is_task_action:
                 user_turn.status = "awaiting_confirmation"
                 spoken = (f"Shall I {intent.name.replace('_', ' ')}? "
                           "Say yes to proceed or no to cancel.")

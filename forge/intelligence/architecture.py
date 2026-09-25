@@ -116,35 +116,26 @@ class ArchitectureAnalyzer:
                 report.source_files.append(relative)
 
     def _detect_packages(self, report: ArchitectureReport) -> None:
-        directories: set[str] = set()
+        # Performance optimization (Bolt ⚡): O(1) set lookup against source_files
+        # replaces thousands of un-memoized `is_file()` disk syscalls and eliminates
+        # $O(P \times N)$ linear search passes across package files.
+        source_set = set(report.source_files)
+        files_by_dir: dict[str, list[str]] = {}
 
         for source in report.source_files:
-            path = Path(source)
+            parts = source.split("/")
+            for i in range(1, len(parts)):
+                parent_string = "/".join(parts[:i])
+                init_file_rel = f"{parent_string}/__init__.py"
+                if init_file_rel in source_set:
+                    files_by_dir.setdefault(parent_string, []).append(source)
 
-            for parent in path.parents:
-                parent_string = parent.as_posix()
-
-                if parent_string == ".":
-                    continue
-
-                init_file = self.root / parent / "__init__.py"
-
-                if init_file.is_file():
-                    directories.add(parent_string)
-
-        for directory in sorted(directories):
-            files = [
-                source
-                for source in report.source_files
-                if source == directory
-                or source.startswith(directory.rstrip("/") + "/")
-            ]
-
+        for directory in sorted(files_by_dir):
             report.packages.append(
                 ArchitectureNode(
                     path=directory,
                     kind="python_package",
-                    files=sorted(files),
+                    files=sorted(files_by_dir[directory]),
                 )
             )
 
