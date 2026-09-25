@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - ArchitectureAnalyzer Package Detection Disk Syscalls & Quadratic Traversal
+
+**Learning:** `ArchitectureAnalyzer._detect_packages()` executed `Path.is_file()` disk `stat` syscalls for every parent directory of every source file, followed by $O(P \times N)$ linear search passes across `report.source_files` per package directory found. Since all `.py` files (including `__init__.py`) are already scanned and recorded in `report.source_files`, `(parent / "__init__.py") in source_set` provides an $O(1)$ memory check with zero disk syscalls.
+
+**Action:** Perform package lookup using $O(1)$ set lookups against `source_files` and group source files by package directory in a single pass during parent traversal.
