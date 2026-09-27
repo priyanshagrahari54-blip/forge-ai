@@ -32,10 +32,11 @@ async def conversation_say(conversation_id: str,
                            current: Authed = Depends(authed_mutation),
                            plane: ControlPlane = Depends(get_plane)):
     try:
+        confirm_val = body.confirm if body.confirm is not None else True
         return plane.voice_conversation_say(
             current.session, conversation_id, text=body.text,
             audio_b64=body.audio_b64, approval_id=body.approval_id,
-            confirm=body.confirm)
+            confirm=confirm_val)
     except InvalidRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except TaskNotFound:
