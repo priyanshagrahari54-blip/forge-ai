@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - RelevanceRanker Repeated Query IDF Computation and Set Conversions
+
+**Learning:** `RelevanceRanker.rank` stored document tokens in `_doc_tokens` as a `List[str]` and converted them to `Set[str]` twice per candidate record during ranking. In addition, `_lexical()` re-calculated query term IDF weights and `total_weight` for every single document in `self.records`, creating $O(N \times Q)$ redundant log and sum operations per retrieval call.
+
+**Action:** Maintain document tokens as `Set[str]` upon initialization and pre-calculate query term IDFs and `total_weight` once per `rank()` invocation.

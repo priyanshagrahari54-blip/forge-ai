@@ -101,23 +101,25 @@ class RelevanceRanker:
         self.records: List[MemoryRecord] = list(records)
         self.now = time.time() if now is None else now
         self._df: Dict[str, int] = {}
-        self._doc_tokens: Dict[str, List[str]] = {}
+        # Optimization: Maintain doc tokens directly as sets to eliminate
+        # redundant set allocations during search/rank calls.
+        self._doc_tokens: Dict[str, Set[str]] = {}
         for record in self.records:
             tokens = set(content_tokens(record.content))
             tokens.update(content_tokens(record.summary))
-            self._doc_tokens[record.id] = sorted(tokens)
-            for term in self._doc_tokens[record.id]:
+            self._doc_tokens[record.id] = tokens
+            for term in tokens:
                 self._df[term] = self._df.get(term, 0) + 1
         self._n = max(1, len(self.records))
 
     def idf(self, term: str) -> float:
         return math.log((self._n + 1.0) / (self._df.get(term, 0) + 1.0)) + 1.0
 
-    def _lexical(self, query_terms: List[str], doc_terms: List[str]) -> float:
+    def _lexical(self, query_terms: List[str], doc_terms: Iterable[str]) -> float:
         """Weighted query-coverage score in [0, 1]."""
         if not query_terms:
             return 0.0
-        doc_set = set(doc_terms)
+        doc_set = doc_terms if isinstance(doc_terms, set) else set(doc_terms)
         matched = [term for term in query_terms if term in doc_set]
         if not matched:
             return 0.0
@@ -128,12 +130,28 @@ class RelevanceRanker:
     def rank(self, query: str, *, k: int = 10,
              min_score: float = 0.0) -> List[SearchResult]:
         query_terms = sorted(set(content_tokens(query)))
+        if not query_terms:
+            return []
+
+        # Optimization: Pre-compute query term IDFs and total weight ONCE per rank() invocation
+        # rather than recalculating them inside _lexical() for every record in self.records.
+        query_idfs = {term: self.idf(term) for term in query_terms}
+        total_weight = sum(query_idfs.values())
+        if not total_weight:
+            return []
+
         scored: List[SearchResult] = []
         for record in self.records:
-            lexical = self._lexical(
-                query_terms, self._doc_tokens.get(record.id, []))
-            if lexical <= 0.0:
+            doc_set = self._doc_tokens.get(record.id)
+            if not doc_set:
                 continue
+            matched = tuple(term for term in query_terms if term in doc_set)
+            if not matched:
+                continue
+
+            matched_weight = sum(query_idfs[term] for term in matched)
+            lexical = matched_weight / total_weight
+
             importance = 0.5 + 0.5 * float(record.importance)
             confidence = 0.5 + 0.5 * float(record.confidence)
             type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
@@ -146,8 +164,6 @@ class RelevanceRanker:
             )
             if score < min_score:
                 continue
-            matched = tuple(term for term in query_terms
-                            if term in set(self._doc_tokens.get(record.id, [])))
             scored.append(SearchResult(
                 record=record,
                 score=score,
