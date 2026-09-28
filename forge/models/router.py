@@ -250,21 +250,33 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
+        # Pre-evaluate loop invariants once per attempt to avoid repeated
+        # set membership checks and attribute access in the tight candidate loop.
+        allow_paid = "paid" in relaxed or policy.allow_paid
+        max_cost = None if "paid" in relaxed else policy.max_cost_per_token
+        allow_remote = "remote" in relaxed or policy.allow_remote
+        max_latency = None if "latency" in relaxed else policy.max_latency_ms
+        min_rel = -1.0 if "reliability" in relaxed else policy.min_reliability
+        check_health = "health" not in relaxed
+        min_ctx = request.min_context_window
+
         candidates: list[Model] = []
         for model in capable:
-            if model.context_window < request.min_context_window:
+            if model.context_window < min_ctx:
                 continue
-            if "paid" not in relaxed and not policy.allow_paid and not model.free:
+            if not allow_paid and not model.free:
                 continue
-            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+            if max_cost is not None and model.cost_per_token > max_cost:
                 continue
-            if "remote" not in relaxed and not policy.allow_remote and not model.local:
+            if not allow_remote and not model.local:
                 continue
-            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
+            if max_latency is not None and model.latency_ms > max_latency:
                 continue
-            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
+            if model.reliability < min_rel:
                 continue
-            if "health" not in relaxed and model.health.last_resort:
+            # Fast-path status check avoids calling model.health.last_resort,
+            # which performs repeated time.time() calls and property lookups.
+            if check_health and model.health.last_resort:
                 continue
             candidates.append(model)
 
@@ -279,12 +291,10 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
-        preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
-        fallback_order = {
-            name: index for index, name in enumerate(request.fallback_models)
-        }
+        # Fast-path preference lookups: avoid dict/set construction when empty
+        eff_prefs = request.effective_model_preferences()
+        preferred_order = {name: index for index, name in enumerate(eff_prefs)} if eff_prefs else {}
+        fallback_order = {name: index for index, name in enumerate(request.fallback_models)} if request.fallback_models else {}
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
@@ -298,17 +308,19 @@ class FabricRouter:
             # cheaper one". ``tier`` defaults to 0 for every model that does
             # not declare one, so registries without tiers order exactly as
             # before. Score, then free/local/name tie-breakers, close it out.
+            tier = tier_of(model)
+            m_name = model.name
             tiebreak = (
-                -tier_of(model),
+                -tier,
                 -_score,
                 0 if model.free else 1,
                 0 if model.local else 1,
-                model.name,
+                m_name,
             )
-            if model.name in preferred_order:
-                return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
-                return (2, fallback_order[model.name], *tiebreak)
+            if preferred_order and m_name in preferred_order:
+                return (0, preferred_order[m_name], *tiebreak)
+            if fallback_order and m_name in fallback_order:
+                return (2, fallback_order[m_name], *tiebreak)
             return (1, *tiebreak)
 
         scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
@@ -337,7 +349,7 @@ class FabricRouter:
             "complexity": request.complexity,
             "preference_rank": (
                 preferred_order.get(model.name)
-                if model.name in preferred_order
+                if preferred_order and model.name in preferred_order
                 else None
             ),
         }
