@@ -173,7 +173,7 @@ class VoiceConversation:
                 return self._reply(spoken, "", status="awaiting_answer",
                                    user_turn=user_turn)
             user_turn.intent = intent.name
-            if confirm:
+            if confirm or intent.name in ("run_tests", "commit", "update_website", "send_email", "send_whatsapp", "make_call"):
                 user_turn.status = "awaiting_confirmation"
                 spoken = (f"Shall I {intent.name.replace('_', ' ')}? "
                           "Say yes to proceed or no to cancel.")
