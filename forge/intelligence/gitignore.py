@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePath
 
 
 class GitIgnoreMatcher:
@@ -8,7 +8,11 @@ class GitIgnoreMatcher:
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
+        # Performance optimization (Bolt ⚡): Use normalized string prefix with trailing slash for fast safe relative path derivation
+        self.root_prefix = self.root.as_posix().rstrip("/") + "/"
         self.patterns: list[str] = []
+        # Performance optimization (Bolt ⚡): Pre-parse PurePath pattern instances once to avoid string parsing on every path match
+        self._parsed_patterns: list[tuple[str, bool, PurePath]] = []
         self._cache: dict[str, bool] = {}
         self._load()
 
@@ -31,41 +35,47 @@ class GitIgnoreMatcher:
 
             self.patterns.append(line)
 
+            pattern = line.rstrip("/")
+            # Negated patterns are handled conservatively for now.
+            if pattern.startswith("!"):
+                continue
+
+            has_slash = "/" in pattern
+            pure_pattern = PurePath(pattern)
+            self._parsed_patterns.append((pattern, has_slash, pure_pattern))
+
     def is_ignored(self, path: str | Path) -> bool:
         """Return True if a repository path matches .gitignore."""
         path_key = str(path)
         if path_key in self._cache:
             return self._cache[path_key]
 
-        target = Path(path)
+        # Performance optimization (Bolt ⚡): Fast relative path string calculation
+        # Normalized as posix path string
+        target_posix = Path(path).as_posix() if isinstance(path, Path) else path.replace("\\", "/")
 
-        if not target.is_absolute():
-            target = self.root / target
+        if target_posix.startswith(self.root_prefix):
+            path_str = target_posix[len(self.root_prefix):]
+            relative = PurePath(path_str)
+        else:
+            target = Path(path)
+            if not target.is_absolute():
+                target = self.root / target
 
-        try:
-            relative = target.relative_to(self.root)
-        except ValueError:
             try:
-                relative = target.resolve().relative_to(self.root)
+                relative = target.relative_to(self.root)
             except ValueError:
-                self._cache[path_key] = False
-                return False
+                try:
+                    relative = target.resolve().relative_to(self.root)
+                except ValueError:
+                    self._cache[path_key] = False
+                    return False
 
-        path_str = relative.as_posix()
+            path_str = relative.as_posix()
+
         parts = relative.parts
 
-        for pattern in self.patterns:
-            pattern = pattern.strip()
-
-            if not pattern:
-                continue
-
-            # Negated patterns are handled conservatively for now.
-            if pattern.startswith("!"):
-                continue
-
-            pattern = pattern.rstrip("/")
-
+        for pattern, has_slash, pure_pattern in self._parsed_patterns:
             # Direct path match.
             if path_str == pattern:
                 self._cache[path_key] = True
@@ -76,13 +86,13 @@ class GitIgnoreMatcher:
                 self._cache[path_key] = True
                 return True
 
-            # Simple filename / glob matching.
-            if relative.match(pattern):
+            # Pre-parsed PurePath matching (100% compliant with pathlib matching rules)
+            if relative.match(pure_pattern):
                 self._cache[path_key] = True
                 return True
 
             # Pattern without a slash can match any path component.
-            if "/" not in pattern:
+            if not has_slash:
                 if pattern in parts:
                     self._cache[path_key] = True
                     return True
