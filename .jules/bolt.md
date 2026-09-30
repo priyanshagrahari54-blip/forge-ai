@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - GitIgnoreMatcher Uncached Path Instantiation & PurePath Re-Parsing
+
+**Learning:** `GitIgnoreMatcher.is_ignored` repeatedly performed string-to-Path conversions and `Path.relative_to` calculations for cache misses or un-cached paths, and re-created `PurePath` objects for every pattern comparison during repository file traversal.
+
+**Action:** Pre-compute `PurePath` patterns once during initialization, and use root string prefix slicing (`target_posix[len(root_prefix):]`) for $O(1)$ relative string construction while preserving exact `pathlib` pattern matching semantics.
