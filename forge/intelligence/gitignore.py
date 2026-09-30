@@ -11,8 +11,8 @@ class GitIgnoreMatcher:
         # Performance optimization (Bolt ⚡): Use normalized string prefix with trailing slash for fast safe relative path derivation
         self.root_prefix = self.root.as_posix().rstrip("/") + "/"
         self.patterns: list[str] = []
-        # Performance optimization (Bolt ⚡): Pre-parse PurePath pattern instances once to avoid string parsing on every path match
-        self._parsed_patterns: list[tuple[str, bool, PurePath]] = []
+        # Performance optimization (Bolt ⚡): Pre-compute pattern metadata tuples: (pattern, has_slash)
+        self._parsed_patterns: list[tuple[str, bool]] = []
         self._cache: dict[str, bool] = {}
         self._load()
 
@@ -41,8 +41,7 @@ class GitIgnoreMatcher:
                 continue
 
             has_slash = "/" in pattern
-            pure_pattern = PurePath(pattern)
-            self._parsed_patterns.append((pattern, has_slash, pure_pattern))
+            self._parsed_patterns.append((pattern, has_slash))
 
     def is_ignored(self, path: str | Path) -> bool:
         """Return True if a repository path matches .gitignore."""
@@ -75,7 +74,7 @@ class GitIgnoreMatcher:
 
         parts = relative.parts
 
-        for pattern, has_slash, pure_pattern in self._parsed_patterns:
+        for pattern, has_slash in self._parsed_patterns:
             # Direct path match.
             if path_str == pattern:
                 self._cache[path_key] = True
@@ -86,8 +85,8 @@ class GitIgnoreMatcher:
                 self._cache[path_key] = True
                 return True
 
-            # Pre-parsed PurePath matching (100% compliant with pathlib matching rules)
-            if relative.match(pure_pattern):
+            # Simple filename / glob matching (passed as str for Python 3.8-3.11 compatibility)
+            if relative.match(pattern):
                 self._cache[path_key] = True
                 return True
 
