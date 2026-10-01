@@ -95,12 +95,17 @@ class TaskEngine:
         return task
 
     def _exists(self, task_id: str) -> bool:
-        # Fast O(1) check using dict index
-        return task_id in self._by_id
+        # Fast O(1) check using dict index or fallback sync check if tasks modified directly
+        return task_id in self._by_id or any(task.id == task_id for task in self.tasks)
 
     def _find(self, task_id: str) -> Task:
         # Fast O(1) lookup using dict index
         task = self._by_id.get(task_id)
-        if task is None:
-            raise KeyError(f"Task not found: {task_id}")
-        return task
+        if task is not None:
+            return task
+        # Fallback scan and resync if self.tasks was mutated directly (e.g. self.engine.tasks = list(tasks))
+        for t in self.tasks:
+            if t.id == task_id:
+                self._by_id[task_id] = t
+                return t
+        raise KeyError(f"Task not found: {task_id}")

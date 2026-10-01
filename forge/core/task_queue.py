@@ -45,6 +45,7 @@ class PersistentTaskQueue:
     def load(self) -> list[Task]:
         tasks = self.store.load_all()
         self.engine.tasks = list(tasks)
+        self.engine._by_id = {task.id: task for task in tasks}
         for task in tasks:
             self._priorities.setdefault(task.id, 0)
             self._created_at.setdefault(task.id, datetime.now(timezone.utc).isoformat())
