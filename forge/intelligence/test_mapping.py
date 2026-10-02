@@ -46,10 +46,25 @@ class TestMapper:
         self.gitignore = GitIgnoreMatcher(self.root)
         self.dependency_graph = dependency_graph
 
-    def build(self) -> TestMapping:
+    def build(
+        self,
+        source_files: list[str] | None = None,
+        test_files: list[str] | None = None,
+    ) -> TestMapping:
+        """Build test mapping, accepting pre-discovered source and test file lists.
+
+        Performance optimization (Bolt ⚡): Accepting pre-discovered file lists
+        avoids redundant `rglob("*.py")` filesystem traversals when called from `RepositoryIntelligence.build`.
+        """
         mapping = TestMapping()
 
-        source_files, test_files = self._discover_files()
+        if source_files is None or test_files is None:
+            discovered_sources, discovered_tests = self._discover_files()
+            source_files = source_files if source_files is not None else discovered_sources
+            test_files = test_files if test_files is not None else discovered_tests
+
+        source_files = sorted(source_files)
+        test_files = sorted(test_files)
 
         # Performance optimization (Bolt ⚡): Pre-index source files by stem
         # to convert O(N*M) stem matching loops into O(1) dictionary lookups.

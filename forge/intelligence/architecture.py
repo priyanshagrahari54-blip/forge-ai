@@ -84,10 +84,41 @@ class ArchitectureAnalyzer:
         self.root = Path(root).resolve()
         self.gitignore = GitIgnoreMatcher(self.root)
 
-    def analyze(self) -> ArchitectureReport:
+    def analyze(
+        self,
+        all_files: set[str] | list[str] | None = None,
+        source_files: list[str] | None = None,
+        test_files: list[str] | None = None,
+        config_files: list[str] | None = None,
+    ) -> ArchitectureReport:
+        """Analyze repository architecture, accepting pre-discovered file lists.
+
+        Performance optimization (Bolt ⚡): Accepting pre-discovered file lists
+        avoids redundant `rglob("*")` filesystem traversals when called from `RepositoryIntelligence.build`.
+        """
         report = ArchitectureReport()
 
-        self._scan_files(report)
+        if all_files is not None:
+            report.config_files = list(config_files) if config_files is not None else []
+            report.test_files = list(test_files) if test_files is not None else []
+            report.source_files = list(source_files) if source_files is not None else []
+
+            if config_files is None or test_files is None or source_files is None:
+                for relative in all_files:
+                    name = Path(relative).name
+                    parts = Path(relative).parts
+
+                    if config_files is None and name in self.CONFIG_NAMES:
+                        report.config_files.append(relative)
+
+                    if test_files is None and self._is_test_file(Path(relative), parts):
+                        report.test_files.append(relative)
+
+                    if source_files is None and relative.endswith(".py"):
+                        report.source_files.append(relative)
+        else:
+            self._scan_files(report)
+
         self._detect_packages(report)
         self._detect_entry_points(report)
 
