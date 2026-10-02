@@ -44,20 +44,15 @@ class RuntimeDetector:
         self.root = Path(root).resolve()
         self.gitignore = GitIgnoreMatcher(self.root)
 
-    def detect(self, files: set[str] | list[str] | None = None) -> RuntimeReport:
-        """Detect executable project behavior, accepting pre-discovered files.
-
-        Performance optimization (Bolt ⚡): Accepting pre-discovered file sets
-        avoids redundant `rglob("*")` filesystem traversals when called from `RepositoryIntelligence.build`.
-        """
+    def detect(self) -> RuntimeReport:
         report = RuntimeReport()
 
-        files_set = set(files) if files is not None else self._files()
+        files = self._files()
 
-        self._detect_python(files_set, report)
-        self._detect_node(files_set, report)
-        self._detect_docker(files_set, report)
-        self._detect_generic_tests(files_set, report)
+        self._detect_python(files, report)
+        self._detect_node(files, report)
+        self._detect_docker(files, report)
+        self._detect_generic_tests(files, report)
 
         report.project_type = sorted(set(report.project_type))
 
