@@ -111,12 +111,26 @@ class CallGraph:
         Indexing only the resolved target would make the common bare-name
         lookup miss every resolved edge.
         """
-        keys = [site.callee]
-        keys.extend(site.candidates)
+        # Performance optimization (Bolt ⚡): Fast-path single-candidate or empty candidate
+        # cases to avoid list allocations and linear scans.
+        callee = site.callee
+        candidates = site.candidates
+        if not candidates:
+            return (callee,) if callee else ()
+        if len(candidates) == 1:
+            cand = candidates[0]
+            if not cand or cand == callee:
+                return (callee,) if callee else ()
+            if not callee:
+                return (cand,)
+            return (callee, cand)
+
         seen: List[str] = []
-        for key in keys:
-            if key and key not in seen:
-                seen.append(key)
+        if callee:
+            seen.append(callee)
+        for cand in candidates:
+            if cand and cand not in seen:
+                seen.append(cand)
         return tuple(seen)
 
     def add(self, site: CallSite) -> None:
@@ -276,6 +290,13 @@ class CallGraphIndexer:
         self.max_files = max(1, max_files)
 
     def build(self) -> CallGraph:
+        """Build a :class:`CallGraph` for the repository.
+
+        Performance optimization (Bolt ⚡): Single-pass file read and AST parsing.
+        Read file contents and parse AST trees once during Pass 1, caching them
+        for Pass 2. This avoids re-reading every file from disk and running
+        ast.parse twice across the entire codebase.
+        """
         graph = CallGraph()
         suffixes = AST_SUFFIXES + (LEXICAL_SUFFIXES if self.include_lexical
                                    else ())
@@ -286,31 +307,58 @@ class CallGraphIndexer:
                 graph.truncated = True
                 break
 
-        # Pass 1: collect every function-like symbol so call edges can be
-        # resolved against real repository definitions.
-        definitions = self._collect_definitions(files)
-        graph.known_symbols = {
-            name: tuple(sorted(qualified))
-            for name, qualified in sorted(definitions.items())
-        }
+        # Pass 1: collect definitions and cache parsed AST / source text
+        definitions: Dict[str, Set[str]] = defaultdict(set)
+        cached_files: List[Tuple[Path, str, str, str, Optional[Union[ast.AST, Exception]]]] = []
 
-        # Pass 2: extract call sites and resolve them.
         for path in files:
             rel = path.relative_to(self.root).as_posix()
             graph.files_scanned += 1
+            suffix = path.suffix.lower()
             try:
                 source = path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
                 graph.parse_errors.append({"file": rel, "error": str(exc)})
                 continue
+
             if len(source.encode("utf-8", "replace")) > MAX_FILE_BYTES:
                 graph.parse_errors.append(
                     {"file": rel, "error": "file exceeds the size bound"})
                 continue
-            if path.suffix.lower() in AST_SUFFIXES:
-                self._index_python(rel, source, graph)
+
+            if suffix in AST_SUFFIXES:
+                try:
+                    tree = ast.parse(source, filename=rel)
+                    cached_files.append((path, rel, suffix, source, tree))
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.FunctionDef,
+                                             ast.AsyncFunctionDef)):
+                            qualified = self._python_qualifier(rel, node.name)
+                            definitions[node.name].add(qualified)
+                except (SyntaxError, ValueError) as exc:
+                    cached_files.append((path, rel, suffix, source, exc))
+            else:
+                cached_files.append((path, rel, suffix, source, None))
+                for name in _lexical_definitions(source):
+                    definitions[name].add("%s:%s" % (rel, name))
+
+        graph.known_symbols = {
+            name: tuple(sorted(qualified))
+            for name, qualified in sorted(definitions.items())
+        }
+
+        # Pass 2: extract call sites using cached ASTs/sources
+        for path, rel, suffix, source, tree_or_exc in cached_files:
+            if suffix in AST_SUFFIXES:
+                if isinstance(tree_or_exc, (SyntaxError, ValueError)):
+                    graph.parse_errors.append(
+                        {"file": rel, "error": str(tree_or_exc)})
+                    continue
+                if isinstance(tree_or_exc, ast.AST):
+                    self._index_python_ast(rel, tree_or_exc, graph)
             else:
                 self._index_lexical(rel, source, graph)
+
         return graph
 
     # -- pass 1 ----------------------------------------------------------
@@ -350,12 +398,8 @@ class CallGraphIndexer:
 
     # -- pass 2 ----------------------------------------------------------
 
-    def _index_python(self, rel: str, source: str, graph: CallGraph) -> None:
-        try:
-            tree = ast.parse(source, filename=rel)
-        except (SyntaxError, ValueError) as exc:
-            graph.parse_errors.append({"file": rel, "error": str(exc)})
-            return
+    def _index_python_ast(self, rel: str, tree: ast.AST, graph: CallGraph) -> None:
+        """Index a Python module from a pre-parsed AST tree."""
         graph.files_parsed += 1
         module = rel[:-3].replace("/", ".")
         if module.endswith(".__init__"):
@@ -402,6 +446,14 @@ class CallGraphIndexer:
 
         for child in ast.iter_child_nodes(tree):
             visit(child)
+
+    def _index_python(self, rel: str, source: str, graph: CallGraph) -> None:
+        try:
+            tree = ast.parse(source, filename=rel)
+        except (SyntaxError, ValueError) as exc:
+            graph.parse_errors.append({"file": rel, "error": str(exc)})
+            return
+        self._index_python_ast(rel, tree, graph)
 
     def _resolve(self, rel: str, callee: str, caller: str, line: int,
                  tier: str, graph: CallGraph) -> CallSite:
