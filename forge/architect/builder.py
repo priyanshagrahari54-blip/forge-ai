@@ -99,7 +99,16 @@ class ProjectArchitect:
     def __init__(self, root: str | Path = ".", *,
                  profiles: Sequence[Any] = ()) -> None:
         self.root = Path(root).resolve()
-        self.profiles = list(profiles)
+        if profiles:
+            self.profiles = list(profiles)
+        else:
+            try:
+                from forge.profiles import default_registry, load_project_config, select_profiles
+                config = load_project_config(self.root, strict=False)
+                registry = default_registry(self.root)
+                self.profiles = list(select_profiles(config, registry))
+            except Exception:
+                self.profiles = []
 
     # -- entry point -----------------------------------------------------
 
