@@ -67,6 +67,18 @@ class Requirement:
     constraints: List[str] = field(default_factory=list)
     #: What "done" means, in checkable terms.
     acceptance_criteria: List[str] = field(default_factory=list)
+    #: Requirement Intelligence contract fields. These are deliberately
+    #: explicit so quality, limitations, and verification cannot disappear
+    #: between understanding and execution.
+    implicit_requirements: List[str] = field(default_factory=list)
+    quality_requirements: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
+    non_goals: List[str] = field(default_factory=list)
+    resources: List[str] = field(default_factory=list)
+    failure_conditions: List[str] = field(default_factory=list)
+    verification_methods: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    contract_status: str = "ready"
     #: Scale hint: small | medium | large.
     scale: str = "medium"
     #: Repository facts the Architect actually observed.
@@ -80,6 +92,14 @@ class Requirement:
             "confidence": round(self.confidence, 3),
             "goals": list(self.goals), "constraints": list(self.constraints),
             "acceptance_criteria": list(self.acceptance_criteria),
+            "implicit_requirements": list(self.implicit_requirements),
+            "quality_requirements": list(self.quality_requirements),
+            "references": list(self.references), "non_goals": list(self.non_goals),
+            "resources": list(self.resources),
+            "failure_conditions": list(self.failure_conditions),
+            "verification_methods": list(self.verification_methods),
+            "capabilities": list(self.capabilities),
+            "contract_status": self.contract_status,
             "scale": self.scale, "observations": dict(self.observations),
             "created_at": self.created_at,
         }
