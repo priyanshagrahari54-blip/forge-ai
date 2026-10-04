@@ -169,6 +169,7 @@ class Supervisor:
         from forge.agents.reviewer import ReviewerAgent
         from forge.agents.tester import TesterAgent
         from forge.core.acceptance import AcceptanceEngine, GateOutcome
+        from forge.core.requirement_intelligence import analyze as analyze_requirement
         from forge.core.report import TaskReport
         from forge.core.task_engine import TaskEngine, TaskStatus
         from forge.intelligence.repository import RepositoryIntelligence
@@ -239,6 +240,7 @@ class Supervisor:
         #: model/backend answered, neural or deterministic, verified or not,
         #: and the identity it was bound to. Recorded on both terminal paths.
         inference_provenance: dict[str, Any] = {}
+        contract = analyze_requirement(requirement)
         result: dict[str, Any] = {
             "run_id": run_id,
             "requirement": requirement,
@@ -250,6 +252,7 @@ class Supervisor:
             "gates": [],
             "rollback": False,
             "checkpoint_id": checkpoint.id,
+            "requirement_contract": contract.to_dict(),
         }
 
         # Once finishing (success tail or failure path), checkpoints stop
@@ -531,6 +534,13 @@ class Supervisor:
             result["gates"] = [asdict(gate) for gate in gates]
             result["benchmark"] = benchmark.to_dict()
             benchmark_passed = benchmark.passed_benchmarks >= benchmark.total_benchmarks
+            contract_gate = GateOutcome(
+                "contract", contract.executable,
+                "requirement contract requires clarification" if not contract.executable else "requirement contract satisfied",
+                {"status": contract.status, "ambiguities": list(contract.ambiguities), "contradictions": list(contract.contradictions)},
+            )
+            gates.append(contract_gate)
+            result["gates"] = [asdict(gate) for gate in gates]
             decision = AcceptanceEngine().decide(
                 tests=gate_tests,
                 build=gate_build,
@@ -538,6 +548,7 @@ class Supervisor:
                 review=review_decision,
                 security=security,
                 benchmark=GateOutcome("benchmark", benchmark_passed, "" if benchmark_passed else "benchmark incomplete"),
+                contract=contract_gate,
                 permissions_ok=True,
                 rollback_available=True,
                 changed_files=touched,
