@@ -17,3 +17,13 @@ def test_hf_model_metadata_can_be_discovered(monkeypatch):
     found = discovery.discover_huggingface_models("model")
     assert found[0].name == "org/model"
     assert found[0].usable
+
+
+def test_hf_dataset_and_space_metadata_can_be_discovered(monkeypatch):
+    discovery = CapabilityDiscovery(CapabilityRegistry())
+    monkeypatch.setattr(discovery, "_json", lambda url: [{"id": "org/repo", "sha": "abc"}])
+    datasets = discovery.discover_huggingface_datasets("data")
+    spaces = discovery.discover_huggingface_spaces("app")
+    assert datasets[0].capability == "dataset"
+    assert spaces[0].capability == "space"
+    assert datasets[0].usable and spaces[0].usable
