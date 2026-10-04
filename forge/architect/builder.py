@@ -26,6 +26,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from forge.core.requirement_intelligence import analyze as analyze_requirement
+
 from forge.architect.classifier import (
     Classification,
     acceptance_criteria_for,
@@ -111,6 +113,7 @@ class ProjectArchitect:
             raise ArchitectError(
                 "requirement exceeds %d characters" % MAX_REQUIREMENT_CHARS)
 
+        contract = analyze_requirement(statement)
         observations = _observations(self.root if self.root.is_dir() else None)
         observation_terms = self._observation_terms(observations)
         classification = classify(statement, observations=observation_terms)
@@ -124,8 +127,18 @@ class ProjectArchitect:
             goals=goals_from(statement),
             constraints=sorted(set(constraints_from(statement))
                                | set(self._profile_constraints(matched))),
-            acceptance_criteria=acceptance_criteria_for(classification,
-                                                        statement),
+            acceptance_criteria=list(dict.fromkeys(
+                acceptance_criteria_for(classification, statement)
+                + contract.acceptance_criteria)),
+            implicit_requirements=list(contract.implicit_requirements),
+            quality_requirements=list(contract.quality_requirements),
+            references=list(contract.references),
+            non_goals=list(contract.non_goals),
+            resources=list(contract.resources),
+            failure_conditions=list(contract.failure_conditions),
+            verification_methods=list(contract.verification_methods),
+            capabilities=list(contract.capabilities),
+            contract_status=contract.status,
             scale=classification.scale,
             observations=observations)
 
@@ -142,6 +155,10 @@ class ProjectArchitect:
         self._benchmark_plan(plan, classification, matched)
         self._release_plan(plan, classification, matched)
         self._open_questions(plan, classification)
+        for issue in contract.ambiguities:
+            plan.open_questions.append("Requirement contract: " + issue)
+        for issue in contract.contradictions:
+            plan.open_questions.append("Requirement contradiction: " + issue)
         return plan
 
     # -- helpers ---------------------------------------------------------
