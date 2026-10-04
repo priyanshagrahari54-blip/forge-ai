@@ -129,7 +129,7 @@ class GeminiProvider(HostedProvider):
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
-        return sorted(str(x.get("name", "").removeprefix("models/"))
+        return sorted(str(x.get("name", "")[7:] if str(x.get("name", "")).startswith("models/") else x.get("name", ""))
                       for x in data.get("models", [])
                       if isinstance(x, dict) and x.get("name"))
 
