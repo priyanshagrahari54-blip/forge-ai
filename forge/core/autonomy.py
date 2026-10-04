@@ -66,16 +66,24 @@ class AutonomyController:
         self.policy = policy or AutonomyPolicy()
         self.policy.validate()
 
-    def can_continue(self, *, contract_ready: bool, verification_required: bool,
-                     provider: ProviderBudget | None = None,
-                     risky_action: bool = False) -> bool:
+    def can_continue(
+        self,
+        *,
+        contract_ready: bool,
+        verification_required: bool,
+        verification_complete: bool = False,
+        provider: ProviderBudget | None = None,
+        risky_action: bool = False,
+        approval_granted: bool = False,
+    ) -> bool:
         if not self.policy.enabled:
             return False
         if self.policy.require_contract_before_execution and not contract_ready:
             return False
-        if verification_required and not self.policy.require_verification_before_delivery:
-            return False
-        if risky_action and not self.policy.require_approval_for_risky_actions:
+        if verification_required and not verification_complete:
+            # Verification is a delivery gate, not a reason to run forever.
+            return True
+        if risky_action and self.policy.require_approval_for_risky_actions and not approval_granted:
             return False
         if provider is not None and (not provider.available or provider.exhausted):
             return False
