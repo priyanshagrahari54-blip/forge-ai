@@ -86,6 +86,7 @@ class AcceptanceEngine:
         review: "ReviewDecision | None" = None,
         security: GateOutcome,
         benchmark: GateOutcome | None = None,
+        contract: GateOutcome | None = None,
         permissions_ok: bool = True,
         rollback_available: bool = True,
         changed_files: list[str] | None = None,
@@ -124,6 +125,10 @@ class AcceptanceEngine:
         if not benchmark_passed:
             fail("benchmark", f"benchmark failed: {benchmark.details}")
 
+        contract_passed = contract is None or contract.passed
+        if not contract_passed:
+            fail("contract", f"requirement contract failed: {contract.details}")
+
         if not permissions_ok:
             fail("permissions", "permission gate failed")
         if not rollback_available:
@@ -144,6 +149,7 @@ class AcceptanceEngine:
             # policy, and the omission is visible here.
             "lint_executed": bool((lint.evidence or {}).get("commands")),
             "tests_no_tests": bool((tests.evidence or {}).get("no_tests", False)),
+            "contract_executed": contract is not None,
         }
         return AcceptanceDecision(
             accepted=all_pass,
