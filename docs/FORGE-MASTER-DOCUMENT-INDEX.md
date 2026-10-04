@@ -5,37 +5,39 @@ This is the documentation source-of-truth for the current redesign. Code must fo
 ## A. Product and scope
 1. `docs/FORGE-MASTER-DOCUMENT-INDEX.md` — this index and document governance.
 2. `docs/FORGE-CUSTOMIZATION-CONTRACT.md` — reuse/adapt/compose/extend/build policy and ownership boundary.
-3. `ARCHITECTURE.md` — system architecture and execution planes.
-4. `DESIGN.md` — UI/UX and truthful state presentation.
-5. `AI_CITY.md` — cockpit/AI City contract.
+3. `docs/FORGE-CONTINUOUS-AUTONOMY.md` — unbounded backlog, automatic continuation, provider rotation and quota truth.
+4. `ARCHITECTURE.md` — system architecture and execution planes.
+5. `DESIGN.md` — UI/UX and truthful state presentation.
+6. `AI_CITY.md` — cockpit/AI City contract.
 
 ## B. Intelligence
-6. `AGENTS.md` — logical agent fleet, lifecycle, selection and evolution.
-7. `MODEL_CATALOG.md` — provider/model truth, routing and verification.
-8. `MEMORY.md` — memory, RAG, provenance and controlled learning.
-9. `forge/core/requirement_intelligence.py` — executable requirement-contract logic.
-10. `forge/capabilities/registry.py` + `broker.py` — capability truth and resolution.
+7. `AGENTS.md` — logical agent fleet, lifecycle, selection and evolution.
+8. `MODEL_CATALOG.md` — provider/model truth, routing and verification.
+9. `MEMORY.md` — memory, RAG, provenance and controlled learning.
+10. `forge/core/requirement_intelligence.py` — executable requirement-contract logic.
+11. `forge/core/autonomy.py` — continuous-autonomy policy and quota-aware continuation.
+12. `forge/capabilities/registry.py` + `broker.py` — capability truth and resolution.
 
 ## C. Engineering governance
-11. `CONTRIBUTING.md` — contribution rules.
-12. `.forge/` — project-level machine-readable configuration/contracts where present.
-13. Tests under `tests/` — executable acceptance of architecture contracts.
+13. `CONTRIBUTING.md` — contribution rules.
+14. `.forge/` — project-level machine-readable configuration/contracts where present.
+15. Tests under `tests/` — executable acceptance of architecture contracts.
 
 ## D. Exact build order
 ### Phase 0 — Documentation freeze
-Requirements, quality bars, constraints, security model, architecture, dependency graph, acceptance rules and ecosystem strategy.
+Requirements, quality bars, constraints, security model, architecture, dependency graph, acceptance rules, ecosystem strategy and autonomy/resource policy.
 
 ### Phase 1 — Truth/contract core
-Requirement Intelligence → Master Contract → Capability Registry → Capability Broker → project/task persistence → acceptance gate.
+Requirement Intelligence → Master Contract → Capability Registry → Capability Broker → project/task persistence → acceptance gate → Autonomy Controller.
 
 ### Phase 2 — Execution kernel
-Supervisor → planner → task state machine → bounded workers → event/audit stream → checkpoint/rollback.
+Supervisor → planner → task state machine → bounded workers → event/audit stream → checkpoint/rollback → continuous queue.
 
 ### Phase 3 — Provider/model fabric
-Discovery → health/reachability → bounded verification → capability normalization → dynamic model routing → fallback → telemetry.
+Discovery → health/reachability → bounded verification → capability normalization → dynamic model routing → fallback/provider rotation → quota tracking → telemetry.
 
 ### Phase 4 — Ecosystem adapters
-MCP → coding/IDE → Git/GitHub → browser/computer use → research/search → RAG → databases → deployment. Existing mature systems are adopted/adapted rather than reimplemented.
+MCP → coding/IDE → Git/GitHub → Hugging Face → browser/computer use → research/search → RAG → databases → deployment. Existing mature systems are adopted/adapted rather than reimplemented.
 
 ### Phase 5 — Memory and research intelligence
 Source ingestion → provenance → deduplication → indexing → retrieval → evidence synthesis → contradiction detection → project/user memory.
@@ -104,6 +106,9 @@ CAPABILITY BROKER     CONTEXT ASSEMBLER
        PASS          FAIL
         |             |
      DELIVER      REPAIR/REPLAN
+        |
+        v
+ NEXT QUEUED WORK → PROVIDER ROTATION → CONTINUE
 ```
 
 ## F. Quality doctrine
@@ -114,5 +119,10 @@ For a request such as “GTA-like”, “AAA”, “professional Adobe-level”,
 ## G. Resource doctrine
 The G560 is a thin client. No user-owned server/GPU/cloud is assumed. Remote compute is used only through an actually available provider/service. Zero-rupee is the design target; paid infrastructure cannot be silently assumed.
 
+**Continuous autonomy:** the backlog may be unbounded, but actual compute/API/GPU capacity is not. Forge rotates among verified providers, queues work when all eligible capacity is exhausted, and never silently spends money.
+
 ## H. Ecosystem doctrine
 Forge should import/reuse mature components where possible, but customize the integration, policies, memory, routing, verification, security and user experience into a coherent Forge system. Do not copy large projects unnecessarily.
+
+## I. Hugging Face doctrine
+Hugging Face is a first-class ecosystem source for model/dataset/Space discovery, inference-provider routing and ML workflow components. HF capacity is treated as real provider capacity with explicit authentication, availability, licensing and quota state—not as unlimited free compute.
