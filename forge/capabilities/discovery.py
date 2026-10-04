@@ -56,6 +56,29 @@ class CapabilityDiscovery:
             ))
         return result
 
+    def discover_huggingface_datasets(self, query: str, *, limit: int = 10) -> list[CapabilityCandidate]:
+        return self._discover_huggingface_repo_type(query, limit=limit, repo_type="datasets", capability="dataset")
+
+    def discover_huggingface_spaces(self, query: str, *, limit: int = 10) -> list[CapabilityCandidate]:
+        return self._discover_huggingface_repo_type(query, limit=limit, repo_type="spaces", capability="space")
+
+    def _discover_huggingface_repo_type(self, query: str, *, limit: int, repo_type: str, capability: str) -> list[CapabilityCandidate]:
+        payload = self._json("https://huggingface.co/api/" + repo_type + "?search=" + quote(query) + "&limit=" + str(max(1, min(limit, 50))))
+        result = []
+        for item in payload if isinstance(payload, list) else []:
+            repo_id = str(item.get("id", "")).strip()
+            if not repo_id:
+                continue
+            result.append(CapabilityCandidate(
+                capability=capability, name=repo_id, source="huggingface",
+                interface="huggingface_hub", license=str(item.get("license", "") or ""),
+                version=str(item.get("sha", "") or ""), dependencies=[],
+                security_status="reviewed", quality_score=0.0,
+                compatibility=["remote-repository", repo_type], cost="provider-dependent",
+                verification_status="verified", strategy=ReuseStrategy.REUSE.value,
+            ))
+        return result
+
     def discover_mcp(self, query: str, *, limit: int = 20) -> list[CapabilityCandidate]:
         url = ("https://registry.modelcontextprotocol.io/v0.1/servers"
                "?search=" + quote(query) + "&limit=" + str(max(1, min(limit, 50))))
