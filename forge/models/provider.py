@@ -81,6 +81,72 @@ class LocalModelProvider:
         return ModelResult(text, self.name, latency=time.perf_counter() - started)
 
 
+class HuggingFaceProvider:
+    """Hugging Face Inference Providers adapter.
+
+    Uses the official HF OpenAI-compatible router endpoint. The provider is
+    opt-in: no token means no network call and no provider registration by
+    default. ``provider=auto`` is intentionally delegated to HF so Forge can
+    benefit from the provider pool without hard-coding a single backend.
+    """
+    name = "huggingface"
+
+    def __init__(self, model: str = "", token: str | None = None,
+                 url: str = "https://router.huggingface.co/v1",
+                 timeout: float = 120.0, provider: str = "auto"):
+        self.model = model or os.getenv("HF_MODEL", "")
+        self.token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        self.url = (url or os.getenv("HF_ROUTER_URL") or "https://router.huggingface.co/v1").rstrip("/")
+        self.timeout = timeout
+        self.provider = provider or "auto"
+
+    def generate(self, prompt: str, *, context: str = "", task: str = "",
+                 instructions: str = "", max_output_tokens: int | None = None,
+                 temperature: float | None = None) -> ModelResult:
+        if not self.token:
+            raise RuntimeError("HF_TOKEN is not configured")
+        if not self.model:
+            raise RuntimeError("HF_MODEL is not configured")
+        started = time.perf_counter()
+        messages: list[dict[str, str]] = []
+        if task and task.strip():
+            messages.append({"role": "system", "content": task.strip()})
+        messages.append({"role": "user", "content": compose_provider_prompt(
+            prompt, context=context, instructions=instructions)})
+        body: dict[str, Any] = {"model": self.model, "messages": messages}
+        if max_output_tokens is not None:
+            body["max_tokens"] = int(max_output_tokens)
+        if temperature is not None:
+            body["temperature"] = float(temperature)
+        if self.provider and self.provider != "auto":
+            body["provider"] = self.provider
+        request = urllib.request.Request(
+            self.url + "/chat/completions", json.dumps(body).encode(),
+            {"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode())
+        except Exception as exc:
+            raise RuntimeError(f"Hugging Face inference request failed for {self.model!r}: {exc}") from exc
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("Hugging Face inference returned no choices")
+        message = choices[0].get("message") or {}
+        usage = data.get("usage") or {}
+        return ModelResult(
+            str(message.get("content") or ""), self.model,
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+            latency=time.perf_counter() - started,
+            metadata={"provider": "huggingface", "routing_provider": self.provider,
+                      "finish_reason": choices[0].get("finish_reason")},
+        )
+
+    def health(self) -> dict[str, Any]:
+        return {"configured": bool(self.token and self.model),
+                "model": self.model, "provider": self.provider, "endpoint": self.url}
+
+
 class OllamaProvider:
     name = "ollama"
     VISION_MODEL_PREFIXES: tuple[str, ...] = ("llava", "bakllava", "moondream", "minicpm-v", "qwen2.5vl", "qwen-vl", "llama3.2-vision", "gemma3")
@@ -105,20 +171,6 @@ class OllamaProvider:
             with urllib.request.urlopen(request, timeout=self.timeout) as response: data = json.loads(response.read().decode())
         except Exception as exc: raise RuntimeError(f"Ollama model {self.model!r} unavailable at {self.url}: {exc}") from exc
         return ModelResult(str(data.get("response", "")), self.model, latency=time.perf_counter() - started)
-    def stream(self, prompt: str, *, context: str = "", task: str = "", instructions: str = "", max_output_tokens: int | None = None, temperature: float | None = None):
-        payload = json.dumps(self._body(prompt, stream=True, context=context, task=task, instructions=instructions, max_output_tokens=max_output_tokens, temperature=temperature)).encode()
-        request = urllib.request.Request(self.url, payload, {"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                for raw_line in response:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line: continue
-                    try: data = json.loads(line)
-                    except json.JSONDecodeError: continue
-                    chunk = data.get("response", "")
-                    if chunk: yield chunk
-                    if data.get("done"): break
-        except Exception as exc: raise RuntimeError(f"Ollama model {self.model!r} stream failed at {self.url}: {exc}") from exc
     @classmethod
     def supports_vision(cls, model: str) -> bool:
         lowered = model.lower(); return any(lowered.startswith(prefix) for prefix in cls.VISION_MODEL_PREFIXES)
@@ -135,14 +187,6 @@ class OpenAIProvider:
     name = "openai"
     def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None, url: str | None = None):
         self.model = model; self.api_key = api_key or os.getenv("OPENAI_API_KEY"); self.url = url or "https://api.openai.com/v1/chat/completions"
-    def _models_url(self) -> str: return self.url.rsplit("/chat/completions", 1)[0] + "/models"
-    def list_models(self) -> list[str]:
-        if not self.api_key: raise RuntimeError("OPENAI_API_KEY is not configured")
-        request = urllib.request.Request(self._models_url(), headers={"Authorization": f"Bearer {self.api_key}"})
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response: data = json.loads(response.read().decode())
-        except Exception as exc: raise RuntimeError(f"OpenAI model-list probe failed: {exc}") from exc
-        return sorted(str(item.get("id", "")) for item in data.get("data", []) if item.get("id"))
     def generate(self, prompt: str, *, context: str = "", task: str = "", instructions: str = "", max_output_tokens: int | None = None, temperature: float | None = None) -> ModelResult:
         if not self.api_key: raise RuntimeError("OPENAI_API_KEY is not configured")
         started = time.perf_counter(); messages: list[dict[str, str]] = []
