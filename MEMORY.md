@@ -1,33 +1,34 @@
-# FORGE AI — MEMORY & LEARNING SPEC
-## Layers
+# FORGE AI — MEMORY, RAG & CONTROLLED LEARNING v2
+
+## 1. Memory layers
 Working/session, conversation, user preference, project, episodic, semantic, procedural, research, operational and agent memory.
 
-## Record
-ID, scope, type, content, source, confidence, timestamps, expiration, provenance and retention policy.
+## 2. Record contract
+Every durable record has ID, scope, type, content/reference, source, confidence, timestamps, provenance, retention policy and authorization boundary.
 
-## Write pipeline
-Interaction → candidate extraction → privacy/authorization → dedupe → importance → confidence → storage.
+## 3. Retrieval
+Rank by authorization, scope, relevance, recency, confidence and provenance. Retrieve the smallest useful context. Never dump lifetime memory into a model context.
 
-## Retrieval
-Rank by scope, relevance, recency, confidence and provenance. Retrieve the smallest useful context.
+## 4. Knowledge/RAG ingestion
+Forge may ingest permitted information from repositories, documentation, websites, research sources, courses, videos/transcripts and other accessible sources. Acquisition must respect access controls, licensing/terms, privacy and source provenance. Raw ingestion is not automatically trusted knowledge.
 
-## Contradictions
-Keep conflicting records visible. Prefer verified/newer records only when policy permits; ask user when conflict affects consequential action.
+## 5. Knowledge verification
+Source → parse → normalize → deduplicate → provenance → quality/reliability assessment → contradiction detection → index → retrieval → evidence-backed answer. Low-confidence or conflicting information remains marked as such.
 
-## User controls
+## 6. Contradictions
+Keep conflicting records visible. Prefer verified/newer records only when policy permits; ask the user when a conflict materially affects consequential action.
+
+## 7. User controls
 Inspect, edit, delete, forget, disable retention and clear.
 
-## Pattern discovery
-Use task outcomes, corrections, provider reliability, tool failures and workflow structure. Patterns require evidence and confidence.
+## 8. Learning
+Operational learning may improve routing, prompts, tool choice, retrieval, agent selection and workflow proposals. It must never silently override explicit user preferences, safety/security policy or the requirement contract.
 
-## Learning
-Operational learning may improve routing, prompts, tool choice and workflow proposals. It must not silently override explicit user preferences or security.
+## 9. Self-improvement
+Observation → hypothesis → candidate change → isolated sandbox → benchmark → regression → security review → approval policy → deployment → monitoring → rollback. Self-improvement is controlled engineering, not uncontrolled self-rewriting.
 
-## Controlled improvement
-Observation → hypothesis → candidate → sandbox → benchmark → regression → security review → approval → deployment → monitoring → rollback.
+## 10. Models and fine-tuning
+Forge can orchestrate fine-tuning/model-building workflows through available infrastructure and providers. It must not claim to have trained proprietary provider weights or have compute that is not actually available.
 
-## Model weights
-Forge does not claim to train proprietary provider weights. Fine-tuning is provider/infrastructure-specific.
-
-## Privacy
-No unnecessary sensitive inference. Enforce user/project/session/task isolation.
+## 11. Privacy/security
+No unnecessary sensitive inference. Enforce user/project/session/task/agent isolation, source permissions and retention policy.
