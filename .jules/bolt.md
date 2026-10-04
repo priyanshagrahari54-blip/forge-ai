@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - CallGraphIndexer Two-Pass File Parsing Bottleneck
+
+**Learning:** `CallGraphIndexer.build()` performed two separate Passes over all repository source files: Pass 1 to parse ASTs and extract symbol definitions, and Pass 2 to re-read disk files and re-parse ASTs to extract call sites. On repositories with ~770 source files, double-reading and double-parsing doubled indexing latency.
+
+**Action:** Combine definition collection and call site extraction into a single `ast.NodeVisitor` pass per file. Share budget accounting (`total_sites`) across visitors to strictly enforce global bounds during single-pass extraction, reducing call graph indexing time by ~43% (~10.2s to ~5.8s).
