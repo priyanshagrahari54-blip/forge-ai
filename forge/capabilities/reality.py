@@ -219,7 +219,7 @@ def default_capabilities(
         "office", "Forge Office live visualization", STATUS_READY,
         True, True, True, True, False,
         detail="The UI exists; activity must be driven by durable runtime events, never animation-only state.",
-        evidence="forge/cockpit/web/city.html + event infrastructure",
+        evidence="forge/cockpit/web/office.html + event infrastructure",
     )
 
     # Runtime facts useful to the G560/thin-client UI. These are descriptive,
