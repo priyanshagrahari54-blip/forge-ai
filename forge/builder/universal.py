@@ -86,6 +86,12 @@ class UniversalBuildEngine:
 
     def plan(self, preferred: str | None = None) -> BuildPlan | None:
         plans = self.plans()
+        if preferred is None:
+            try:
+                from forge.profiles import load_project_config
+                preferred = load_project_config(self.root, strict=False).option("build", "system")
+            except Exception:
+                preferred = None
         if preferred:
             for item in plans:
                 if item.system == preferred:
