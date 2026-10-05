@@ -53,3 +53,20 @@ def test_verification_rejects_blocked_security():
         pass
     else:
         raise AssertionError("blocked candidate was promoted")
+
+
+def test_verified_candidate_keeps_verification_evidence():
+    from forge.capabilities.adoption import verify_candidate
+    candidate = CapabilityCandidate(capability="package", name="tool2", source="pypi", interface="python-package", license="MIT")
+    verified = verify_candidate(candidate, quality_score=0.88, security_status="verified")
+    assert verified.metrics["verification_evidence"]["quality_score"] == 0.88
+    assert verified.metrics["verification_evidence"]["license_checked"] is True
+
+
+def test_broker_requires_discovery_before_execution():
+    from forge.capabilities.broker import CapabilityBroker
+    from forge.capabilities.registry import CapabilityRegistry
+    result = CapabilityBroker(CapabilityRegistry()).resolve("missing-capability")
+    assert result.available is False
+    assert result.strategy == "build"
+    assert result.next_action == "discover"
