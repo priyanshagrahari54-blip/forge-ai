@@ -87,9 +87,9 @@
         <a href="#/compute" data-route="compute">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.5" width="12" height="9" rx="1" fill="none" stroke="currentColor"/><path d="M5.5 13.5h5" fill="none" stroke="currentColor"/><path d="M5 7l2 2 4-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>Compute</span></a>
-        <a href="#/city" data-route="city">
+        <a href="#/office" data-route="office">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.5h12" fill="none" stroke="currentColor" stroke-linecap="round"/><path d="M3.5 13.5V5l3-2v10.5M6.5 13.5V6.5l3-1.5v8.5M9.5 13.5V8l3 1.5v4" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>
-          <span>AI City</span></a>
+          <span>Office</span></a>
         <a href="#/agentbuilder" data-route="agentbuilder">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v2M8 12v2M2 8h2M12 8h2" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="8" r="4" fill="none" stroke="currentColor"/></svg>
           <span>Agent Builder</span></a>
@@ -127,7 +127,6 @@
         <span id="conn" class="conn ok" role="status" title="Backend connection">Connected</span>
         <span id="whoami" class="whoami"></span>
         <span id="profile-chip" class="profile-chip" title="Permission profile"></span>
-        <button id="logout" class="btn small hidden">Sign out</button>
       </div>
     </header>
     <section class="voice-hub" aria-label="Hands-free command center">
@@ -156,58 +155,6 @@
   </div>
 </div>
 <div id="scrim" class="scrim hidden"></div>
-
-<section id="login" class="login hidden" aria-label="Forge account">
-  <div class="login-split">
-    <div class="login-brand">
-      <div class="brand">
-        <svg class="mark" width="34" height="34" viewBox="0 0 28 28" aria-hidden="true">
-          <path d="M14 2 25 8.5v11L14 26 3 19.5v-11Z" fill="none" stroke="currentColor" stroke-width="2"/>
-          <path d="M9 17.5v-7h8M9 13.5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-        <div class="brand-text">
-          <span class="brand-name">FORGE</span>
-          <span class="brand-sub">MULTI-AGENT WORKSPACE</span>
-        </div>
-      </div>
-      <h1>Autonomous engineering,<br>under your control.</h1>
-      <p class="muted">Forge plans, codes, tests, reviews, and ships — every
-      write authorized by policy, every approval decided by you.</p>
-      <svg class="login-flow" viewBox="0 0 300 248" role="img" aria-label="Forge pipeline: requirement, agents, models, code, verification, ship">
-        <path d="M30 20v208" stroke="currentColor" stroke-width="2" opacity=".25"/>
-        <g font-size="13" fill="currentColor">
-          <circle cx="30" cy="24" r="6"/><text x="48" y="29">Requirement</text>
-          <circle cx="30" cy="64" r="6"/><text x="48" y="69">Agents</text>
-          <circle cx="30" cy="104" r="6"/><text x="48" y="109">Models</text>
-          <circle cx="30" cy="144" r="6"/><text x="48" y="149">Code</text>
-          <circle cx="30" cy="184" r="6"/><text x="48" y="189">Verification</text>
-          <circle cx="30" cy="224" r="6"/><text x="48" y="229">Ship</text>
-        </g>
-      </svg>
-    </div>
-    <div class="login-card surface">
-      <div class="auth-kicker">FORGE AI · PRIVATE WORKSPACE</div>
-      <h2>Welcome to Forge</h2>
-      <p class="auth-copy">One intelligent workspace for tasks, agents, models, research and AI City.</p>
-      <form id="login-form">
-        <label for="login-actor">Your name</label>
-        <input id="login-actor" name="actor" type="text" autocomplete="username"
-               maxlength="64" placeholder="Enter your name" required>
-        <div class="auth-auto"><span>Workspace</span><strong>Forge</strong><small>Created automatically</small></div>
-        <label for="login-profile">Permission profile</label>
-        <select id="login-profile" name="profile">
-          <option value="assisted" selected>assisted (approve changes)</option>
-          <option value="safe">safe (read-only)</option>
-          <option value="autonomous">autonomous (low-risk auto)</option>
-          <option value="locked">locked (no modifications)</option>
-        </select>
-        <div id="login-error" class="error" role="alert"></div>
-        <button class="btn primary block auth-submit" type="submit"><span>Continue to Forge</span><span>→</span></button>
-      <p class="auth-foot">Your workspace is created automatically. You can change permissions later in Settings.</p>
-      </form>
-    </div>
-  </div>
-</section>
 
 <div id="palette" class="palette hidden" role="dialog" aria-modal="true" aria-label="Command palette">
   <div class="palette-box surface-elevated">
@@ -335,16 +282,13 @@
   </section>
 </template>
 
-<template id="tpl-city">
+<template id="tpl-office">
   <div class="view-head">
-    <h2>AI City</h2>
-    <p class="muted">Live execution topology. The city renders backend state
-    only — districts light up from real task milestones and event-stream
-    updates, and stay idle when nothing is running. No synthetic progress is
-    drawn here.</p>
+    <h2>Office</h2>
+    <p class="muted">Live execution workspace. Real task milestones, agents, models and verification state only.</p>
   </div>
-  <section class="surface city-frame">
-    <iframe id="city-frame" src="/city.html" title="Forge AI City"></iframe>
+  <section class="surface office-frame">
+    <iframe id="office-frame" src="/office.html" title="Forge Office"></iframe>
   </section>
 </template>
 
