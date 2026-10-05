@@ -49,6 +49,21 @@ def decide(candidate: CapabilityCandidate | None, *, policy: AdoptionPolicy | No
         return AdoptionDecision.ADAPT
 
 
+def verify_candidate(candidate: CapabilityCandidate, *, quality_score: float, security_status: str, license: str | None = None) -> CapabilityCandidate:
+    """Promote a discovered candidate only after explicit verification evidence."""
+    if not 0.0 <= quality_score <= 1.0:
+        raise ValueError("quality_score must be between 0 and 1")
+    if security_status not in {"verified", "reviewed"}:
+        raise ValueError("candidate security status must be verified or reviewed")
+    values = candidate.to_dict()
+    values["quality_score"] = quality_score
+    values["security_status"] = security_status
+    values["verification_status"] = "verified"
+    if license is not None:
+        values["license"] = license
+    return CapabilityCandidate(**values)
+
+
 def rank(candidates: Iterable[CapabilityCandidate], *, policy: AdoptionPolicy | None = None) -> list[CapabilityCandidate]:
     """Rank usable candidates without claiming that ranking is validation."""
     policy = policy or AdoptionPolicy()
