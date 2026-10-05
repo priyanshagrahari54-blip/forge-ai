@@ -623,7 +623,7 @@ def main() -> int:
         print(f"  {state:<13}: {', '.join(sorted(by_state[state]))}")
     print(f"worker persistence     : {report['background']}")
     web = report["web"]
-    print(f"Office in nav         : {web['ai_city_in_navigation']}")
+    print(f"Office in nav         : {web['office_in_navigation']}")
     print(f"shared voice playback  : {web['shared_voice_playback']}")
     failover = report["failover"]
     print(f"self-hosted servers    : {failover['self_hosted_servers_configured']} "
