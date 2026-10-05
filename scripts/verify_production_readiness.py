@@ -305,7 +305,7 @@ def _section_web() -> dict:
     index = (WEB / "index.html").read_text(encoding="utf-8")
     home = (WEB / "forge-home.html").read_text(encoding="utf-8")
     handsfree = (WEB / "handsfree.js").read_text(encoding="utf-8")
-    city = (WEB / "city.html").read_text(encoding="utf-8")
+    city = (WEB / "office.html").read_text(encoding="utf-8")
     return {
         "ai_city_in_navigation": 'href="#/city"' in index
         and 'data-route="city"' in index,
