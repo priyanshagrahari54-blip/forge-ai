@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Lightweight multi-language repository intelligence.
 
 This adapter intentionally avoids requiring a heavyweight parser on every
@@ -54,16 +56,16 @@ def _extract(language: str, text: str) -> tuple[tuple[str,...],tuple[str,...]]:
         return (), ()
     if language in {"javascript","typescript"}:
         symbols.update(re.findall(r"\b(?:function|class)\s+([A-Za-z_$][\w$]*)",text))
-        imports.update(re.findall(r"(?:from|import)\s+["']([^"']+)["']",text))
+        imports.update(re.findall(r'''(?:from|import)\s+["']([^"']+)["']''',text))
     elif language in {"java","kotlin","csharp"}:
         symbols.update(re.findall(r"\b(?:class|interface|enum|object)\s+([A-Za-z_]\w*)",text))
-        imports.update(re.findall(r"\bimport\s+([\w.]+)",text))
+        imports.update(re.findall(r'''(?:from|import)\s+["']([^"']+)["']''',text))
     elif language in {"go","rust","swift","c","cpp"}:
         symbols.update(re.findall(r"\b(?:func|fn|struct|class|enum|interface)\s+([A-Za-z_]\w*)",text))
-        imports.update(re.findall(r"#include\s*[<\"]([^>\"]+)|\buse\s+([\w:]+)",text))
+        imports.update(re.findall(r'''(?:from|import)\s+["']([^"']+)["']''',text))
     elif language in {"ruby","php"}:
         symbols.update(re.findall(r"\b(?:class|module|def)\s+([A-Za-z_]\w*[!?=]?)",text))
-        imports.update(re.findall(r"\brequire(?:_once)?\s*[\( ]\s*["']([^"']+)",text))
+        imports.update(re.findall(r'''(?:from|import)\s+["']([^"']+)["']''',text))
     return tuple(sorted(symbols)), tuple(sorted({a or b for a,b in imports}))
 
 def build_multilanguage_index(root: str|Path=".") -> MultiLanguageIndex:
