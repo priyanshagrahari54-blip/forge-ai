@@ -9,7 +9,7 @@ browser) only opens the UI.
 
 | Piece | Where it runs | Why |
 | --- | --- | --- |
-| Cockpit UI (`/`, `/city.html`, voice pages) | **client browser** | static HTML/CSS/JS served by the server; no local runtime |
+| Cockpit UI (`/`, `/office.html`, voice pages) | **client browser** | static HTML/CSS/JS served by the server; no local runtime |
 | API, orchestration, task state | **Forge server** | `forge_web`/FastAPI; the client never talks to a model directly |
 | 1,000 specialists, planning, routing, failover | **Forge server** | logical registrations sharing the server's model capacity |
 | Model inference (llama.cpp, vLLM, Ollama, TGI) | **your model servers**, one or many | this is the heavy part, and it is configurable per server |
