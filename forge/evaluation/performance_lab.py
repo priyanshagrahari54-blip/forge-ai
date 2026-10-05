@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Lightweight performance lab: measurement contracts, not invented results."""
 from dataclasses import dataclass, field
 import time
