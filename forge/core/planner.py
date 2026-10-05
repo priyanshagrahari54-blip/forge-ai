@@ -50,6 +50,13 @@ class Planner:
         steps: list[PlanStep] = []
         previous_id: str | None = None
 
+        if root is not None:
+            from forge.profiles import load_project_config
+            config = load_project_config(root, strict=False)
+            if config.configured:
+                steps.append(PlanStep(id="config", description="Apply project profiles: " + ", ".join(config.profiles or ("auto-detect",))))
+                previous_id = "config"
+
         if memory is not None:
             from forge.memory.integrations import (
                 memory_context_text,
