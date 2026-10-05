@@ -28,4 +28,24 @@ def test_hf_dataset_and_space_metadata_can_be_discovered(monkeypatch):
     spaces = discovery.discover_huggingface_spaces("app")
     assert datasets[0].capability == "dataset"
     assert spaces[0].capability == "space"
-    assert datasets[0].usable and spaces[0].usable
+    assert not datasets[0].usable and not spaces[0].usable
+    assert datasets[0].verification_status == "unverified"
+    assert spaces[0].verification_status == "unverified"
+
+
+def test_github_repository_discovery_is_unverified(monkeypatch):
+    discovery = CapabilityDiscovery(CapabilityRegistry())
+    monkeypatch.setattr(discovery, "_json", lambda _: {"items": [{"full_name": "org/tool", "default_branch": "main", "license": {"spdx_id": "MIT"}}]})
+    found = discovery.discover_github_repositories("tool")
+    assert found[0].name == "org/tool"
+    assert not found[0].usable
+    assert found[0].security_status == "unverified"
+
+
+def test_package_discovery_is_unverified(monkeypatch):
+    discovery = CapabilityDiscovery(CapabilityRegistry())
+    monkeypatch.setattr(discovery, "_json", lambda _: {"info": {"name": "example", "version": "1.0", "license": "MIT", "requires_dist": ["dep>=1"]}})
+    found = discovery.discover_package_candidates("example")
+    assert found[0].name == "example"
+    assert found[0].dependencies == ["dep>=1"]
+    assert not found[0].usable
