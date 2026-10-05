@@ -19,8 +19,7 @@ from helpers_a34 import login, make_client, make_plane  # noqa: E402
 
 WEB = Path(__file__).parent.parent / "forge" / "cockpit" / "web"
 
-REQUIRED_HOOKS = """login login-form login-actor login-project login-profile
-login-error nav conn whoami logout view new-task-form new-task-req
+REQUIRED_HOOKS = """nav conn whoami view new-task-form new-task-req
 new-task-error task-list t-title t-meta t-actions t-error t-timeline
 t-details t-verification t-checkpoints t-report t-stream-state t-events
 p-list p-current m-list m-providers m-routing pm-effective pm-approvals
@@ -273,3 +272,28 @@ def test_ui_views_backed_by_real_endpoints(tmp_path):
         health = client.get("/api/v1/health", headers=headers)
         assert health.json()["status"] == "ok"
         assert "auth_mode" in health.json()
+
+
+def test_ui_has_no_login_screen_and_auto_bootstraps_session():
+    html = _read("index.html")
+    js = _read("app.js")
+    assert 'id="login"' not in html
+    assert "login-form" not in js
+    assert 'api("/api/v1/sessions/me")' in js
+    assert 'api("/api/v1/sessions"' in js
+    assert 'actor: "operator"' in js
+    assert 'profile: "assisted"' in js
+
+
+def test_office_replaces_legacy_city_surface():
+    html = _read("index.html")
+    js = _read("app.js")
+    office = _read("office.html")
+    assert 'href="#/office"' in html
+    assert 'data-route="office"' in html
+    assert 'id="tpl-office"' in html
+    assert 'src="/office.html"' in html
+    assert 'office: { render: renderOfficeView' in js
+    assert "Live Office" in office
+    assert "City" not in html
+    assert "city.html" not in js
