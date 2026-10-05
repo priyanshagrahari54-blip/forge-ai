@@ -215,8 +215,8 @@ def default_capabilities(
         detail="Deployment management exists; a target must be configured and verified.",
         evidence="forge/deployment",
     )
-    result["ai-city"] = CapabilityTruth(
-        "ai-city", "AI City live visualization", STATUS_READY,
+    result["office"] = CapabilityTruth(
+        "office", "AI City live visualization", STATUS_READY,
         True, True, True, True, False,
         detail="The UI exists; activity must be driven by durable runtime events, never animation-only state.",
         evidence="forge/cockpit/web/city.html + event infrastructure",
