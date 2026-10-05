@@ -61,6 +61,13 @@ class CapabilityRegistry:
         candidates = self.find(capability, usable_only=True)
         return candidates[0] if candidates else None
 
+    def promote(self, candidate: CapabilityCandidate) -> CapabilityCandidate:
+        """Register only a candidate that already passed verification gates."""
+        if not candidate.usable:
+            raise ValueError("only verified and security-reviewed candidates can be promoted")
+        self.register(candidate)
+        return candidate
+
     def missing(self, capabilities: Iterable[str]) -> list[str]:
         return [name for name in capabilities if self.choose(name) is None]
 
