@@ -308,11 +308,11 @@ def _section_web() -> dict:
     city = (WEB / "office.html").read_text(encoding="utf-8")
     return {
         "office_in_navigation": 'href="#/office"' in index
-        and 'data-route="city"' in index,
-        "ai_city_renders_backend_events": "events/stream" in city
+        and 'data-route="office"' in index,
+        "office_renders_backend_events": "events/stream" in city
         and "NO SYNTHETIC PROGRESS" in city,
-        "ai_city_token_in_session_storage":
-            "sessionStorage.setItem('forge.city.token'" in city
+        "office_token_in_session_storage":
+            "sessionStorage.setItem('forge.office.token'" in city
             and "localStorage.setItem('forge.city.token'" not in city,
         "shared_voice_playback": {
             "module": (WEB / "voice-playback.js").exists(),
