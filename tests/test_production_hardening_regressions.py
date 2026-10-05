@@ -372,7 +372,7 @@ def test_office_view_only_hosts_real_backend_state():
 def test_office_page_keeps_the_bearer_token_out_of_persistent_storage():
     city = _web("office.html")
     assert "sessionStorage.setItem('forge.office.token'" in city
-    assert "localStorage.setItem('forge.city.token'" not in city
+    assert "localStorage.setItem('forge.office.token'" not in city
 
 
 def test_both_voice_surfaces_use_one_playback_implementation():
