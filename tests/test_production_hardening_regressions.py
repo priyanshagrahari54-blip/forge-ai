@@ -352,8 +352,8 @@ def _web(name: str) -> str:
 def test_office_is_reachable_from_the_main_navigation():
     html = _web("index.html")
     js = _web("app.js")
-    assert 'href="#/city"' in html
-    assert 'data-route="city"' in html
+    assert 'href="#/office"' in html
+    assert 'data-route="office"' in html
     assert 'id="tpl-office"' in html
     assert 'id="office-frame"' in html and 'src="/office.html"' in html
     assert re.search(r"\bcity:\s*\{\s*render:\s*renderOfficeView", js)
@@ -365,13 +365,13 @@ def test_office_view_only_hosts_real_backend_state():
     assert "NO SYNTHETIC PROGRESS" in city
     assert "/tasks?limit=50" in city
     assert "events/stream" in city
-    # the city never animates itself: no timer of its own, no fake stages
+    # the office never animates itself: no timer of its own, no fake stages
     assert "setInterval" not in city
 
 
-def test_city_page_keeps_the_bearer_token_out_of_persistent_storage():
+def test_office_page_keeps_the_bearer_token_out_of_persistent_storage():
     city = _web("office.html")
-    assert "sessionStorage.setItem('forge.city.token'" in city
+    assert "sessionStorage.setItem('forge.office.token'" in city
     assert "localStorage.setItem('forge.city.token'" not in city
 
 
