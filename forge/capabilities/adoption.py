@@ -59,6 +59,9 @@ def verify_candidate(candidate: CapabilityCandidate, *, quality_score: float, se
     values["quality_score"] = quality_score
     values["security_status"] = security_status
     values["verification_status"] = "verified"
+    metrics = dict(values.get("metrics") or {})
+    metrics["verification_evidence"] = {"quality_score": quality_score, "security_status": security_status, "license_checked": bool((license if license is not None else values.get("license", "")).strip())}
+    values["metrics"] = metrics
     if license is not None:
         values["license"] = license
     return CapabilityCandidate(**values)
