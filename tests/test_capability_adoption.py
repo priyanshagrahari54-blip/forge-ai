@@ -27,3 +27,29 @@ def test_missing_license_is_blocked_by_default():
 def test_quality_threshold_is_explicit():
     assert decide(candidate(quality_score=.5)) is AdoptionDecision.BLOCK
     assert decide(candidate(quality_score=.5), policy=AdoptionPolicy(min_quality=.4)) is AdoptionDecision.ADAPT
+
+
+def test_verification_explicitly_promotes_candidate():
+    from forge.capabilities.adoption import verify_candidate
+    candidate = CapabilityCandidate(
+        capability="package", name="tool", source="pypi", interface="python-package",
+        license="MIT", security_status="unverified", verification_status="unverified",
+    )
+    verified = verify_candidate(candidate, quality_score=0.9, security_status="reviewed")
+    assert verified.usable
+    assert verified.verification_status == "verified"
+    assert verified.quality_score == 0.9
+
+
+def test_verification_rejects_blocked_security():
+    from forge.capabilities.adoption import verify_candidate
+    candidate = CapabilityCandidate(
+        capability="package", name="tool", source="pypi", interface="python-package",
+        license="MIT",
+    )
+    try:
+        verify_candidate(candidate, quality_score=0.9, security_status="blocked")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("blocked candidate was promoted")
