@@ -36,7 +36,7 @@ _PLAN_TEMPLATE: tuple[tuple[str, str], ...] = (
 
 class Planner:
     def create_plan(self, request: str, *, memory=None,
-                    project: str | None = None) -> list[PlanStep]:
+                    project: str | None = None, root: str | None = None) -> list[PlanStep]:
         """Build the canonical plan, optionally enriched with memory recall.
 
         ``memory``/``project`` are optional long-term-memory integration
