@@ -16,7 +16,7 @@ cannot silently return:
 7. ``GET /capabilities`` and ``GET /provider-links`` being unreachable
    because ``request: Any`` became a required query parameter;
 8. the deterministic "check status" phrase classifying as a review;
-9. AI City being unreachable from the cockpit navigation while the voice
+9. Office being unreachable from the cockpit navigation while the voice
    surfaces each carried their own playback implementation, the cockpit
    bypassing confirm-before-execute, and the city page persisting a bearer
    token in ``localStorage``.
@@ -349,18 +349,18 @@ def _web(name: str) -> str:
     return (WEB / name).read_text(encoding="utf-8")
 
 
-def test_ai_city_is_reachable_from_the_main_navigation():
+def test_office_is_reachable_from_the_main_navigation():
     html = _web("index.html")
     js = _web("app.js")
     assert 'href="#/city"' in html
     assert 'data-route="city"' in html
-    assert 'id="tpl-city"' in html
-    assert 'id="city-frame"' in html and 'src="/city.html"' in html
-    assert re.search(r"\bcity:\s*\{\s*render:\s*renderCityView", js)
+    assert 'id="tpl-office"' in html
+    assert 'id="office-frame"' in html and 'src="/office.html"' in html
+    assert re.search(r"\bcity:\s*\{\s*render:\s*renderOfficeView", js)
 
 
-def test_city_view_only_hosts_real_backend_state():
-    city = _web("city.html")
+def test_office_view_only_hosts_real_backend_state():
+    city = _web("office.html")
     assert "REAL BACKEND EVENTS" in city
     assert "NO SYNTHETIC PROGRESS" in city
     assert "/tasks?limit=50" in city
@@ -370,7 +370,7 @@ def test_city_view_only_hosts_real_backend_state():
 
 
 def test_city_page_keeps_the_bearer_token_out_of_persistent_storage():
-    city = _web("city.html")
+    city = _web("office.html")
     assert "sessionStorage.setItem('forge.city.token'" in city
     assert "localStorage.setItem('forge.city.token'" not in city
 
