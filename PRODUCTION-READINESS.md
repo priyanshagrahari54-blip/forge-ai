@@ -20,7 +20,7 @@ reports. Reproduce with the commands in the last section.
 | `scripts/verify_production_readiness.py` | 1000 registered specialists / 40 roles (25 each), 40/40 representatives routed through a real `ModelFabric`, worker identity + capabilities survive restart with `live_count = 0` before a heartbeat |
 | Runtime capability states | LIVE 5 · READY 1 · SIMULATED 2 · BLOCKED 1 · ARCHITECTURE 6 (details below) |
 | Live service `/api/v1/health` | `{"status":"ok","auth_mode":"production","worker":true,"projects":1}` — **service is up** |
-| Live service `/city.html` | 200 (already deployed) |
+| Live service `/office.html` | 200 (already deployed) |
 | Live service `/voice-playback.js` | 404 — **this commit is not deployed yet** |
 | Real model execution | **900/1000 specialists produced real model output** (0 exceptions, 0 empty, 51,047 tokens, 515 s); the other 100 need capabilities no configured model provides. Evidence: `docs/evidence/fleet-real-run-2026-09-19.json` |
 | Provider quota failover | exhausted-provider classification, same-model endpoint rotation, cooldown skip and recovery: **19 tests**, incl. real HTTP 429/500 servers |
