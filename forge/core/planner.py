@@ -26,11 +26,11 @@ class Plan:
 
 #: Canonical plan shape, in dependency order. Deterministic and executable.
 _PLAN_TEMPLATE: tuple[tuple[str, str], ...] = (
-    ("1", "Understand the requirements: {request}"),
-    ("2", "Inspect the existing project."),
-    ("3", "Implement the required changes."),
-    ("4", "Run tests and validate the result."),
-    ("5", "Review the implementation."),
+    ("requirements", "Understand and cross-check the requirements: {request}"),
+    ("architecture", "Define architecture, components, dependencies, and acceptance criteria."),
+    ("capabilities", "Resolve reusable capabilities, models, tools, and project profiles."),
+    ("execution", "Implement the required changes through the task graph."),
+    ("verification", "Run tests, security checks, benchmarks, and final quality verification."),
 )
 
 
@@ -66,7 +66,8 @@ class Planner:
                 ))
                 previous_id = "0"
 
-        for step_id, description in _PLAN_TEMPLATE:
+        for index, (phase, description) in enumerate(_PLAN_TEMPLATE, start=1):
+            step_id = str(index)
             steps.append(PlanStep(
                 id=step_id,
                 description=description.format(request=request),
