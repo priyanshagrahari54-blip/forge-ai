@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - Multi-Language Indexing Traversal and Lookup Bottlenecks
+
+**Learning:** `build_multilanguage_index` used `Path.rglob("*")` to walk the repository tree, entering ignored directory trees like `.git`, `node_modules`, and `.venv` and instantiating thousands of `Path` objects before filtering. `MultiLanguageIndex.by_language` also performed linear $O(N)$ list filtering on every query.
+
+**Action:** Use `os.walk` with in-place directory list modification (`dirnames[:] = [d for d in dirnames if d not in SKIP]`) to prune ignored directory subtrees prior to traversal, and maintain an internal `_by_language` dictionary index on `MultiLanguageIndex` for $O(1)$ language lookups.
