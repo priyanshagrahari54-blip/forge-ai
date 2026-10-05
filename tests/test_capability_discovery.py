@@ -16,7 +16,9 @@ def test_hf_model_metadata_can_be_discovered(monkeypatch):
     monkeypatch.setattr(discovery, "_json", lambda _: [{"id": "org/model", "sha": "abc"}])
     found = discovery.discover_huggingface_models("model")
     assert found[0].name == "org/model"
-    assert found[0].usable
+    assert not found[0].usable
+    assert found[0].verification_status == "unverified"
+    assert found[0].security_status == "unverified"
 
 
 def test_hf_dataset_and_space_metadata_can_be_discovered(monkeypatch):
