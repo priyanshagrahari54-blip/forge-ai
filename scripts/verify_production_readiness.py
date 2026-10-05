@@ -307,7 +307,7 @@ def _section_web() -> dict:
     handsfree = (WEB / "handsfree.js").read_text(encoding="utf-8")
     city = (WEB / "office.html").read_text(encoding="utf-8")
     return {
-        "ai_city_in_navigation": 'href="#/city"' in index
+        "ai_city_in_navigation": 'href="#/office"' in index
         and 'data-route="city"' in index,
         "ai_city_renders_backend_events": "events/stream" in city
         and "NO SYNTHETIC PROGRESS" in city,
