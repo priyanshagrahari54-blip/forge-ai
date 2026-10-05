@@ -156,6 +156,7 @@ class ProjectArchitect:
             requirement=requirement,
             profiles=[item.name for item in matched])
 
+        self._capability_plan(plan)
         self._specifications(plan, classification, matched)
         self._architecture(plan, classification, matched, observations)
         self._dependencies(plan, classification, matched, observations)
@@ -205,6 +206,16 @@ class ProjectArchitect:
         return out
 
     # -- sections --------------------------------------------------------
+
+    def _capability_plan(self, plan: ProjectPlan) -> None:
+        """Record reuse/adapt/compose/extend/build decisions without executing them."""
+        from forge.capabilities import CapabilityBroker, CapabilityRegistry
+        broker = CapabilityBroker(CapabilityRegistry())
+        for capability in plan.requirement.capabilities:
+            resolution = broker.resolve(capability)
+            plan.open_questions.append(
+                "Capability %s: %s (%s)" %
+                (capability, resolution.strategy, resolution.next_action))
 
     def _specifications(self, plan: ProjectPlan,
                         classification: Classification,
