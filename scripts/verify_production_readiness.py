@@ -307,7 +307,7 @@ def _section_web() -> dict:
     handsfree = (WEB / "handsfree.js").read_text(encoding="utf-8")
     city = (WEB / "office.html").read_text(encoding="utf-8")
     return {
-        "ai_city_in_navigation": 'href="#/office"' in index
+        "office_in_navigation": 'href="#/office"' in index
         and 'data-route="city"' in index,
         "ai_city_renders_backend_events": "events/stream" in city
         and "NO SYNTHETIC PROGRESS" in city,
@@ -623,7 +623,7 @@ def main() -> int:
         print(f"  {state:<13}: {', '.join(sorted(by_state[state]))}")
     print(f"worker persistence     : {report['background']}")
     web = report["web"]
-    print(f"AI City in nav         : {web['ai_city_in_navigation']}")
+    print(f"Office in nav         : {web['ai_city_in_navigation']}")
     print(f"shared voice playback  : {web['shared_voice_playback']}")
     failover = report["failover"]
     print(f"self-hosted servers    : {failover['self_hosted_servers_configured']} "
