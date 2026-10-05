@@ -216,7 +216,7 @@ def default_capabilities(
         evidence="forge/deployment",
     )
     result["office"] = CapabilityTruth(
-        "office", "AI City live visualization", STATUS_READY,
+        "office", "Forge Office live visualization", STATUS_READY,
         True, True, True, True, False,
         detail="The UI exists; activity must be driven by durable runtime events, never animation-only state.",
         evidence="forge/cockpit/web/city.html + event infrastructure",
