@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Lightweight multi-language repository intelligence.
 
 This adapter intentionally avoids requiring a heavyweight parser on every
