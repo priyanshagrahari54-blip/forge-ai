@@ -21,6 +21,7 @@ class CapabilityResolution:
     strategy: str
     available: bool
     reason: str
+    next_action: str = "none"
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +30,7 @@ class CapabilityResolution:
             "strategy": self.strategy,
             "available": self.available,
             "reason": self.reason,
+            "next_action": self.next_action,
         }
 
 
@@ -43,11 +45,12 @@ class CapabilityBroker:
         if candidate is not None:
             return CapabilityResolution(
                 capability, candidate, candidate.strategy,
-                True, "verified capability is available",
+                True, "verified capability is available", "execute",
             )
         return CapabilityResolution(
             capability, None, ReuseStrategy.BUILD.value, False,
-            "no verified candidate is registered; discovery/adaptation must run before execution",
+            "no verified candidate is registered; discover and verify a candidate before execution",
+            "discover",
         )
 
     def resolve_many(self, capabilities: Iterable[str]) -> list[CapabilityResolution]:
