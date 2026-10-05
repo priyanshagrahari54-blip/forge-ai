@@ -21,7 +21,7 @@ _NAME = re.compile(r"^[a-z][a-z0-9_-]{2,48}$")
 _ROLE = re.compile(r"^[a-z][a-z0-9_-]{2,32}$")
 MAX_DESCRIPTION = 500
 MAX_CAPABILITIES = 12
-MAX_AGENTS = 40
+MAX_AGENTS: int | None = None
 
 ROLE_EXECUTORS = {
     "coding": "coder",
@@ -76,10 +76,21 @@ class AgentDefinition:
 
 
 class AgentFactory:
-    """Validated runtime agent definitions, session-bounded."""
+    """Validated runtime agent definitions.
 
-    def __init__(self, session_id: str) -> None:
+    The factory deliberately has no fixed product-level agent count. Runtime
+    limits are optional policy/resource inputs so complex tasks can create as
+    many logical specialists as their task graph requires.
+    """
+
+    def __init__(self, session_id: str, *, max_agents: int | None = None) -> None:
         self.session_id = session_id
+        # Runtime count is demand-driven. A limit may be supplied by the
+        # resource/governance layer, but the factory itself has no fixed
+        # product-level agent ceiling.
+        if max_agents is not None and max_agents < 1:
+            raise ValueError("max_agents must be positive when provided")
+        self.max_agents = max_agents
         self._definitions: dict[str, AgentDefinition] = {}
 
     def create(self, name: str, role: str, capabilities: tuple[str, ...]
@@ -100,8 +111,8 @@ class AgentFactory:
                 "Capabilities must come from the canonical vocabulary")
         if len(caps) > MAX_CAPABILITIES:
             raise ValueError("Too many capabilities")
-        if len(self._definitions) >= MAX_AGENTS:
-            raise ValueError(f"Agent limit reached ({MAX_AGENTS})")
+        if self.max_agents is not None and len(self._definitions) >= self.max_agents:
+            raise ValueError(f"Agent limit reached ({self.max_agents})")
         if name in self._definitions:
             raise ValueError(f"Agent already defined: {name}")
         description = (description or "").strip()[:MAX_DESCRIPTION]
