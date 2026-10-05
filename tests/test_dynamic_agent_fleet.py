@@ -23,3 +23,10 @@ def test_runtime_limit_is_optional_policy_not_product_limit():
         assert "Agent limit reached (2)" in str(exc)
     else:
         raise AssertionError("expected optional runtime policy limit")
+
+
+def test_agent_plan_exposes_task_derived_parallelism():
+    from forge.agents.planner import CapabilityAgentPlanner
+    from forge.agents.registry import AgentRegistry
+    plan = CapabilityAgentPlanner(AgentRegistry()).plan("implement, test, and review a change")
+    assert plan.required_parallelism == len(plan.requirements.capabilities)
