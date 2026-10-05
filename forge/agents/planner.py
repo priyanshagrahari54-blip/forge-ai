@@ -44,6 +44,10 @@ class AgentPlan:
         return tuple(capability for capability in self.requirements.capabilities
                      if capability not in covered)
 
+    @property
+    def required_parallelism(self) -> int:
+        return len(self.requirements.capabilities)
+
     def is_empty(self) -> bool:
         return not self.agents
 
