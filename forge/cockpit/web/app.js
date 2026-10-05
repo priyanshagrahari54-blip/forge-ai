@@ -56,7 +56,7 @@ const ROUTES = {
   settings: { render: renderSettingsView, title: "Settings" },
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
-  city: { render: renderCityView, title: "AI City" },
+  office: { render: renderOfficeView, title: "Office" },
   compute: { render: renderComputeView, title: "Compute" },
   agentbuilder: { render: renderAgentBuilderView,
                      title: "Agent Builder" },
@@ -3180,47 +3180,34 @@ async function bootstrap() {
   try {
     const data = await api("/api/v1/sessions/me");
     state.session = data.session;
-    enter();
   } catch (err) {
-    document.getElementById("login").classList.remove("hidden");
-  }
-  document.getElementById("login-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const errBox = document.getElementById("login-error");
-    errBox.textContent = "";
-    const body = {
-      actor: document.getElementById("login-actor").value,
-      project_id: "forge",
-      profile: document.getElementById("login-profile").value,
-    };
+    // No login screen: establish a least-privilege assisted browser session.
+    // The server still authenticates every API request with the HttpOnly cookie.
     try {
-      const data = await api("/api/v1/sessions",
-        { method: "POST", body });
+      const data = await api("/api/v1/sessions", {
+        method: "POST",
+        body: { actor: "operator", project_id: "forge", profile: "assisted" },
+      });
       state.session = data.session;
-      // The session token is kept in the HttpOnly cookie only; the body
-      // copy is for non-browser clients and is deliberately dropped here.
-      enter();
-    } catch (err) {
-      errBox.textContent = err.message;
+    } catch (sessionErr) {
+      state.session = null;
+      const badge = document.getElementById("conn");
+      badge.textContent = "Backend unavailable";
+      badge.className = "conn down";
+      const view = document.getElementById("view");
+      view.innerHTML = '<section class="surface empty-state"><h3>Forge is offline</h3><p>Could not establish a secure workspace session. Retry by refreshing this page.</p></section>';
+      return;
     }
-  });
+  }
+  enter();
 }
 
 function enter() {
   if (state.entered) return;
   state.entered = true;
-  document.getElementById("login").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
-  document.getElementById("logout").classList.remove("hidden");
-  document.getElementById("whoami").textContent = state.session.actor;
-  document.getElementById("profile-chip").textContent = state.session.profile;
-  document.getElementById("logout").addEventListener("click", async () => {
-    try {
-      await api("/api/v1/sessions/me", { method: "DELETE" });
-    } catch (err) { /* ignore */ }
-    window.location.hash = "#/dashboard";
-    window.location.reload();
-  });
+  document.getElementById("whoami").textContent = state.session?.actor || "operator";
+  document.getElementById("profile-chip").textContent = state.session?.profile || "assisted";
   const toggle = document.getElementById("menu-toggle");
   const scrim = document.getElementById("scrim");
   toggle.addEventListener("click", () => {
@@ -3390,14 +3377,14 @@ function readVisionFile() {
   });
 }
 
-function renderCityView() {
-  // AI City is the live execution topology. The framed page subscribes to
+function renderOfficeView() {
+  // Office is the live execution topology. The framed page subscribes to
   // real task events (/api/v1/tasks/{id}/milestones + event stream) and
   // reports connection failures instead of inventing activity; this view
   // only hosts it, so the cockpit has one implementation of the map.
-  const frame = document.getElementById("city-frame");
+  const frame = document.getElementById("office-frame");
   if (!frame) return;
-  frame.setAttribute("src", "/city.html?embed=1&v=" + Date.now());
+  frame.setAttribute("src", "/office.html?embed=1&v=" + Date.now());
   frame.addEventListener("load", () => frame.classList.add("ready"), { once: true });
 }
 
