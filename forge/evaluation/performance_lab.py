@@ -1,4 +1,6 @@
 """Lightweight performance lab: measurement contracts, not invented results."""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import time
 @dataclass(frozen=True)
