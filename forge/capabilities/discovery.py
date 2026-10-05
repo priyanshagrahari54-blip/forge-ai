@@ -47,11 +47,11 @@ class CapabilityDiscovery:
                 license=str(item.get("license", "") or ""),
                 version=str(item.get("sha", "") or ""),
                 dependencies=[],
-                security_status="reviewed",
+                security_status="unverified",
                 quality_score=0.0,
                 compatibility=["remote-inference", "model-hub"],
                 cost="provider-dependent",
-                verification_status="verified",
+                verification_status="unverified",
                 strategy=ReuseStrategy.REUSE.value,
             ))
         return result
