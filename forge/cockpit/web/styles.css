@@ -1114,3 +1114,119 @@ body { background: radial-gradient(ellipse at 60% 0, #6650a919, transparent 60%)
 
 /* Forge account / auth polish */
 .auth-kicker{font:10px/1.2 var(--mono);letter-spacing:.18em;color:#9c8cff;margin-bottom:12px}.auth-copy{max-width:440px;font-size:14px;line-height:1.65}.auth-auto{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;margin:14px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(135deg,#151326,#0e101b)}.auth-auto span{font-size:11px;color:var(--muted)}.auth-auto strong{font-size:13px}.auth-auto small{font-size:10px;color:var(--muted)}.auth-submit{display:flex;justify-content:space-between;align-items:center}.auth-foot{margin:12px 0 0;font-size:10px;line-height:1.5;color:var(--muted)}.crumb-live{font:10px var(--mono);color:var(--ok);margin-left:10px}.city-frame{position:relative;min-height:650px;overflow:hidden}.city-frame iframe{display:block;min-height:650px}.city-frame iframe.ready{opacity:1}@media(max-width:700px){.auth-auto{grid-template-columns:1fr}.crumb-live{display:none}}
+
+
+/* ---------- Forge Office / clean workspace refresh ---------- */
+:root{
+  --accent:#8f7cff;
+  --accent-soft:#8f7cff18;
+  --accent-ink:#fff;
+  --bg0:#080a0f;
+  --bg1:#0e1118;
+  --bg2:#141923;
+  --bg3:#1a202b;
+  --line:#252c38;
+  --line-soft:#1b212b;
+  --text:#eef1f6;
+  --muted:#9099a8;
+  --faint:#626c7b;
+  --ok:#58c99a;
+  --warn:#e5b65e;
+  --bad:#e16c78;
+  --info:#70a7ff;
+  --radius:12px;
+}
+html{background:var(--bg0)}
+body{
+  background:linear-gradient(180deg,#0a0c11 0%,#080a0f 100%);
+  color:var(--text);
+}
+.sidebar{
+  width:224px;
+  background:#0b0e14f2;
+  border-right:1px solid #ffffff08;
+  box-shadow:8px 0 32px #0003;
+}
+.brand{padding:18px 16px 20px;border-bottom:1px solid #ffffff07}
+.brand-name{letter-spacing:.18em}
+.brand-sub{color:#777f8d}
+.nav-group{gap:2px}
+#nav a{
+  margin:1px 8px;
+  padding:8px 10px;
+  min-height:34px;
+  border:1px solid transparent;
+  border-radius:8px;
+}
+#nav a:hover{background:#ffffff05;border-color:#ffffff08}
+#nav a.active{
+  background:#8f7cff10;
+  border-color:#8f7cff22;
+  box-shadow:inset 2px 0 var(--accent);
+}
+.nav-label{
+  padding:12px 12px 5px;
+  color:#5f6877;
+  font-size:9px;
+  letter-spacing:.14em;
+}
+.side-foot{padding:12px 16px;border-top:1px solid #ffffff07}
+.topbar{
+  height:58px;
+  padding:8px 18px;
+  background:#0b0e14e8;
+  border-bottom:1px solid #ffffff08;
+  box-shadow:0 6px 24px #0002;
+}
+.crumb-root{font-weight:600}
+.crumb-live{color:var(--ok)}
+main#view{max-width:1440px;padding:26px 30px 56px}
+.view-head{margin-bottom:18px}
+.view-head h2{font-size:22px;font-weight:550;letter-spacing:-.03em}
+.view-head p{max-width:820px}
+.surface,.stat,.model-card,.project-card{
+  border-color:#ffffff0d;
+  border-radius:var(--radius);
+  background:linear-gradient(145deg,#12161f,#0e1118);
+  box-shadow:0 10px 30px #0002;
+}
+.page-head.hero{padding:4px 0 18px}
+.hero-title{font-size:30px;font-weight:520}
+.voice-hub{
+  margin:16px 30px 0;
+  padding:14px 18px;
+  border-radius:14px;
+  border:1px solid #ffffff0a;
+  background:#0e1219;
+  box-shadow:0 8px 28px #0002;
+}
+.voice-heading{margin-bottom:10px}
+.voice-presence{padding:6px 10px}
+.voice-presence h2{font-size:24px;margin:7px 0}
+.voice-orb{width:70px;height:70px;margin-bottom:10px}
+.voice-orb span{font-size:25px}
+.voice-note{max-width:520px}
+.voice-workspace{padding:14px;border-radius:11px;background:#0a0d13;border-color:#ffffff0a}
+.network-panel{border-color:#ffffff0d;border-radius:14px;background:#0e1118;box-shadow:0 12px 38px #0002}
+.network-header{padding:18px 20px}
+.network-canvas{background:radial-gradient(ellipse at center,#8f7cff0a,transparent 65%),#0b0e14}
+.network-core{background:radial-gradient(circle at 50% 0,#8f7cff28,#171a25 68%);border-color:#8f7cff38}
+.office-frame{padding:0;overflow:hidden}
+.office-frame iframe{
+  display:block;
+  width:100%;
+  height:calc(100vh - 210px);
+  min-height:560px;
+  border:0;
+  background:#080a0f;
+}
+.btn{border-radius:8px}
+.btn.primary{background:var(--accent);color:#fff;border-color:transparent;box-shadow:0 5px 18px #8f7cff20}
+input,select,textarea{border-color:#ffffff10;background:#0a0d13;border-radius:8px}
+input:focus,select:focus,textarea:focus{border-color:#8f7cff55;box-shadow:0 0 0 2px #8f7cff10}
+@media(max-width:900px){
+  .sidebar{width:220px}
+  main#view{padding:20px 16px 42px}
+  .voice-hub{margin:12px 16px 0}
+  .office-frame iframe{height:calc(100vh - 180px);min-height:440px}
+}
