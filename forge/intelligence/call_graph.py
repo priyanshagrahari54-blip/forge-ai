@@ -94,12 +94,18 @@ class CallGraph:
     def __post_init__(self) -> None:
         self._by_caller: Dict[str, List[CallSite]] = defaultdict(list)
         self._by_callee: Dict[str, List[CallSite]] = defaultdict(list)
+        #: O(1) set index mappings for caller/callee relation traversals.
+        #: Avoids scanning CallSite object lists during graph BFS/DFS traversals.
+        self._by_callee_callers: Dict[str, Set[str]] = defaultdict(set)
+        self._by_caller_callees: Dict[str, Set[str]] = defaultdict(set)
         # Index the seed sites directly. Calling ``add`` here would append to
         # the very list being iterated and never terminate.
         for site in self.call_sites:
             self._by_caller[site.caller].append(site)
+            self._by_caller_callees[site.caller].add(site.callee)
             for target in self._index_keys(site):
                 self._by_callee[target].append(site)
+                self._by_callee_callers[target].add(site.caller)
 
     @staticmethod
     def _index_keys(site: "CallSite") -> Tuple[str, ...]:
@@ -122,8 +128,10 @@ class CallGraph:
     def add(self, site: CallSite) -> None:
         self.call_sites.append(site)
         self._by_caller[site.caller].append(site)
+        self._by_caller_callees[site.caller].add(site.callee)
         for target in self._index_keys(site):
             self._by_callee[target].append(site)
+            self._by_callee_callers[target].add(site.caller)
 
     def calls_from(self, caller: str) -> List[CallSite]:
         return list(self._by_caller.get(caller, ()))
@@ -137,10 +145,14 @@ class CallGraph:
         return direct
 
     def callers_of(self, callee: str) -> List[str]:
-        return sorted({site.caller for site in self.calls_to(callee)})
+        callers = set(self._by_callee_callers.get(callee, ()))
+        bare = callee.rsplit(".", 1)[-1]
+        if bare != callee:
+            callers.update(self._by_callee_callers.get(bare, ()))
+        return sorted(callers)
 
     def callees_of(self, caller: str) -> List[str]:
-        return sorted({site.callee for site in self.calls_from(caller)})
+        return sorted(self._by_caller_callees.get(caller, ()))
 
     def transitive_callers(self, callee: str, *,
                            max_depth: int = MAX_DEPTH) -> List[str]:
@@ -151,10 +163,20 @@ class CallGraph:
         for _ in range(depth):
             next_frontier: List[str] = []
             for current in frontier:
-                for caller in self.callers_of(current):
-                    if caller not in seen and caller != callee:
-                        seen.add(caller)
-                        next_frontier.append(caller)
+                callers = self._by_callee_callers.get(current)
+                bare = current.rsplit(".", 1)[-1]
+                bare_callers = self._by_callee_callers.get(bare) if bare != current else None
+
+                if callers:
+                    for caller in callers:
+                        if caller not in seen and caller != callee:
+                            seen.add(caller)
+                            next_frontier.append(caller)
+                if bare_callers:
+                    for caller in bare_callers:
+                        if caller not in seen and caller != callee:
+                            seen.add(caller)
+                            next_frontier.append(caller)
             if not next_frontier:
                 break
             frontier = next_frontier
@@ -166,12 +188,14 @@ class CallGraph:
         seen: Set[str] = set()
         frontier = [caller]
         for _ in range(depth):
-            next_frontier = []
+            next_frontier: List[str] = []
             for current in frontier:
-                for callee in self.callees_of(current):
-                    if callee not in seen and callee != caller:
-                        seen.add(callee)
-                        next_frontier.append(callee)
+                callees = self._by_caller_callees.get(current)
+                if callees:
+                    for callee in callees:
+                        if callee not in seen and callee != caller:
+                            seen.add(callee)
+                            next_frontier.append(callee)
             if not next_frontier:
                 break
             frontier = next_frontier

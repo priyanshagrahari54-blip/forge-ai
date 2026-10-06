@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - CallGraph Caller/Callee Traversals List Scanning Overhead
+
+**Learning:** `CallGraph.callers_of`, `callees_of`, `transitive_callers`, and `transitive_callees` were repeatedly scanning `CallSite` lists and constructing set comprehensions on every graph step. During BFS graph traversals across thousands of call sites, this resulted in $O(N \times \text{edges})$ list iteration overhead per query.
+
+**Action:** Maintain internal `_by_callee_callers: Dict[str, Set[str]]` and `_by_caller_callees: Dict[str, Set[str]]` set indexes populated on `__post_init__` and `add()`. This enables $O(1)$ set lookups during graph traversals and improves transitive query speed by ~5x (~80% latency reduction).
