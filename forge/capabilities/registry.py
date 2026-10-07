@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Iterable
+from typing import Any, Iterable
 
 class ReuseStrategy(str, Enum):
     REUSE = "reuse"
@@ -27,6 +27,7 @@ class CapabilityCandidate:
     offline: bool = False
     verification_status: str = "unverified"
     strategy: str = ReuseStrategy.REUSE.value
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
