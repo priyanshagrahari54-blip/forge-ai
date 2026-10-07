@@ -36,9 +36,15 @@ class CapabilityCandidate:
         return self.verification_status == "verified" and self.security_status in {"verified", "reviewed"}
 
 class CapabilityRegistry:
-    """Small registry; persistence/discovery/install are separate adapters."""
+    """Small registry; persistence/discovery/install are separate adapters.
+
+    Maintains an O(1) index (_by_capability) to avoid O(N) linear scans across
+    all registered candidates during capability resolution.
+    """
     def __init__(self, candidates: Iterable[CapabilityCandidate] = ()) -> None:
         self._items: dict[tuple[str, str], CapabilityCandidate] = {}
+        #: Capability index mapping capability name -> dict[candidate_name, candidate]
+        self._by_capability: dict[str, dict[str, CapabilityCandidate]] = {}
         for candidate in candidates:
             self.register(candidate)
 
@@ -50,9 +56,16 @@ class CapabilityRegistry:
         if not 0.0 <= candidate.quality_score <= 1.0:
             raise ValueError("quality_score must be between 0 and 1")
         self._items[(candidate.capability, candidate.name)] = candidate
+        if candidate.capability not in self._by_capability:
+            self._by_capability[candidate.capability] = {}
+        self._by_capability[candidate.capability][candidate.name] = candidate
 
     def find(self, capability: str, *, usable_only: bool = False) -> list[CapabilityCandidate]:
-        items = [item for (key, _), item in self._items.items() if key == capability]
+        # Fast path O(1) dictionary lookup by capability instead of scanning self._items
+        by_cap = self._by_capability.get(capability)
+        if not by_cap:
+            return []
+        items = list(by_cap.values())
         if usable_only:
             items = [item for item in items if item.usable]
         return sorted(items, key=lambda item: (-item.quality_score, item.name))
