@@ -255,6 +255,7 @@ def build_frontier_fleet(
     fabric: Any,
     *,
     minimum_size: int = DEFAULT_FLEET_SIZE,
+    requested_roles: tuple[str, ...] = (),
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float | None = DEFAULT_TEMPERATURE,
 ) -> AgentRegistry:
@@ -265,7 +266,16 @@ def build_frontier_fleet(
     40 families x 26 variants = 1,040 logical specialists; ``minimum_size``
     is a floor for callers that deliberately want a smaller fleet.
     """
-    target = max(1000, int(minimum_size))
+    requested = tuple(dict.fromkeys(role.strip().lower()
+                                  for role in requested_roles if role.strip()))
+    # Runtime callers can request only the specialists needed by the current
+    # task. The historical 1,040-fleet mode remains available to explicit
+    # callers for catalog/verification work, but it is never required for a
+    # normal task.
+    if requested:
+        target = len([item for item in SPECIALIZATIONS if item[1] in requested])
+    else:
+        target = max(1000, int(minimum_size))
     registrations: list[AgentRegistration] = []
     index = 0
     # Register in specialization-major order so every declared specialization
@@ -277,6 +287,8 @@ def build_frontier_fleet(
     generation = 0
     while len(registrations) < target:
         for specialization, role, capabilities in SPECIALIZATIONS:
+            if requested and role not in requested:
+                continue
             if len(registrations) >= target:
                 break
             name = f"{specialization}-{generation + 1:02d}-{index + 1:04d}"
@@ -310,13 +322,18 @@ def extend_registry_with_frontier_fleet(
     fabric: Any,
     *,
     minimum_size: int = DEFAULT_FLEET_SIZE,
+    requested_roles: tuple[str, ...] = (),
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     temperature: float | None = DEFAULT_TEMPERATURE,
 ) -> AgentRegistry:
     """Add the fleet to an existing registry while preserving core agents."""
-    fleet = build_frontier_fleet(fabric, minimum_size=minimum_size,
-                                 max_output_tokens=max_output_tokens,
-                                 temperature=temperature)
+    fleet = build_frontier_fleet(
+        fabric,
+        minimum_size=minimum_size,
+        requested_roles=requested_roles,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+    )
     for name in fleet.names():
         registration = fleet.get(name)
         registry.register(registration)
