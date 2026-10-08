@@ -192,6 +192,8 @@ def multimodal_readiness(fabric: Any, *,
 
 
 def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
+                           requested_capabilities: tuple[str, ...] = (),
+                           max_per_modality: int = 1,
                            max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
                            temperature: float | None = DEFAULT_TEMPERATURE,
                            ) -> tuple[AgentRegistry, dict[str, Any]]:
@@ -203,13 +205,17 @@ def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
     """
     reports = multimodal_readiness(fabric, env=env)
     available = {report.capability: report for report in reports}
+    requested = set(requested_capabilities)
+    limit = max(1, int(max_per_modality))
     registrations: list[AgentRegistration] = []
     for modality in MODALITIES:
+        if requested and modality.capability not in requested:
+            continue
         report = available[modality.capability]
         if not report.registered:
             continue
         preferred = report.models[0]
-        for specialty in modality.specialties:
+        for specialty in modality.specialties[:limit]:
             name = f"{modality.family}-{specialty}"
             registrations.append(AgentRegistration(
                 name, modality.role,
@@ -238,9 +244,15 @@ def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
 
 def extend_registry_with_multimodal_fleet(
         registry: AgentRegistry, fabric: Any, *,
-        env: Mapping[str, str] | None = None) -> dict[str, Any]:
+        env: Mapping[str, str] | None = None,
+        requested_capabilities: tuple[str, ...] = (),
+        max_per_modality: int = 1) -> dict[str, Any]:
     """Add the multimodal specialists to an existing registry."""
-    fleet, report = build_multimodal_fleet(fabric, env=env)
+    fleet, report = build_multimodal_fleet(
+        fabric, env=env,
+        requested_capabilities=requested_capabilities,
+        max_per_modality=max_per_modality,
+    )
     for name in fleet.names():
         registry.register(fleet.get(name))
     return report
