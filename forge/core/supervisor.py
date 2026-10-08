@@ -340,6 +340,37 @@ class Supervisor:
                     requested_roles=tuple(extracted.roles),
                 )
                 fleet_registered_agents = max(0, len(registry) - 5)
+            # Multimodal specialists are also lazy: only register a modality
+            # that the current request actually needs, and only one seed
+            # specialist initially. More can be spawned by later subtasks.
+            multimodal_keywords = planning_request.lower()
+            requested_modalities: list[str] = []
+            if any(word in multimodal_keywords for word in (
+                    "image", "photo", "screenshot", "vision", "diagram", "visual")):
+                requested_modalities.append("vision")
+            if any(word in multimodal_keywords for word in (
+                    "generate image", "draw", "illustration", "image generation")):
+                requested_modalities.append("image_generation")
+            if any(word in multimodal_keywords for word in (
+                    "audio", "transcribe", "speech to text", "asr", "voice input")):
+                requested_modalities.append("speech_to_text")
+            if any(word in multimodal_keywords for word in (
+                    "voice", "speak", "text to speech", "tts", "narration")):
+                requested_modalities.append("text_to_speech")
+            if fabric is not None and requested_modalities:
+                from forge.agents.multimodal_fleet import (
+                    extend_registry_with_multimodal_fleet)
+                from forge.models.multimodal_bridge import register_multimodal_models
+                from forge.models.local_capabilities import (
+                    register_local_capability_models)
+                register_multimodal_models(fabric)
+                register_local_capability_models(fabric)
+                multimodal_report = extend_registry_with_multimodal_fleet(
+                    registry, fabric,
+                    requested_capabilities=tuple(dict.fromkeys(requested_modalities)),
+                    max_per_modality=1,
+                )
+                fleet_registered_agents = len(registry) - 5
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
             if agent_plan.unmet:
