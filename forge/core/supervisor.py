@@ -166,6 +166,7 @@ class Supervisor:
         from forge.agents.execution import AgentRequest
         from forge.agents.registry import AgentRegistration, AgentRegistry
         from forge.agents.planner import CapabilityAgentPlanner
+        from forge.agents.requirements import TaskRequirementExtractor
         from forge.agents.reviewer import ReviewerAgent
         from forge.agents.tester import TesterAgent
         from forge.core.acceptance import AcceptanceEngine, GateOutcome
@@ -320,36 +321,25 @@ class Supervisor:
                 AgentRegistration("tester", "testing", TesterAgent(str(self.root)), ("testing",)),
                 AgentRegistration("security", "security", build_security_executor(str(self.root)), ("security",)),
             ])
-            # Add the lightweight 1,000+ specialist fleet. These are logical
-            # agents sharing the same ModelFabric; no 1,000 model processes
-            # are spawned. Core safety-critical agents above remain canonical.
-            #: Fleet size is reported *inside* the existing ``agents_selected``
-            #: event: A32 telemetry has a closed event-name contract, so a new
-            #: event name must not be introduced to carry extra detail.
+            # Specialist agents are created lazily from the current task
+            # graph. The historical 1,040 logical catalogue is a reusable
+            # seed, not a runtime requirement; normal tasks must not allocate
+            # the whole catalogue.
             fleet_registered_agents = 0
             multimodal_report: dict[str, Any] = {}
-            if fabric is not None:
-                from forge.agents.frontier_fleet import extend_registry_with_frontier_fleet
-                #: The canonical fleet: 40 specialization families x 26
-                #: variants = 1,040 logical specialists (the default).
-                extend_registry_with_frontier_fleet(registry, fabric)
-                #: The 100 multimodal specialists register only for modalities a
-                #: real model advertises; the rest stay defined and reported.
-                from forge.agents.multimodal_fleet import (
-                    extend_registry_with_multimodal_fleet)
-                from forge.models.multimodal_bridge import register_multimodal_models
-                register_multimodal_models(fabric)
-                #: Local capability backends (pixel measurement, bundled
-                #: speech, DOM browser/actions) are registered via their own
-                #: real probes, so a deployment with no external endpoint still
-                #: executes the vision/audio/browser/computer-use specialists.
-                from forge.models.local_capabilities import (
-                    register_local_capability_models)
-                register_local_capability_models(fabric)
-                multimodal_report = extend_registry_with_multimodal_fleet(
-                    registry, fabric)
-                fleet_registered_agents = len(registry)
-            planning_request = requirement if any(word in requirement.lower() for word in ("code", "implement", "add", "fix", "feature", "refactor")) else requirement + " implement code"
+            planning_request = requirement if any(
+                word in requirement.lower()
+                for word in ("code", "implement", "add", "fix", "feature", "refactor")
+            ) else requirement + " implement code"
+            extracted = TaskRequirementExtractor().extract(planning_request)
+            if fabric is not None and extracted.roles:
+                from forge.agents.frontier_fleet import (
+                    extend_registry_with_frontier_fleet)
+                extend_registry_with_frontier_fleet(
+                    registry, fabric,
+                    requested_roles=tuple(extracted.roles),
+                )
+                fleet_registered_agents = max(0, len(registry) - 5)
             agent_plan = CapabilityAgentPlanner(registry).plan(planning_request)
             result["plan"] = {"agents": list(agent_plan.names), "capabilities": list(agent_plan.capabilities)}
             if agent_plan.unmet:
