@@ -39,6 +39,8 @@ class CapabilityRegistry:
     """Small registry; persistence/discovery/install are separate adapters."""
     def __init__(self, candidates: Iterable[CapabilityCandidate] = ()) -> None:
         self._items: dict[tuple[str, str], CapabilityCandidate] = {}
+        # Bolt optimization: maintain indexed map capability -> candidate_name -> CapabilityCandidate for O(1) find lookups
+        self._by_capability: dict[str, dict[str, CapabilityCandidate]] = {}
         for candidate in candidates:
             self.register(candidate)
 
@@ -50,9 +52,13 @@ class CapabilityRegistry:
         if not 0.0 <= candidate.quality_score <= 1.0:
             raise ValueError("quality_score must be between 0 and 1")
         self._items[(candidate.capability, candidate.name)] = candidate
+        if candidate.capability not in self._by_capability:
+            self._by_capability[candidate.capability] = {}
+        self._by_capability[candidate.capability][candidate.name] = candidate
 
     def find(self, capability: str, *, usable_only: bool = False) -> list[CapabilityCandidate]:
-        items = [item for (key, _), item in self._items.items() if key == capability]
+        # Bolt optimization: O(1) lookup by capability using indexed dictionary instead of O(N) linear scan over self._items
+        items = list(self._by_capability.get(capability, {}).values())
         if usable_only:
             items = [item for item in items if item.usable]
         return sorted(items, key=lambda item: (-item.quality_score, item.name))
