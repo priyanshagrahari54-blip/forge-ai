@@ -26,7 +26,9 @@ from forge.core.task_engine import Task, TaskStatus
 MAX_REQUIREMENT = 4000
 MAX_RUNS_PER_AGENT = 20
 
-SUPPORTED_ROLES = ("coding", "planning", "research")
+# No product-level role allowlist: a dynamically created agent may execute
+# whenever its definition is bound to a real executor. The executor registry,
+# permissions and resource governor remain the actual authority.
 
 
 @dataclass
@@ -74,11 +76,9 @@ class AgentRunner:
             raise ValueError(
                 f"Agent {definition.name!r} is a definition without a "
                 "bound executor; it cannot run tasks.")
-        if definition.role not in SUPPORTED_ROLES:
-            raise ValueError(
-                f"No executor is available for role "
-                f"{definition.role!r}; supported roles: "
-                f"{', '.join(SUPPORTED_ROLES)}.")
+        # Roles are intentionally open-ended. Dynamic agents can introduce
+        # new specialist roles; execution is possible only when this session's
+        # trusted executor registry actually knows how to build that role.
         executor = self.executor_builder(definition.role)
         if executor is None:
             raise ValueError(
