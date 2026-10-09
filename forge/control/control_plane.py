@@ -5886,7 +5886,7 @@ class ControlPlane:
     def voice_conversation_say(self, session: Session, conversation_id: str,
                                *, text: str = "", audio_b64: str = "",
                                approval_id: str = "",
-                               confirm: bool = True) -> dict[str, Any]:
+                               confirm: bool | None = None) -> dict[str, Any]:
         """One conversational turn: context → intent → confirm → gate →
         act, with spoken results."""
         from forge.voice import AudioError

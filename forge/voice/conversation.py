@@ -36,6 +36,10 @@ AFFIRMATIVES = ("yes", "yeah", "yep", "confirm", "ok", "okay", "sure",
                 "do it", "go ahead", "please do", "proceed")
 NEGATIVES = ("no", "nope", "cancel", "stop", "never mind", "abort")
 PRONOUNS = ("it", "that", "this", "this one", "that one")
+TASK_INTENTS = frozenset({
+    "run_tests", "update_website", "commit", "review", "summarize",
+    "send_email", "send_whatsapp", "make_call",
+})
 
 
 @dataclass
@@ -122,7 +126,7 @@ class VoiceConversation:
     # -- turns -------------------------------------------------------------------
 
     def say(self, speech: str, *, task_factory: Callable | None = None,
-            approval_token_id: str = "", confirm: bool = False
+            approval_token_id: str = "", confirm: bool | None = None
             ) -> dict[str, Any]:
         """Process one user utterance into a bounded turn.
 
@@ -173,7 +177,8 @@ class VoiceConversation:
                 return self._reply(spoken, "", status="awaiting_answer",
                                    user_turn=user_turn)
             user_turn.intent = intent.name
-            if confirm:
+            should_confirm = confirm if confirm is not None else (intent.name in TASK_INTENTS)
+            if should_confirm:
                 user_turn.status = "awaiting_confirmation"
                 spoken = (f"Shall I {intent.name.replace('_', ' ')}? "
                           "Say yes to proceed or no to cancel.")
