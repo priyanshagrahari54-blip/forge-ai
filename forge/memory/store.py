@@ -16,6 +16,9 @@ class MemoryStore:
     def __init__(self, root: str = ".forge/memory", max_bytes: int | None = None) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        # Bolt performance optimization: pre-resolve self.root once to avoid
+        # repeated self.root.resolve() filesystem syscalls on every _safe_path check.
+        self._resolved_root = self.root.resolve()
         self.max_bytes = max_bytes or self.DEFAULT_MAX_BYTES
 
     def _safe_path(self, name: str) -> Path:
@@ -31,7 +34,7 @@ class MemoryStore:
             raise ValueError(f"Memory key must be a relative path without traversal: {name!r}")
         path = (self.root / candidate).resolve()
         try:
-            path.relative_to(self.root.resolve())
+            path.relative_to(self._resolved_root)
         except ValueError:
             raise ValueError(f"Memory key escapes the memory directory: {name!r}") from None
         return path

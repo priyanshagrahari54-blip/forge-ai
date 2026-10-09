@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - RelevanceRanker Token Sets and Query Term IDF Computations
+
+**Learning:** `RelevanceRanker` was converting document token sets into sorted lists during `__init__`, causing $O(K \log K)$ list sorting and forcing repeated conversions back to `set()` twice per document on every search query. In addition, query term IDF values and total query weight were being recalculated inside the document iteration loop.
+
+**Action:** Store `_doc_tokens` directly as `Set[str]`, precompute query term IDFs once per query before looping over documents, and reuse matched term tuples. Also pre-resolve `MemoryStore._resolved_root` to avoid un-memoized `root.resolve()` syscalls. This reduced search query latency from ~1438ms to ~577ms (~2.5x speedup / 59.8% latency reduction).
