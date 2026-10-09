@@ -187,7 +187,7 @@ def assemble_stage_requirement(
         "\n=== RULES ===\n"
         "- Real implementation only: write production code and the tests "
         "proving this stage works.\n"
-        "- Never claim completion without passing tests and a clean review.\n"
+        "- Never claim completion without passing tests, meeting criteria, and a clean review.\n"
     )
 
     # Budget: stage prompt always complete, previous summaries bounded,

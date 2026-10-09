@@ -193,7 +193,7 @@ def multimodal_readiness(fabric: Any, *,
 
 def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
                            requested_capabilities: tuple[str, ...] = (),
-                           max_per_modality: int = 1,
+                           max_per_modality: int | None = None,
                            max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
                            temperature: float | None = DEFAULT_TEMPERATURE,
                            ) -> tuple[AgentRegistry, dict[str, Any]]:
@@ -206,7 +206,7 @@ def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
     reports = multimodal_readiness(fabric, env=env)
     available = {report.capability: report for report in reports}
     requested = set(requested_capabilities)
-    limit = max(1, int(max_per_modality))
+    limit = max(1, int(max_per_modality)) if max_per_modality is not None else None
     registrations: list[AgentRegistration] = []
     for modality in MODALITIES:
         if requested and modality.capability not in requested:
@@ -246,7 +246,7 @@ def extend_registry_with_multimodal_fleet(
         registry: AgentRegistry, fabric: Any, *,
         env: Mapping[str, str] | None = None,
         requested_capabilities: tuple[str, ...] = (),
-        max_per_modality: int = 1) -> dict[str, Any]:
+        max_per_modality: int | None = None) -> dict[str, Any]:
     """Add the multimodal specialists to an existing registry."""
     fleet, report = build_multimodal_fleet(
         fabric, env=env,

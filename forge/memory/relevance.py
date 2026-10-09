@@ -101,53 +101,75 @@ class RelevanceRanker:
         self.records: List[MemoryRecord] = list(records)
         self.now = time.time() if now is None else now
         self._df: Dict[str, int] = {}
-        self._doc_tokens: Dict[str, List[str]] = {}
+        # Bolt performance optimization: store document token sets directly in _doc_tokens
+        # as Set[str] to avoid O(K log K) list sorting and repeated set conversions during search.
+        self._doc_tokens: Dict[str, Set[str]] = {}
         for record in self.records:
             tokens = set(content_tokens(record.content))
             tokens.update(content_tokens(record.summary))
-            self._doc_tokens[record.id] = sorted(tokens)
-            for term in self._doc_tokens[record.id]:
+            self._doc_tokens[record.id] = tokens
+            for term in tokens:
                 self._df[term] = self._df.get(term, 0) + 1
         self._n = max(1, len(self.records))
 
     def idf(self, term: str) -> float:
         return math.log((self._n + 1.0) / (self._df.get(term, 0) + 1.0)) + 1.0
 
-    def _lexical(self, query_terms: List[str], doc_terms: List[str]) -> float:
+    def _lexical(self, query_terms: List[str], doc_terms: Iterable[str]) -> float:
         """Weighted query-coverage score in [0, 1]."""
         if not query_terms:
             return 0.0
-        doc_set = set(doc_terms)
+        doc_set = set(doc_terms) if not isinstance(doc_terms, set) else doc_terms
         matched = [term for term in query_terms if term in doc_set]
         if not matched:
             return 0.0
-        matched_weight = sum(self.idf(term) for term in set(matched))
-        total_weight = sum(self.idf(term) for term in set(query_terms))
+        matched_weight = sum(self.idf(term) for term in matched)
+        total_weight = sum(self.idf(term) for term in query_terms)
         return matched_weight / total_weight if total_weight else 0.0
 
     def rank(self, query: str, *, k: int = 10,
              min_score: float = 0.0) -> List[SearchResult]:
         query_terms = sorted(set(content_tokens(query)))
+        if not query_terms:
+            return []
+
+        # Bolt performance optimization: pre-calculate IDF weights for unique query terms
+        # and total_weight once per search call instead of recomputing for every document.
+        query_idfs = {term: self.idf(term) for term in query_terms}
+        total_weight = sum(query_idfs.values())
+        if not total_weight:
+            return []
+
         scored: List[SearchResult] = []
+        now = self.now
+        doc_tokens = self._doc_tokens
+
         for record in self.records:
-            lexical = self._lexical(
-                query_terms, self._doc_tokens.get(record.id, []))
-            if lexical <= 0.0:
+            doc_set = doc_tokens.get(record.id)
+            if not doc_set:
                 continue
+
+            matched_terms = [term for term in query_terms if term in doc_set]
+            if not matched_terms:
+                continue
+
+            matched_weight = sum(query_idfs[term] for term in matched_terms)
+            lexical = matched_weight / total_weight
+
             importance = 0.5 + 0.5 * float(record.importance)
             confidence = 0.5 + 0.5 * float(record.confidence)
             type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
             score = (
                 lexical
-                * recency_factor(record.created_at, self.now)
+                * recency_factor(record.created_at, now)
                 * importance
                 * confidence
                 * type_prior
             )
             if score < min_score:
                 continue
-            matched = tuple(term for term in query_terms
-                            if term in set(self._doc_tokens.get(record.id, [])))
+
+            matched = tuple(matched_terms)
             scored.append(SearchResult(
                 record=record,
                 score=score,

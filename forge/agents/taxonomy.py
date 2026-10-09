@@ -1,4 +1,6 @@
 """Capability-oriented agent taxonomy; roles are descriptors, not fake running agents."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Iterable
 @dataclass(frozen=True)

@@ -1,3 +1,3 @@
 """Truthful final delivery states."""
-from enum import StrEnum
-class DeliveryStatus(StrEnum): READY="READY"; BLOCKED="BLOCKED"; FAILED="FAILED"; UNKNOWN="UNKNOWN"
+from enum import Enum
+class DeliveryStatus(str, Enum): READY="READY"; BLOCKED="BLOCKED"; FAILED="FAILED"; UNKNOWN="UNKNOWN"
