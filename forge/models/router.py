@@ -150,6 +150,15 @@ class RouteDecision:
         }
 
 
+# Optimization (Bolt ⚡): Static health score map avoids dict allocation per candidate evaluation
+_HEALTH_SCORES: dict[str, float] = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
+
+
 def tier_of(model: Model) -> int:
     """Declared relative power of a model (0 = undeclared).
 
@@ -158,8 +167,14 @@ def tier_of(model: Model) -> int:
     treated as undeclared instead of raising mid-route.
     """
     try:
-        return int((getattr(model, "metadata", None) or {}).get("tier") or 0)
-    except (TypeError, ValueError):
+        # Optimization (Bolt ⚡): Safe metadata access and type coercion
+        meta = getattr(model, "metadata", None)
+        if meta:
+            tier_val = meta.get("tier")
+            if tier_val:
+                return int(tier_val)
+        return 0
+    except (TypeError, ValueError, AttributeError):
         return 0
 
 
@@ -250,21 +265,30 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
+        # Optimization (Bolt ⚡): Extract loop constants outside candidate filtering
+        min_ctx = request.min_context_window
+        allow_paid = "paid" in relaxed or policy.allow_paid
+        max_cost = None if "paid" in relaxed else policy.max_cost_per_token
+        allow_remote = "remote" in relaxed or policy.allow_remote
+        max_lat = None if "latency" in relaxed else policy.max_latency_ms
+        min_rel = -1.0 if "reliability" in relaxed else policy.min_reliability
+        check_health = "health" not in relaxed
+
         candidates: list[Model] = []
         for model in capable:
-            if model.context_window < request.min_context_window:
+            if model.context_window < min_ctx:
                 continue
-            if "paid" not in relaxed and not policy.allow_paid and not model.free:
+            if not allow_paid and not model.free:
                 continue
-            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+            if max_cost is not None and model.cost_per_token > max_cost:
                 continue
-            if "remote" not in relaxed and not policy.allow_remote and not model.local:
+            if not allow_remote and not model.local:
                 continue
-            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
+            if max_lat is not None and model.latency_ms > max_lat:
                 continue
-            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
+            if model.reliability < min_rel:
                 continue
-            if "health" not in relaxed and model.health.last_resort:
+            if check_health and model.health.last_resort:
                 continue
             candidates.append(model)
 
@@ -279,12 +303,19 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
-        preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
-        fallback_order = {
-            name: index for index, name in enumerate(request.fallback_models)
-        }
+        # Optimization (Bolt ⚡): Only build preference lookup dicts if preference lists are non-empty
+        pref_tuple = request.effective_model_preferences()
+        preferred_order = (
+            {name: index for index, name in enumerate(pref_tuple)}
+            if pref_tuple
+            else None
+        )
+        fb_tuple = request.fallback_models
+        fallback_order = (
+            {name: index for index, name in enumerate(fb_tuple)}
+            if fb_tuple
+            else None
+        )
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
@@ -305,20 +336,24 @@ class FabricRouter:
                 0 if model.local else 1,
                 model.name,
             )
-            if model.name in preferred_order:
+            if preferred_order and model.name in preferred_order:
                 return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
+            if fallback_order and model.name in fallback_order:
                 return (2, fallback_order[model.name], *tiebreak)
             return (1, *tiebreak)
 
-        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
+        # Optimization (Bolt ⚡): Precompute request-dependent context fit and complexity denominators
+        ctx_denom = max(request.min_context_window or 1, 1)
+        comp_denom = 4096.0 * max(0.0, request.complexity or 1.0)
+
+        scored = [(self._score(model, pref_free, pref_local, ctx_denom, comp_denom), model) for model in pool]
         scored.sort(key=rank)
         score, model = scored[0]
 
         chain = [entry for _, entry in scored]
         if regular and fallback_models:
             fallback_scored = [
-                (self._score(entry, request, policy, pref_free, pref_local), entry)
+                (self._score(entry, pref_free, pref_local, ctx_denom, comp_denom), entry)
                 for entry in fallback_models
             ]
             fallback_scored.sort(key=rank)
@@ -337,7 +372,7 @@ class FabricRouter:
             "complexity": request.complexity,
             "preference_rank": (
                 preferred_order.get(model.name)
-                if model.name in preferred_order
+                if preferred_order and model.name in preferred_order
                 else None
             ),
         }
@@ -351,27 +386,19 @@ class FabricRouter:
     def _score(
         self,
         model: Model,
-        request: ModelRequest,
-        policy: RoutingPolicy,
         pref_free: bool,
         pref_local: bool,
+        ctx_denom: int,
+        comp_denom: float,
     ) -> float:
         reliability = max(0.0, min(1.0, model.reliability))
         latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
         cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
-        # Complexity-aware: complex requests favor models with proportionally
-        # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        context_fit = min(1.0, model.context_window / ctx_denom)
+        health = _HEALTH_SCORES.get(model.health.status, 0.5)
+        complexity_fit = min(1.0, model.context_window / comp_denom)
         return (
             reliability * 0.30
             + latency * 0.15
