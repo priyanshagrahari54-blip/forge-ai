@@ -1,4 +1,6 @@
 """Evidence-first planner pipeline built on the existing ProjectArchitect."""
+from __future__ import annotations
+
 from dataclasses import dataclass,field
 from typing import Any
 @dataclass
