@@ -69,7 +69,10 @@ class GeminiProvider(HostedProvider):
     def list_models(self) -> list[str]:
         request = urllib.request.Request(self.endpoint + "/models?key=" + urllib.parse.quote(self.api_key))
         with urllib.request.urlopen(request, timeout=20) as response: data = json.loads(response.read().decode("utf-8"))
-        return sorted(str(x.get("name", "").removeprefix("models/")) for x in data.get("models", []) if isinstance(x, dict) and x.get("name"))
+        def _strip_prefix(val: str) -> str:
+            prefix = "models/"
+            return val[len(prefix):] if val.startswith(prefix) else val
+        return sorted(_strip_prefix(str(x.get("name", ""))) for x in data.get("models", []) if isinstance(x, dict) and x.get("name"))
     def generate(self, prompt: str, *, context: str = "", task: str = "", instructions: str = "", max_output_tokens: int | None = None, temperature: float | None = None) -> ModelResult:
         started = time.perf_counter(); text_prompt = compose_provider_prompt(prompt, context=context, task=task, instructions=instructions)
         generation: dict[str, Any] = {}
