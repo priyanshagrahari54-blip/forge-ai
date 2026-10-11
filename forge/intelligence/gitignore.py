@@ -41,26 +41,22 @@ class GitIgnoreMatcher:
             if line.startswith("!"):
                 continue
 
-            pattern = line.rstrip("/")
-            if not pattern:
-                continue
-
-            norm_pattern = pattern.lstrip("/")
+            is_anchored = line.startswith("/") or ("/" in line.rstrip("/"))
+            norm_pattern = line.strip("/")
             if not norm_pattern:
                 continue
 
             has_glob = any(c in norm_pattern for c in "*?[")
-            has_slash = "/" in pattern
 
-            if not has_glob and not has_slash:
+            if not has_glob and not is_anchored:
                 self.exact_matches.add(norm_pattern)
                 prefixes.append(norm_pattern + "/")
                 self.part_matches.add(norm_pattern)
-            elif not has_glob and has_slash:
+            elif not has_glob and is_anchored:
                 self.exact_matches.add(norm_pattern)
                 prefixes.append(norm_pattern + "/")
             else:
-                self.fallback_patterns.append((pattern, has_slash))
+                self.fallback_patterns.append((line.rstrip("/"), is_anchored))
 
         self.prefix_matches = tuple(prefixes)
 
@@ -96,18 +92,18 @@ class GitIgnoreMatcher:
             self._cache[path_key] = True
             return True
 
-        # Fast path 2: Component match for slash-less patterns (e.g. "node_modules", ".git")
+        # Fast path 2: Component match for unanchored non-glob patterns (e.g. "node_modules", "__pycache__")
         if any(part in self.part_matches for part in parts):
             self._cache[path_key] = True
             return True
 
         # Fallback path for glob patterns: preserve exact Path.match and component matching semantics
         if self.fallback_patterns:
-            for pattern, has_slash in self.fallback_patterns:
+            for pattern, is_anchored in self.fallback_patterns:
                 if relative.match(pattern):
                     self._cache[path_key] = True
                     return True
-                if not has_slash and pattern in parts:
+                if not is_anchored and pattern in parts:
                     self._cache[path_key] = True
                     return True
 
