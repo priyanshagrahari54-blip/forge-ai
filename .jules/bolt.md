@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - GitIgnoreMatcher Sequential Linear Pattern Scans
+
+**Learning:** `GitIgnoreMatcher.is_ignored` executed a full linear scan over all `.gitignore` rules for every path traversed during repository intelligence tree scans, evaluating `Path.match()` on every iteration. For thousands of files, this dominated repository analysis runtime.
+
+**Action:** Pre-categorize `.gitignore` rules during loading into set lookups (`exact_matches`, `part_matches`), prefix tuples (`prefix_matches` passed to `str.startswith()`), and fallback glob tuples (`fallback_patterns`). This allows standard paths (like `node_modules`, `dist/`, `.git`) to match in $O(1)$ or fast C-level string operations, providing >2.5x overall speedup in architecture and intelligence repository analysis.

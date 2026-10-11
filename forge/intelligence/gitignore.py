@@ -9,6 +9,11 @@ class GitIgnoreMatcher:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.patterns: list[str] = []
+        # Performance optimization (Bolt ⚡): Fast lookup structures for non-glob rules
+        self.exact_matches: set[str] = set()
+        self.prefix_matches: tuple[str, ...] = ()
+        self.part_matches: set[str] = set()
+        self.fallback_patterns: list[tuple[str, bool]] = []
         self._cache: dict[str, bool] = {}
         self._load()
 
@@ -18,6 +23,8 @@ class GitIgnoreMatcher:
 
         if not gitignore.exists():
             return
+
+        prefixes: list[str] = []
 
         for line in gitignore.read_text(
             encoding="utf-8",
@@ -30,6 +37,28 @@ class GitIgnoreMatcher:
                 continue
 
             self.patterns.append(line)
+
+            if line.startswith("!"):
+                continue
+
+            is_anchored = line.startswith("/") or ("/" in line.rstrip("/"))
+            norm_pattern = line.strip("/")
+            if not norm_pattern:
+                continue
+
+            has_glob = any(c in norm_pattern for c in "*?[")
+
+            if not has_glob and not is_anchored:
+                self.exact_matches.add(norm_pattern)
+                prefixes.append(norm_pattern + "/")
+                self.part_matches.add(norm_pattern)
+            elif not has_glob and is_anchored:
+                self.exact_matches.add(norm_pattern)
+                prefixes.append(norm_pattern + "/")
+            else:
+                self.fallback_patterns.append((line.rstrip("/"), is_anchored))
+
+        self.prefix_matches = tuple(prefixes)
 
     def is_ignored(self, path: str | Path) -> bool:
         """Return True if a repository path matches .gitignore."""
@@ -51,39 +80,30 @@ class GitIgnoreMatcher:
                 self._cache[path_key] = False
                 return False
 
-        path_str = relative.as_posix()
+        rel_str = relative.as_posix()
         parts = relative.parts
 
-        for pattern in self.patterns:
-            pattern = pattern.strip()
+        # Fast path 1: Exact direct match or prefix match (O(1) set / prefix match)
+        if rel_str in self.exact_matches:
+            self._cache[path_key] = True
+            return True
 
-            if not pattern:
-                continue
+        if self.prefix_matches and rel_str.startswith(self.prefix_matches):
+            self._cache[path_key] = True
+            return True
 
-            # Negated patterns are handled conservatively for now.
-            if pattern.startswith("!"):
-                continue
+        # Fast path 2: Component match for unanchored non-glob patterns (e.g. "node_modules", "__pycache__")
+        if any(part in self.part_matches for part in parts):
+            self._cache[path_key] = True
+            return True
 
-            pattern = pattern.rstrip("/")
-
-            # Direct path match.
-            if path_str == pattern:
-                self._cache[path_key] = True
-                return True
-
-            # Match anything below a directory/pattern.
-            if path_str.startswith(pattern + "/"):
-                self._cache[path_key] = True
-                return True
-
-            # Simple filename / glob matching.
-            if relative.match(pattern):
-                self._cache[path_key] = True
-                return True
-
-            # Pattern without a slash can match any path component.
-            if "/" not in pattern:
-                if pattern in parts:
+        # Fallback path for glob patterns: preserve exact Path.match and component matching semantics
+        if self.fallback_patterns:
+            for pattern, is_anchored in self.fallback_patterns:
+                if relative.match(pattern):
+                    self._cache[path_key] = True
+                    return True
+                if not is_anchored and pattern in parts:
                     self._cache[path_key] = True
                     return True
 
