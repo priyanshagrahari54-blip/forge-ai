@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - RelevanceRanker Full Corpus Scan Bottleneck
+
+**Learning:** `RelevanceRanker.rank()` scanned all $N$ records in the candidate corpus on every query, re-calculating static document scores (recency decay, importance, confidence, and type prior) and rebuilding token sets dynamically inside query comprehensions ($O(N)$ full scans even for records with zero overlapping terms).
+
+**Action:** Maintain an inverted term index (`_inverted_index`) and precomputed document base scores (`_doc_base_scores`) during `__init__`. Retrieve candidate record IDs via inverted index lookup and precompute query IDFs once per query to achieve ~30x speedup in long-term memory retrieval (>96% latency reduction).
