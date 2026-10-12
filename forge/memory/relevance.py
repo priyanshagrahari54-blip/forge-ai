@@ -101,23 +101,44 @@ class RelevanceRanker:
         self.records: List[MemoryRecord] = list(records)
         self.now = time.time() if now is None else now
         self._df: Dict[str, int] = {}
-        self._doc_tokens: Dict[str, List[str]] = {}
+        # Performance optimization (Bolt ⚡): store sets for O(1) membership lookups
+        self._doc_tokens: Dict[str, Set[str]] = {}
+        self._doc_base_scores: Dict[str, float] = {}
+        self._inverted_index: Dict[str, List[str]] = {}
+        self._records_by_id: Dict[str, MemoryRecord] = {}
+
         for record in self.records:
+            self._records_by_id[record.id] = record
             tokens = set(content_tokens(record.content))
             tokens.update(content_tokens(record.summary))
-            self._doc_tokens[record.id] = sorted(tokens)
-            for term in self._doc_tokens[record.id]:
+            self._doc_tokens[record.id] = tokens
+            for term in tokens:
                 self._df[term] = self._df.get(term, 0) + 1
+                if term not in self._inverted_index:
+                    self._inverted_index[term] = []
+                self._inverted_index[term].append(record.id)
+
+            # Precalculate static base score (recency, importance, confidence, type prior)
+            importance = 0.5 + 0.5 * float(record.importance)
+            confidence = 0.5 + 0.5 * float(record.confidence)
+            type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
+            self._doc_base_scores[record.id] = (
+                recency_factor(record.created_at, self.now)
+                * importance
+                * confidence
+                * type_prior
+            )
+
         self._n = max(1, len(self.records))
 
     def idf(self, term: str) -> float:
         return math.log((self._n + 1.0) / (self._df.get(term, 0) + 1.0)) + 1.0
 
-    def _lexical(self, query_terms: List[str], doc_terms: List[str]) -> float:
+    def _lexical(self, query_terms: List[str], doc_terms: Any) -> float:
         """Weighted query-coverage score in [0, 1]."""
         if not query_terms:
             return 0.0
-        doc_set = set(doc_terms)
+        doc_set = set(doc_terms) if not isinstance(doc_terms, set) else doc_terms
         matched = [term for term in query_terms if term in doc_set]
         if not matched:
             return 0.0
@@ -127,34 +148,49 @@ class RelevanceRanker:
 
     def rank(self, query: str, *, k: int = 10,
              min_score: float = 0.0) -> List[SearchResult]:
+        # Sort and deduplicate query terms once
         query_terms = sorted(set(content_tokens(query)))
+        if not query_terms:
+            return []
+
+        # Performance optimization (Bolt ⚡): Precompute query term IDFs once per query
+        term_idfs = {term: self.idf(term) for term in query_terms}
+        total_weight = sum(term_idfs.values())
+        if not total_weight:
+            return []
+
+        # Performance optimization (Bolt ⚡): Inverted index lookup avoids scanning unrelated records
+        candidate_ids: Set[str] = set()
+        for term in query_terms:
+            if term in self._inverted_index:
+                candidate_ids.update(self._inverted_index[term])
+
         scored: List[SearchResult] = []
-        for record in self.records:
-            lexical = self._lexical(
-                query_terms, self._doc_tokens.get(record.id, []))
+        for rec_id in candidate_ids:
+            record = self._records_by_id[rec_id]
+            doc_set = self._doc_tokens[rec_id]
+            matched = [term for term in query_terms if term in doc_set]
+            if not matched:
+                continue
+
+            matched_weight = sum(term_idfs[term] for term in matched)
+            lexical = matched_weight / total_weight
             if lexical <= 0.0:
                 continue
-            importance = 0.5 + 0.5 * float(record.importance)
-            confidence = 0.5 + 0.5 * float(record.confidence)
-            type_prior = TYPE_PRIOR.get(record.memory_type, 0.8)
-            score = (
-                lexical
-                * recency_factor(record.created_at, self.now)
-                * importance
-                * confidence
-                * type_prior
-            )
+
+            score = lexical * self._doc_base_scores[rec_id]
             if score < min_score:
                 continue
-            matched = tuple(term for term in query_terms
-                            if term in set(self._doc_tokens.get(record.id, [])))
+
+            matched_tuple = tuple(matched)
             scored.append(SearchResult(
                 record=record,
                 score=score,
-                matched_terms=matched,
-                reason="matched: " + ", ".join(matched[:6])
-                if matched else "type/recency match",
+                matched_terms=matched_tuple,
+                reason="matched: " + ", ".join(matched_tuple[:6])
+                if matched_tuple else "type/recency match",
             ))
+
         scored.sort(key=lambda item: (-item.score, -item.record.importance,
                                       -item.record.created_at, item.record.id))
         return scored[:max(0, k)]
