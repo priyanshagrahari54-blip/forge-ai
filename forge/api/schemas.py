@@ -60,8 +60,8 @@ class VoiceProcessRequest(BaseModel):
     require_wake: bool = True
     # Normal voice actions execute directly when policy permits. Consequential
     # operations still use the existing A33 permission/approval gate.
-    # Clients can set confirm=true when extra conversational confirmation is wanted.
-    confirm: bool = False
+    # Clients can set confirm=true/false when extra conversational confirmation is wanted.
+    confirm: Optional[bool] = None
 
 
 class VoiceSynthesizeRequest(BaseModel):
