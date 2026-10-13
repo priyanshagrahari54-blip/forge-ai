@@ -286,15 +286,11 @@ class CallGraphIndexer:
                 graph.truncated = True
                 break
 
-        # Pass 1: collect every function-like symbol so call edges can be
-        # resolved against real repository definitions.
-        definitions = self._collect_definitions(files)
-        graph.known_symbols = {
-            name: tuple(sorted(qualified))
-            for name, qualified in sorted(definitions.items())
-        }
+        # Single-pass indexing: collect definitions and raw call sites simultaneously
+        # to avoid reading source files and parsing ASTs twice.
+        definitions: Dict[str, Set[str]] = defaultdict(set)
+        raw_sites: List[Tuple[str, str, str, int, str]] = []
 
-        # Pass 2: extract call sites and resolve them.
         for path in files:
             rel = path.relative_to(self.root).as_posix()
             graph.files_scanned += 1
@@ -308,37 +304,37 @@ class CallGraphIndexer:
                     {"file": rel, "error": "file exceeds the size bound"})
                 continue
             if path.suffix.lower() in AST_SUFFIXES:
-                self._index_python(rel, source, graph)
+                self._index_python(rel, source, graph, definitions, raw_sites)
             else:
-                self._index_lexical(rel, source, graph)
+                self._index_lexical(rel, source, graph, definitions, raw_sites)
+
+        graph.known_symbols = {
+            name: tuple(sorted(qualified))
+            for name, qualified in sorted(definitions.items())
+        }
+
+        # Resolve raw call sites against all harvested symbol definitions.
+        for rel, callee, caller, line, tier in raw_sites:
+            candidates = graph.known_symbols.get(callee, ())
+            if tier == "lexical":
+                status = "lexical"
+                cands = candidates
+            elif not candidates:
+                status = "external"
+                cands = ()
+            elif len(candidates) == 1:
+                status = "resolved"
+                cands = candidates
+            else:
+                status = "ambiguous"
+                cands = tuple(sorted(candidates))
+
+            graph.add(CallSite(
+                caller=caller, callee=callee, file=rel, line=line,
+                tier=tier, status=status, candidates=cands,
+            ))
+
         return graph
-
-    # -- pass 1 ----------------------------------------------------------
-
-    def _collect_definitions(self, files: Sequence[Path]
-                             ) -> Dict[str, Set[str]]:
-        definitions: Dict[str, Set[str]] = defaultdict(set)
-        for path in files:
-            rel = path.relative_to(self.root).as_posix()
-            suffix = path.suffix.lower()
-            try:
-                source = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if suffix in AST_SUFFIXES:
-                try:
-                    tree = ast.parse(source, filename=rel)
-                except (SyntaxError, ValueError):
-                    continue
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef,
-                                         ast.AsyncFunctionDef)):
-                        qualified = self._python_qualifier(rel, node.name)
-                        definitions[node.name].add(qualified)
-            else:
-                for name in _lexical_definitions(source):
-                    definitions[name].add("%s:%s" % (rel, name))
-        return definitions
 
     @staticmethod
     def _python_qualifier(rel: str, name: str) -> str:
@@ -348,9 +344,11 @@ class CallGraphIndexer:
             module = module[: -len(".__init__")]
         return "%s:%s" % (module, name)
 
-    # -- pass 2 ----------------------------------------------------------
-
-    def _index_python(self, rel: str, source: str, graph: CallGraph) -> None:
+    def _index_python(
+        self, rel: str, source: str, graph: CallGraph,
+        definitions: Dict[str, Set[str]],
+        raw_sites: List[Tuple[str, str, str, int, str]]
+    ) -> None:
         try:
             tree = ast.parse(source, filename=rel)
         except (SyntaxError, ValueError) as exc:
@@ -365,59 +363,69 @@ class CallGraphIndexer:
         stack: List[str] = []
         budget = [MAX_CALL_SITES_PER_FILE]
 
-        def add_site(callee: str, line: int) -> None:
-            if budget[0] <= 0:
-                graph.truncated = True
-                return
-            if len(graph.call_sites) >= MAX_CALL_SITES:
+        def add_raw_site(callee: str, line: int) -> None:
+            if budget[0] <= 0 or len(raw_sites) >= MAX_CALL_SITES:
                 graph.truncated = True
                 return
             budget[0] -= 1
-            caller = "%s:%s" % (module, "".join(stack).rstrip(".")
-                                 or "<module>")
-            graph.add(self._resolve(rel, callee, caller, line, "ast", graph))
+            caller = "%s:%s" % (module, "".join(stack).rstrip(".") or "<module>")
+            raw_sites.append((rel, callee, caller, line, "ast"))
 
         def visit(node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node_type = type(node)
+            if node_type in (ast.FunctionDef, ast.AsyncFunctionDef):
+                definitions[node.name].add(self._python_qualifier(rel, node.name))
                 stack.append(node.name + ".")
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
+                for field in node._fields:
+                    value = getattr(node, field)
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, ast.AST):
+                                visit(item)
+                    elif isinstance(value, ast.AST):
+                        visit(value)
                 stack.pop()
                 return
-            if isinstance(node, ast.ClassDef):
+            elif node_type is ast.ClassDef:
                 stack.append(node.name + ".")
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
+                for field in node._fields:
+                    value = getattr(node, field)
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, ast.AST):
+                                visit(item)
+                    elif isinstance(value, ast.AST):
+                        visit(value)
                 stack.pop()
                 return
-            if isinstance(node, ast.Call):
+            elif node_type is ast.Call:
                 callee = _python_callee_name(node.func)
                 if callee:
-                    add_site(callee, node.lineno)
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
-                return
-            for child in ast.iter_child_nodes(node):
-                visit(child)
+                    add_raw_site(callee, node.lineno)
 
-        for child in ast.iter_child_nodes(tree):
-            visit(child)
+            for field in node._fields:
+                value = getattr(node, field)
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            visit(item)
+                elif isinstance(value, ast.AST):
+                    visit(value)
 
-    def _resolve(self, rel: str, callee: str, caller: str, line: int,
-                 tier: str, graph: CallGraph) -> CallSite:
-        candidates = graph.known_symbols.get(callee, ())
-        if not candidates:
-            return CallSite(caller=caller, callee=callee, file=rel, line=line,
-                            tier=tier, status="external")
-        if len(candidates) == 1:
-            return CallSite(caller=caller, callee=callee, file=rel, line=line,
-                            tier=tier, status="resolved",
-                            candidates=candidates)
-        return CallSite(caller=caller, callee=callee, file=rel, line=line,
-                        tier=tier, status="ambiguous",
-                        candidates=tuple(sorted(candidates)))
+        for field in tree._fields:
+            value = getattr(tree, field)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, ast.AST):
+                        visit(item)
+            elif isinstance(value, ast.AST):
+                visit(value)
 
-    def _index_lexical(self, rel: str, source: str, graph: CallGraph) -> None:
+    def _index_lexical(
+        self, rel: str, source: str, graph: CallGraph,
+        definitions: Dict[str, Set[str]],
+        raw_sites: List[Tuple[str, str, str, int, str]]
+    ) -> None:
         graph.files_parsed += 1
         scope = "%s:<file>" % rel
         count = 0
@@ -427,20 +435,17 @@ class CallGraphIndexer:
                 continue
             definition = _lexical_definition_on_line(line)
             if definition:
+                definitions[definition].add("%s:%s" % (rel, definition))
                 scope = "%s:%s" % (rel, definition)
             for match in CALL_RE.finditer(line):
                 name = match.group(1)
                 if name in NON_CALL_KEYWORDS or name == definition:
                     continue
-                if count >= MAX_CALL_SITES_PER_FILE or len(
-                        graph.call_sites) >= MAX_CALL_SITES:
+                if count >= MAX_CALL_SITES_PER_FILE or len(raw_sites) >= MAX_CALL_SITES:
                     graph.truncated = True
                     return
                 count += 1
-                graph.add(CallSite(
-                    caller=scope, callee=name, file=rel, line=lineno,
-                    tier="lexical", status="lexical",
-                    candidates=graph.known_symbols.get(name, ())))
+                raw_sites.append((rel, name, scope, lineno, "lexical"))
 
 
 def _python_callee_name(func: ast.AST) -> str:
