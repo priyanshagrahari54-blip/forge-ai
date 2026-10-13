@@ -371,38 +371,7 @@ class CallGraphIndexer:
             caller = "%s:%s" % (module, "".join(stack).rstrip(".") or "<module>")
             raw_sites.append((rel, callee, caller, line, "ast"))
 
-        def visit(node: ast.AST) -> None:
-            node_type = type(node)
-            if node_type in (ast.FunctionDef, ast.AsyncFunctionDef):
-                definitions[node.name].add(self._python_qualifier(rel, node.name))
-                stack.append(node.name + ".")
-                for field in node._fields:
-                    value = getattr(node, field)
-                    if isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, ast.AST):
-                                visit(item)
-                    elif isinstance(value, ast.AST):
-                        visit(value)
-                stack.pop()
-                return
-            elif node_type is ast.ClassDef:
-                stack.append(node.name + ".")
-                for field in node._fields:
-                    value = getattr(node, field)
-                    if isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, ast.AST):
-                                visit(item)
-                    elif isinstance(value, ast.AST):
-                        visit(value)
-                stack.pop()
-                return
-            elif node_type is ast.Call:
-                callee = _python_callee_name(node.func)
-                if callee:
-                    add_raw_site(callee, node.lineno)
-
+        def _visit_children(node: ast.AST) -> None:
             for field in node._fields:
                 value = getattr(node, field)
                 if isinstance(value, list):
@@ -412,14 +381,27 @@ class CallGraphIndexer:
                 elif isinstance(value, ast.AST):
                     visit(value)
 
-        for field in tree._fields:
-            value = getattr(tree, field)
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, ast.AST):
-                        visit(item)
-            elif isinstance(value, ast.AST):
-                visit(value)
+        def visit(node: ast.AST) -> None:
+            node_type = type(node)
+            if node_type in (ast.FunctionDef, ast.AsyncFunctionDef):
+                definitions[node.name].add(self._python_qualifier(rel, node.name))
+                stack.append(node.name + ".")
+                _visit_children(node)
+                stack.pop()
+                return
+            elif node_type is ast.ClassDef:
+                stack.append(node.name + ".")
+                _visit_children(node)
+                stack.pop()
+                return
+            elif node_type is ast.Call:
+                callee = _python_callee_name(node.func)
+                if callee:
+                    add_raw_site(callee, node.lineno)
+
+            _visit_children(node)
+
+        _visit_children(tree)
 
     def _index_lexical(
         self, rel: str, source: str, graph: CallGraph,
@@ -443,7 +425,7 @@ class CallGraphIndexer:
                     continue
                 if count >= MAX_CALL_SITES_PER_FILE or len(raw_sites) >= MAX_CALL_SITES:
                     graph.truncated = True
-                    return
+                    break
                 count += 1
                 raw_sites.append((rel, name, scope, lineno, "lexical"))
 
