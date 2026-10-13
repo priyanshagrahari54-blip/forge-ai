@@ -57,6 +57,7 @@ const ROUTES = {
   conversation: { render: renderConversationView, title: "Conversation" },
   research: { render: renderResearchView, title: "Research" },
   office: { render: renderOfficeView, title: "Office" },
+  city: { render: renderOfficeView, title: "Office" },
   compute: { render: renderComputeView, title: "Compute" },
   agentbuilder: { render: renderAgentBuilderView,
                      title: "Agent Builder" },
@@ -3195,7 +3196,11 @@ async function bootstrap() {
       badge.textContent = "Backend unavailable";
       badge.className = "conn down";
       const view = document.getElementById("view");
-      view.innerHTML = '<section class="surface empty-state"><h3>Forge is offline</h3><p>Could not establish a secure workspace session. Retry by refreshing this page.</p></section>';
+      view.textContent = "";
+      const section = el("section", "surface empty-state");
+      section.appendChild(el("h3", null, "Forge is offline"));
+      section.appendChild(el("p", null, "Could not establish a secure workspace session. Retry by refreshing this page."));
+      view.appendChild(section);
       return;
     }
   }

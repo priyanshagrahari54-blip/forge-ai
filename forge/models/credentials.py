@@ -69,12 +69,17 @@ class CredentialStore:
 
     def get(self, provider: str, default: str | None = None) -> str | None:
         """Return the credential for *provider*, or *default* if absent."""
+        raw_key = provider
         provider = provider.lower()
         if provider in self._files:
             return self._files[provider]
         for env_name in ENV_VAR_NAMES.get(provider, ()):
             if env_name in self._env and self._env[env_name]:
                 return self._env[env_name]
+        if raw_key in self._env and self._env[raw_key]:
+            return self._env[raw_key]
+        if raw_key.upper() in self._env and self._env[raw_key.upper()]:
+            return self._env[raw_key.upper()]
         return default
 
     def require(self, provider: str) -> str:
