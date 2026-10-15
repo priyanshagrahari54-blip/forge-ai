@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - Model Fabric Router Candidate Scoring and Key Evaluation
+
+**Learning:** `FabricRouter._try` calculated model scores and evaluated sort keys inside Python's Timsort comparator (`key=rank`), causing $O(K \log K)$ calls to `_score`, `tier_of(model)`, dict lookups, and metadata parsing per route request. Furthermore, when both regular and fallback models were present, fallback candidates were scored in a separate second pass.
+
+**Action:** Extract request invariants outside candidate loops, move inline dictionary allocations (such as `_HEALTH_SCORES`) to module scope, and pre-compute `(sort_key, score, model)` tuples in a single pass over candidates to avoid redundant scoring and metadata parsing during sorting comparisons.
