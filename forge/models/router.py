@@ -121,6 +121,14 @@ class ModelRouter:
         })
 
 
+_HEALTH_SCORES = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
+
+
 @dataclass
 class RouteDecision:
     """Result of fabric routing: the chosen model and why it was chosen."""
@@ -271,14 +279,6 @@ class FabricRouter:
         if not candidates:
             return RouteDecision(candidates=tuple(model.name for model in capable))
 
-        # The deterministic no-op fallback is only considered when no regular
-        # model can serve the request; otherwise it would crowd out real models
-        # on otherwise-identical scores. It still appears at the end of the
-        # candidate chain so callers can fail over to it deterministically.
-        regular = [model for model in candidates if not model.fallback]
-        fallback_models = [model for model in candidates if model.fallback]
-        pool = regular or fallback_models
-
         preferred_order = {
             name: index for index, name in enumerate(request.effective_model_preferences())
         }
@@ -286,43 +286,53 @@ class FabricRouter:
             name: index for index, name in enumerate(request.fallback_models)
         }
 
-        def rank(pair: tuple[float, Model]) -> tuple:
-            _score, model = pair
-            # Preference buckets dominate: an explicit/preferred model always
-            # ranks ahead of an unpreferred one and a request-declared
-            # fallback ranks behind both — but only after the eligibility
-            # filtering above, so a preferred model missing a required
-            # capability can never win. Declared power (``tier``) comes next
-            # inside a bucket: when an operator runs a stronger model on their
-            # own server, "equally capable" must not silently mean "the
-            # cheaper one". ``tier`` defaults to 0 for every model that does
-            # not declare one, so registries without tiers order exactly as
-            # before. Score, then free/local/name tie-breakers, close it out.
+        # Request invariants extracted once to avoid redundant computations per model.
+        req_min_ctx = max(request.min_context_window or 1, 1)
+        complexity = max(0.0, request.complexity or 1.0)
+        complexity_denom = 4096.0 * complexity
+
+        # Bolt ⚡ performance optimization: single-pass scoring and sort key construction
+        # avoids redundant _score calls and metadata/tier parsing during Timsort comparisons.
+        def make_entry(model: Model) -> tuple[tuple, float, Model]:
+            score = self._score(model, request, policy, pref_free, pref_local, req_min_ctx, complexity_denom)
+            tier = tier_of(model)
             tiebreak = (
-                -tier_of(model),
-                -_score,
+                -tier,
+                -score,
                 0 if model.free else 1,
                 0 if model.local else 1,
                 model.name,
             )
-            if model.name in preferred_order:
-                return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
-                return (2, fallback_order[model.name], *tiebreak)
-            return (1, *tiebreak)
+            name = model.name
+            if name in preferred_order:
+                sort_key = (0, preferred_order[name], *tiebreak)
+            elif name in fallback_order:
+                sort_key = (2, fallback_order[name], *tiebreak)
+            else:
+                sort_key = (1, *tiebreak)
+            return (sort_key, score, model)
 
-        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
-        scored.sort(key=rank)
-        score, model = scored[0]
+        regular_entries: list[tuple[tuple, float, Model]] = []
+        fallback_entries: list[tuple[tuple, float, Model]] = []
+        for model in candidates:
+            entry = make_entry(model)
+            if model.fallback:
+                fallback_entries.append(entry)
+            else:
+                regular_entries.append(entry)
 
-        chain = [entry for _, entry in scored]
-        if regular and fallback_models:
-            fallback_scored = [
-                (self._score(entry, request, policy, pref_free, pref_local), entry)
-                for entry in fallback_models
-            ]
-            fallback_scored.sort(key=rank)
-            chain.extend(entry for _, entry in fallback_scored)
+        # The deterministic no-op fallback is only considered when no regular
+        # model can serve the request; otherwise it would crowd out real models
+        # on otherwise-identical scores. It still appears at the end of the
+        # candidate chain so callers can fail over to it deterministically.
+        pool_entries = regular_entries or fallback_entries
+        pool_entries.sort(key=lambda item: item[0])
+
+        _, score, model = pool_entries[0]
+        chain = [entry[2] for entry in pool_entries]
+        if regular_entries and fallback_entries:
+            fallback_entries.sort(key=lambda item: item[0])
+            chain.extend(entry[2] for entry in fallback_entries)
 
         factors = {
             "tier": tier_of(model),
@@ -355,23 +365,19 @@ class FabricRouter:
         policy: RoutingPolicy,
         pref_free: bool,
         pref_local: bool,
+        req_min_ctx: int = 1,
+        complexity_denom: float = 4096.0,
     ) -> float:
         reliability = max(0.0, min(1.0, model.reliability))
         latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
         cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
+        context_fit = min(1.0, model.context_window / req_min_ctx)
+        health = _HEALTH_SCORES.get(model.health.status, 0.5)
         # Complexity-aware: complex requests favor models with proportionally
         # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        complexity_fit = min(1.0, model.context_window / complexity_denom)
         return (
             reliability * 0.30
             + latency * 0.15
