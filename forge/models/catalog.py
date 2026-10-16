@@ -96,6 +96,8 @@ class ModelCatalog:
         if self.cache._unloader is None:
             self.cache._unloader = self._unload_via_backend
         self._identities: Dict[str, ModelIdentity] = {}
+        # O(1) bare name lookup index (bare_name -> ModelIdentity).
+        self._by_bare_name: Dict[str, ModelIdentity] = {}
         self._lock = threading.RLock()
         self._denials: List[Dict[str, Any]] = []
 
@@ -115,7 +117,11 @@ class ModelCatalog:
                 raise CatalogError(
                     "model already registered: %s" % identity.model_id,
                     code="DUPLICATE")
+            old = self._identities.get(identity.model_id)
+            if old is not None and self._by_bare_name.get(old.name) is old:
+                del self._by_bare_name[old.name]
             self._identities[identity.model_id] = identity
+            self._by_bare_name.setdefault(identity.name, identity)
         self._emit("register", model_id=identity.model_id,
                    backend_id=identity.backend_id,
                    availability_state=identity.availability_state)
@@ -131,9 +137,9 @@ class ModelCatalog:
                 return self._identities[model_id]
             except KeyError:
                 bare = str(model_id or "").split(":", 1)[-1]
-                for key, value in self._identities.items():
-                    if value.name == bare:
-                        return value
+                found = self._by_bare_name.get(bare)
+                if found is not None:
+                    return found
                 raise CatalogError(
                     "unknown model %r (registered: %s)"
                     % (model_id, ", ".join(sorted(self._identities)) or "-"),
@@ -531,6 +537,13 @@ class ModelCatalog:
             self.cache.remove(key)
         with self._lock:
             existed = self._identities.pop(key, None)
+            if existed is not None:
+                if self._by_bare_name.get(existed.name) is existed:
+                    del self._by_bare_name[existed.name]
+                    for item in self._identities.values():
+                        if item.name == existed.name:
+                            self._by_bare_name[item.name] = item
+                            break
         backend = None
         if identity is not None and self.backends.has(identity.backend_id):
             try:

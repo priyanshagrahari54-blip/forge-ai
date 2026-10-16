@@ -255,3 +255,34 @@ def test_model_generate_api_preferences_are_routed(tmp_path):
         assert payload["response"]["provider"] == "preferred-provider"
         assert payload["response"]["preferred_models"] == ["preferred/model"]
         assert payload["response"]["fallback_models"] == ["default/model"]
+
+
+def test_model_catalog_bare_name_lookup_and_index():
+    from forge.models.catalog import ModelCatalog
+    from forge.models.identity import ModelIdentity
+
+    cat = ModelCatalog()
+    m1 = ModelIdentity(model_id="ollama:llama3", backend_id="ollama")
+    m2 = ModelIdentity(model_id="vllm:llama3", backend_id="vllm")
+    m3 = ModelIdentity(model_id="openai:gpt4", backend_id="openai")
+
+    cat.register(m1)
+    cat.register(m2)
+    cat.register(m3)
+
+    # Direct ID lookup
+    assert cat.get("ollama:llama3") is m1
+    assert cat.get("vllm:llama3") is m2
+    assert cat.get("openai:gpt4") is m3
+
+    # Bare name lookup (resolves to first registered matching bare name)
+    assert cat.get("llama3") is m1
+    assert cat.get("gpt4") is m3
+
+    # Removal updates index and re-points bare name to remaining matching entry
+    cat.remove("ollama:llama3")
+    assert cat.get("llama3") is m2
+
+    cat.remove("vllm:llama3")
+    with pytest.raises(Exception):
+        cat.get("llama3")
