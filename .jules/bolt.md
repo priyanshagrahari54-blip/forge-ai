@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - ModelCatalog Bare Name Lookup Linear Scan Overhead
+
+**Learning:** `ModelCatalog.get()` fell back to a linear loop scanning `self._identities.items()` ($N$ items) every time a model was queried by its bare name (`name`) rather than its fully qualified `model_id` (`provider:name`). When routing or loading models using short bare names across frequent inference calls, this incurred $O(N)$ overhead per lookup.
+
+**Action:** Maintain an internal `_by_bare_name` hash map on `ModelCatalog` (updated during `register` and `remove`) to reduce bare model name lookup latency from $O(N)$ linear scans to $O(1)$ constant time operations (>1000x faster for large catalogs).
