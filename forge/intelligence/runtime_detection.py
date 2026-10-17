@@ -51,6 +51,7 @@ class RuntimeDetector:
 
         self._detect_python(files, report)
         self._detect_node(files, report)
+        self._detect_common_languages(files, report)
         self._detect_docker(files, report)
         self._detect_generic_tests(files, report)
 
@@ -161,6 +162,109 @@ class RuntimeDetector:
                     confidence="high",
                 )
             )
+
+    def _detect_common_languages(
+        self,
+        files: set[str],
+        report: RuntimeReport,
+    ) -> None:
+        """Recognize common compiled, JVM, mobile, and scripting ecosystems.
+
+        This is evidence-based language detection only; it does not claim a
+        compiler, SDK, framework, or test runner is installed.
+        """
+        suffixes = {
+            ".rs": "rust",
+            ".go": "go",
+            ".java": "java",
+            ".kt": "kotlin",
+            ".kts": "kotlin",
+            ".scala": "scala",
+            ".sc": "scala",
+            ".groovy": "groovy",
+            ".c": "c",
+            ".h": "c",
+            ".cc": "cpp",
+            ".cpp": "cpp",
+            ".cxx": "cpp",
+            ".hpp": "cpp",
+            ".hh": "cpp",
+            ".hxx": "cpp",
+            ".cs": "csharp",
+            ".fs": "fsharp",
+            ".fsx": "fsharp",
+            ".vb": "visual-basic",
+            ".php": "php",
+            ".rb": "ruby",
+            ".swift": "swift",
+            ".m": "objective-c",
+            ".mm": "objective-cpp",
+            ".dart": "dart",
+            ".lua": "lua",
+            ".pl": "perl",
+            ".r": "r",
+            ".R": "r",
+            ".jl": "julia",
+            ".ex": "elixir",
+            ".exs": "elixir",
+            ".erl": "erlang",
+            ".hrl": "erlang",
+            ".hs": "haskell",
+            ".lhs": "haskell",
+            ".clj": "clojure",
+            ".cljs": "clojurescript",
+            ".elm": "elm",
+            ".sol": "solidity",
+            ".vy": "vyper",
+            ".tf": "hcl",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".zsh": "shell",
+            ".ps1": "powershell",
+            ".psm1": "powershell",
+            ".sql": "sql",
+            ".html": "html",
+            ".htm": "html",
+            ".css": "css",
+            ".scss": "scss",
+            ".sass": "sass",
+            ".vue": "vue",
+            ".svelte": "svelte",
+        }
+        detected = {
+            suffixes[Path(file).suffix]
+            for file in files
+            if Path(file).suffix in suffixes
+        }
+        detected.update(
+            name for marker, name in (
+                ("Cargo.toml", "rust"),
+                ("go.mod", "go"),
+                ("go.work", "go"),
+                ("pom.xml", "java"),
+                ("build.gradle", "jvm"),
+                ("build.gradle.kts", "jvm"),
+                ("settings.gradle", "jvm"),
+                ("settings.gradle.kts", "jvm"),
+                ("CMakeLists.txt", "cpp"),
+                ("Makefile", "native"),
+                ("meson.build", "native"),
+                ("composer.json", "php"),
+                ("Gemfile", "ruby"),
+                ("Package.swift", "swift"),
+                ("pubspec.yaml", "dart"),
+                ("mix.exs", "elixir"),
+                ("rebar.config", "erlang"),
+                ("stack.yaml", "haskell"),
+                ("cabal.project", "haskell"),
+                ("deno.json", "deno"),
+                ("deno.jsonc", "deno"),
+                ("bun.lockb", "bun"),
+                ("bun.lock", "bun"),
+            )
+            if marker in files
+        )
+        report.project_type.extend(sorted(detected))
 
     def _detect_docker(
         self,
