@@ -517,6 +517,8 @@ class ControlConfig:
     compute_max_cells: int = 20
     compute_max_seconds: float = 300.0
     compute_cell_timeout: float = 30.0
+    # Optional trusted registry used only to verify agent-definition bindings.
+    agent_registry: Any = None
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "ControlConfig":
@@ -4811,7 +4813,29 @@ class ControlPlane:
             self._agent_factories: dict[str, Any] = {}
         factory = self._agent_factories.get(session.id)
         if factory is None:
-            factory = AgentFactory(session.id)
+            registry = getattr(self.config, "agent_registry", None)
+
+            def resolve_registered_executor(role: str) -> str | None:
+                # Bind only to an executor object already present in the
+                # explicitly injected trusted runtime registry. Never import
+                # code or accept executor names supplied by the user.
+                if registry is None:
+                    return None
+                try:
+                    registrations = registry.get_by_role(role)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    return None
+                for registration in registrations:
+                    name = getattr(registration, "name", "")
+                    executor = getattr(registration, "executor", None)
+                    if (isinstance(name, str) and name.strip()
+                            and executor is not None
+                            and callable(getattr(executor, "execute", None))):
+                        return name.strip()
+                return None
+
+            factory = AgentFactory(
+                session.id, executor_resolver=resolve_registered_executor)
             self._agent_factories[session.id] = factory
         return factory
 
