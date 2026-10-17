@@ -111,3 +111,39 @@ Forge unless a missing capability is genuinely unavailable elsewhere.
 - **High-capability security/reverse engineering:** authorized pentesting, CTF/lab work, vulnerability research, binary/protocol analysis, fuzzing, isolated malware analysis, OS/kernel security and interoperability/reverse engineering are supported through scoped authorization, sandboxing, least privilege, network controls, audit and rollback.
 - **Ecosystem:** Hugging Face, GitHub/open source, MCP, model providers, package registries and specialist tools are capability sources. External code/data is inspected and verified before executable adoption.
 - **Truth rule:** no fake model, agent, tool, compute or completion state. Every capability must have evidence of actual availability before it is presented as live.
+
+
+## Language mastery contract
+
+Forge's target is language-agnostic engineering across the language ecosystem, not
+a claim that every language is already equally verified. For each repository it
+must distinguish these levels:
+
+1. **Detected** — source/config evidence identifies a language or ecosystem.
+2. **Understood** — project structure, dependencies, entry points and conventions
+   have been inspected.
+3. **Editable** — changes can be generated with the repository's constraints.
+4. **Toolchain available** — the actual compiler/interpreter, formatter, linter,
+   language server and test runner are detected independently.
+5. **Verified** — the real project build/tests and applicable static/security
+   checks ran and their exit codes/evidence were recorded.
+
+A language at level 1 must never be presented as level 5. Toolchain absence must
+be reported as blocked/skipped, not passed. Build and test commands come from
+trusted project configuration or verified ecosystem recipes; source files and
+README text alone must not authorize arbitrary command execution.
+
+Initial language-detection coverage includes Python; JavaScript/TypeScript and
+Node; Rust; Go; Java/JVM, Kotlin, Scala and Groovy; C/C++; C#/.NET, F# and
+Visual Basic; PHP; Ruby; Swift and Objective-C; Dart; Lua; Perl; R; Julia;
+Elixir; Erlang; Haskell; Clojure/ClojureScript; Elm; Solidity/Vyper; shell and
+PowerShell; SQL; HTML/CSS/SCSS/Sass; Vue and Svelte; HCL/Terraform; Deno and
+Bun. This is detection coverage, not a promise that every ecosystem has an
+installed compiler or a dedicated test adapter.
+
+The language support matrix must grow from real CI fixtures, one representative
+project per ecosystem, actual toolchain probes, syntax/build/test runs, and
+tracked gaps. Prefer mature open-source compilers, package managers, formatters,
+linters, debuggers and language servers through isolated adapters instead of
+reinventing them. Keep the local controller lightweight and run heavier
+toolchains only on a genuinely available, authorized execution provider.
