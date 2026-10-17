@@ -38,3 +38,35 @@ def test_universal_test_detects_python_tests(tmp_path):
 def test_universal_test_does_not_fake_missing_framework(tmp_path):
     plan = UniversalTestEngine(tmp_path).discover()
     assert plan.primary is None
+
+
+def test_universal_test_detects_go_project_without_tests_directory(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.test/app\n\ngo 1.20\n")
+    (tmp_path / "main.go").write_text("package main\nfunc main() {}\n")
+    plan = UniversalTestEngine(tmp_path).discover()
+    strategy = next(item for item in plan.strategies if item.name == "go-test")
+    assert strategy.command == ("go", "test", "./...")
+    assert "go.mod" in strategy.evidence
+
+def test_universal_test_detects_dotnet_solution(tmp_path, monkeypatch):
+    (tmp_path / "App.sln").write_text("")
+    monkeypatch.setattr("forge.testing.universal.shutil.which", lambda name: "/usr/bin/dotnet" if name == "dotnet" else None)
+    plan = UniversalTestEngine(tmp_path).discover()
+    assert plan.primary.name == "dotnet-test"
+    assert plan.primary.tool_available
+
+def test_gradle_wrapper_is_recognized_without_being_on_path(tmp_path, monkeypatch):
+    (tmp_path / "build.gradle.kts").write_text("plugins {}")
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    monkeypatch.setattr("forge.testing.universal.shutil.which", lambda name: None)
+    plan = UniversalTestEngine(tmp_path).discover()
+    strategy = next(item for item in plan.strategies if item.name == "gradle-test")
+    assert strategy.tool_available
+    assert strategy.command == ("gradlew", "test")
+
+def test_universal_test_detects_dart_tests(tmp_path, monkeypatch):
+    (tmp_path / "pubspec.yaml").write_text("name: sample\n")
+    (tmp_path / "test").mkdir()
+    monkeypatch.setattr("forge.testing.universal.shutil.which", lambda name: "/usr/bin/dart" if name == "dart" else None)
+    plan = UniversalTestEngine(tmp_path).discover()
+    assert any(item.name == "dart-test" for item in plan.strategies)
