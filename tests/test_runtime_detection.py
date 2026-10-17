@@ -164,3 +164,26 @@ def test_common_language_ecosystems_are_detected_without_claiming_tools(tmp_path
     # Detection is evidence only: don't invent commands/tool availability.
     assert not runtime.commands_for("test")
     assert not runtime.commands_for("build")
+
+
+def test_runtime_toolchain_probe_is_opt_in_and_reported(tmp_path: Path, monkeypatch):
+    from forge.intelligence.toolchain_probe import ToolStatus
+
+    create_python_project(tmp_path)
+    seen = []
+    def fake_probe(probe, timeout=2.0):
+        seen.append(probe.executable)
+        return ToolStatus(probe.name, probe.executable, False, error="not found on PATH")
+
+    monkeypatch.setattr("forge.intelligence.toolchain_probe.probe_tool", fake_probe)
+    plain = RuntimeDetector(tmp_path).detect()
+    assert plain.toolchains is None
+    assert seen == []
+
+    enriched = RuntimeDetector(tmp_path).detect(include_toolchains=True)
+    assert enriched.toolchains is not None
+    assert enriched.toolchains["project_types"] == ["python"]
+    assert set(seen) <= {"python", "python3"}
+    report = generate_runtime_report(enriched)
+    assert "## Relevant Toolchains" in report
+    assert "does not prove" in report
