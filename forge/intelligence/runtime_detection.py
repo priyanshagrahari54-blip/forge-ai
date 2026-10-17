@@ -22,6 +22,7 @@ class RuntimeReport:
 
     project_type: list[str] = field(default_factory=list)
     commands: list[RuntimeCommand] = field(default_factory=list)
+    toolchains: dict[str, object] | None = None
 
     def commands_for(self, kind: str) -> list[RuntimeCommand]:
         return [
@@ -44,7 +45,7 @@ class RuntimeDetector:
         self.root = Path(root).resolve()
         self.gitignore = GitIgnoreMatcher(self.root)
 
-    def detect(self) -> RuntimeReport:
+    def detect(self, *, include_toolchains: bool = False) -> RuntimeReport:
         report = RuntimeReport()
 
         files = self._files()
@@ -56,6 +57,10 @@ class RuntimeDetector:
         self._detect_generic_tests(files, report)
 
         report.project_type = sorted(set(report.project_type))
+
+        if include_toolchains:
+            from forge.intelligence.toolchain_probe import probe_project_toolchains
+            report.toolchains = probe_project_toolchains(report.project_type)
 
         return report
 
@@ -412,6 +417,17 @@ def generate_runtime_report(runtime: RuntimeReport) -> str:
         )
     else:
         lines.append("- None detected")
+
+    if runtime.toolchains is not None:
+        lines.extend(["", "## Relevant Toolchains", ""])
+        lines.append("- Inventory status: " + str(runtime.toolchains.get("status", "unknown")))
+        lines.append("- Tools available: %s / %s" % (runtime.toolchains.get("available_count", 0), runtime.toolchains.get("tool_count", 0)))
+        for tool in runtime.toolchains.get("tools", []):
+            state = "available" if tool.get("available") else "missing"
+            version = " — " + str(tool.get("version")) if tool.get("version") else ""
+            error = " (" + str(tool.get("error")) + ")" if tool.get("error") else ""
+            lines.append("- **%s**: %s%s%s" % (tool.get("name", "unknown"), state, version, error))
+        lines.append("- Tool presence does not prove that a build or tests pass.")
 
     lines.extend(["", "## Commands"])
 
