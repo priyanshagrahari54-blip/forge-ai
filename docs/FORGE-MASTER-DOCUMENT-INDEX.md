@@ -18,10 +18,13 @@ This is the documentation source-of-truth for the current redesign. Code must fo
 11. `forge/core/autonomy.py` — continuous-autonomy policy and quota-aware continuation.
 12. `forge/capabilities/registry.py` + `broker.py` — capability truth and resolution.
 
+13. `docs/OPEN-DOTS-INTEGRATION-DECISION.md` — Open Dots workspace/action-gateway adoption decision.
+14. `docs/STRATA-MEMORY-INTEGRATION-DECISION.md` — optional Strata MCP memory adapter decision.
+
 ## C. Engineering governance
-13. `CONTRIBUTING.md` — contribution rules.
-14. `.forge/` — project-level machine-readable configuration/contracts where present.
-15. Tests under `tests/` — executable acceptance of architecture contracts.
+15. `CONTRIBUTING.md` — contribution rules.
+16. `.forge/` — project-level machine-readable configuration/contracts where present.
+17. Tests under `tests/` — executable acceptance of architecture contracts.
 
 ## D. Exact build order
 ### Phase 0 — Documentation freeze
