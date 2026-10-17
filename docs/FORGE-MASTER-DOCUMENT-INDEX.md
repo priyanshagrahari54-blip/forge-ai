@@ -20,11 +20,12 @@ This is the documentation source-of-truth for the current redesign. Code must fo
 
 13. `docs/OPEN-DOTS-INTEGRATION-DECISION.md` — Open Dots workspace/action-gateway adoption decision.
 14. `docs/STRATA-MEMORY-INTEGRATION-DECISION.md` — optional Strata MCP memory adapter decision.
+15. `docs/FREE-OPEN-SOURCE-ECOSYSTEM.md` — FOSS candidates, true cost classification and safe adoption policy.
 
 ## C. Engineering governance
-15. `CONTRIBUTING.md` — contribution rules.
-16. `.forge/` — project-level machine-readable configuration/contracts where present.
-17. Tests under `tests/` — executable acceptance of architecture contracts.
+16. `CONTRIBUTING.md` — contribution rules.
+17. `.forge/` — project-level machine-readable configuration/contracts where present.
+18. Tests under `tests/` — executable acceptance of architecture contracts.
 
 ## D. Exact build order
 ### Phase 0 — Documentation freeze
