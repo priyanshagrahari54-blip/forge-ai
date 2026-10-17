@@ -86,7 +86,6 @@ DEFAULT_PROBES: Tuple[ToolProbe, ...] = (
     ToolProbe("Terraform", "terraform", ("version",), ("hcl", "terraform")),
     ToolProbe("PowerShell", "pwsh", ("--version",), ("powershell",)),
     ToolProbe("SQL client", "sqlite3", ("--version",), ("sql", "sqlite")),
-    ToolProbe("PHP Composer", "composer", ("--version",), ("php",)),
 )
 
 
@@ -143,6 +142,10 @@ def probe_toolchains(
 ) -> Dict[str, object]:
     """Return a serializable inventory; absence is explicit, never a pass."""
     statuses = [probe_tool(probe, timeout=timeout) for probe in probes]
+    return _inventory_report(statuses)
+
+
+def _inventory_report(statuses: List[ToolStatus]) -> Dict[str, object]:
     return {
         "schema_version": 1,
         "status": "probed",
@@ -152,3 +155,24 @@ def probe_toolchains(
         "tools": [item.to_dict() for item in statuses],
         "note": "Tool presence does not prove project build or test success.",
     }
+
+
+def probe_project_toolchains(
+    project_types: Iterable[str],
+    probes: Iterable[ToolProbe] = DEFAULT_PROBES,
+    timeout: float = 2.0,
+) -> Dict[str, object]:
+    """Probe only tools relevant to detected project ecosystems.
+
+    An empty or unknown project-type set intentionally runs no subprocesses.
+    This inventory does not prove a build/test and is not a security sandbox.
+    """
+    ecosystems = {str(item).strip().lower() for item in project_types if str(item).strip()}
+    selected = [
+        probe for probe in probes
+        if ecosystems.intersection(item.lower() for item in probe.ecosystems)
+    ]
+    report = probe_toolchains(selected, timeout=timeout)
+    report["project_types"] = sorted(ecosystems)
+    report["status"] = "probed" if selected else "not_applicable"
+    return report
