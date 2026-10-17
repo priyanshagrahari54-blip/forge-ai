@@ -73,3 +73,31 @@ def test_inventory_counts_only_observed_status(monkeypatch):
 def test_default_inventory_covers_multiple_language_families():
     names = {probe.executable for probe in DEFAULT_PROBES}
     assert {"rustc", "go", "javac", "dotnet", "php", "ruby", "swift", "dart"} <= names
+
+
+def test_project_probe_filters_to_detected_ecosystems(monkeypatch):
+    from forge.intelligence.toolchain_probe import probe_project_toolchains
+
+    seen = []
+    def fake_probe(probe, timeout=2.0):
+        seen.append(probe.executable)
+        return ToolStatus(probe.name, probe.executable, False)
+
+    monkeypatch.setattr("forge.intelligence.toolchain_probe.probe_tool", fake_probe)
+    report = probe_project_toolchains(["rust"])
+    assert seen
+    assert set(seen) <= {"rustc", "cargo"}
+    assert report["project_types"] == ["rust"]
+
+
+def test_empty_project_types_do_not_probe_any_tools(monkeypatch):
+    from forge.intelligence.toolchain_probe import probe_project_toolchains
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no project evidence means no subprocess probe")
+
+    monkeypatch.setattr("forge.intelligence.toolchain_probe.probe_tool", forbidden)
+    report = probe_project_toolchains([])
+    assert report["status"] == "not_applicable"
+    assert report["tool_count"] == 0
+    assert report["available_count"] == 0
