@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from forge.models.capabilities import is_capability
 
@@ -83,8 +83,18 @@ class AgentFactory:
     many logical specialists as their task graph requires.
     """
 
-    def __init__(self, session_id: str, *, max_agents: int | None = None) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        max_agents: int | None = None,
+        executor_resolver: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.session_id = session_id
+        # Optional trusted resolver allows new roles only when the runtime
+        # can prove a corresponding executor is registered. Without it, the
+        # backwards-compatible built-in role mapping remains authoritative.
+        self.executor_resolver = executor_resolver
         # Runtime count is demand-driven. A limit may be supplied by the
         # resource/governance layer, but the factory itself has no fixed
         # product-level agent ceiling.
@@ -92,6 +102,20 @@ class AgentFactory:
             raise ValueError("max_agents must be positive when provided")
         self.max_agents = max_agents
         self._definitions: dict[str, AgentDefinition] = {}
+
+    def _executor_for_role(self, role: str) -> str:
+        """Return a registered executor label, or empty when unavailable."""
+        if self.executor_resolver is not None:
+            try:
+                resolved = self.executor_resolver(role)
+            except (KeyError, LookupError, ValueError):
+                resolved = None
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved.strip()
+            # An injected resolver is authoritative: don't silently fall back
+            # to a static mapping when it says the runtime lacks this role.
+            return ""
+        return ROLE_EXECUTORS.get(role, "")
 
     def create(self, name: str, role: str, capabilities: tuple[str, ...]
                | list[str], *, description: str = "",
@@ -116,7 +140,7 @@ class AgentFactory:
         if name in self._definitions:
             raise ValueError(f"Agent already defined: {name}")
         description = (description or "").strip()[:MAX_DESCRIPTION]
-        executor = ROLE_EXECUTORS.get(role, "") if bind else ""
+        executor = self._executor_for_role(role) if bind else ""
         definition = AgentDefinition(
             name=name, role=role, capabilities=caps,
             description=description, created_by=created_by or "",
@@ -143,9 +167,8 @@ class AgentFactory:
         else:
             caps = existing.capabilities
         executor = existing.executor
-        if executor and role not in ROLE_EXECUTORS \
-                or executor and ROLE_EXECUTORS.get(role) != executor:
-            executor = ""  # role change invalidates the binding
+        if role != existing.role and executor:
+            executor = self._executor_for_role(role)  # revalidate changed role
         base_caps = caps if capabilities is not None \
             else existing.base_capabilities or existing.capabilities
         updated = AgentDefinition(
