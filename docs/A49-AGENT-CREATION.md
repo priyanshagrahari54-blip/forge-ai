@@ -8,12 +8,13 @@ capability claims.
 - `forge/agents/factory.py` — `AgentFactory` creates validated
   `AgentDefinition`s: name/role regexes, capabilities restricted to
   the canonical A31 19-capability vocabulary, deduplicated and
-  bounded (12 caps, 40 agents/session).
+  bounded to 12 capabilities; no fixed product-level agent count (an optional runtime policy may impose a limit).
 - **Honest `real` flag**: a definition is `real=True` only when it
   binds the registered executor that actually exists for its role
   (e.g. role `coding` → the real `coder` executor); otherwise it is
   labeled as a specification without a backing executor and cannot
-  run tasks. Role changes invalidate bindings.
+  run tasks. An injected trusted executor resolver can enable new roles;
+  role changes revalidate the binding.
 - **Creation grants nothing**: defined agents never appear in the
   built-in agent catalog and gain no permission power; execution (a
   later stage) will remain behind the same A33 gates.
