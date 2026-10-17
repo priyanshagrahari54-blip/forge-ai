@@ -18,10 +18,49 @@ languages:
   - python
   - javascript
   - typescript
+  - jsx
+  - tsx
   - rust
+  - go
   - java
+  - kotlin
+  - scala
+  - groovy
   - c
   - cpp
+  - csharp
+  - fsharp
+  - visual-basic
+  - objective-c
+  - objective-cpp
+  - php
+  - ruby
+  - swift
+  - dart
+  - lua
+  - perl
+  - r
+  - julia
+  - elixir
+  - erlang
+  - haskell
+  - clojure
+  - clojurescript
+  - elm
+  - solidity
+  - vyper
+  - hcl
+  - shell
+  - powershell
+  - sql
+  - html
+  - css
+  - scss
+  - sass
+  - vue
+  - svelte
+  - deno
+  - bun
 
 capabilities:
   - build
