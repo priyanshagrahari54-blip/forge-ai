@@ -85,8 +85,7 @@ class UniversalTestEngine:
                 "gradle-test", (wrapper, "test"),
                 tuple(self._exists("build.gradle", "build.gradle.kts", "gradlew", "gradlew.bat")),
                 has_wrapper or shutil.which("gradle") is not None, 50))
-        go_files = any(self.root.glob("*.go")) or (self.root / "tests").is_dir()
-        if self._exists("go.mod") and go_files:
+        if self._exists("go.mod"):
             found.append(TestStrategy(
                 "go-test", ("go", "test", "./..."),
                 tuple(self._exists("go.mod") + self._exists("go.work")),
