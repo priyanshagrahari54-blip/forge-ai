@@ -163,6 +163,14 @@ def tier_of(model: Model) -> int:
         return 0
 
 
+_HEALTH_SCORES = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
+
+
 class FabricRouter:
     """Capability/context/complexity-aware router over a ``ModelRegistry``.
 
@@ -279,12 +287,18 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
+        eff_prefs = request.effective_model_preferences()
         preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
+            name: index for index, name in enumerate(eff_prefs)
+        } if eff_prefs else None
         fallback_order = {
             name: index for index, name in enumerate(request.fallback_models)
-        }
+        } if request.fallback_models else None
+
+        min_context_denom = float(max(request.min_context_window or 1, 1))
+        complexity = max(0.0, request.complexity or 1.0)
+        complexity_denom = 4096.0 * complexity
+        score_fn = self._score
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
@@ -305,20 +319,23 @@ class FabricRouter:
                 0 if model.local else 1,
                 model.name,
             )
-            if model.name in preferred_order:
+            if preferred_order is not None and model.name in preferred_order:
                 return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
+            if fallback_order is not None and model.name in fallback_order:
                 return (2, fallback_order[model.name], *tiebreak)
             return (1, *tiebreak)
 
-        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
+        scored = [
+            (score_fn(model, request, policy, pref_free, pref_local, min_context_denom, complexity_denom), model)
+            for model in pool
+        ]
         scored.sort(key=rank)
         score, model = scored[0]
 
         chain = [entry for _, entry in scored]
         if regular and fallback_models:
             fallback_scored = [
-                (self._score(entry, request, policy, pref_free, pref_local), entry)
+                (score_fn(entry, request, policy, pref_free, pref_local, min_context_denom, complexity_denom), entry)
                 for entry in fallback_models
             ]
             fallback_scored.sort(key=rank)
@@ -337,7 +354,7 @@ class FabricRouter:
             "complexity": request.complexity,
             "preference_rank": (
                 preferred_order.get(model.name)
-                if model.name in preferred_order
+                if preferred_order is not None and model.name in preferred_order
                 else None
             ),
         }
@@ -355,23 +372,20 @@ class FabricRouter:
         policy: RoutingPolicy,
         pref_free: bool,
         pref_local: bool,
+        min_context_denom: float = 1.0,
+        complexity_denom: float = 4096.0,
     ) -> float:
+        # Precomputed min_context_denom and complexity_denom avoid redundant math per candidate
         reliability = max(0.0, min(1.0, model.reliability))
         latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
         cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
+        context_fit = min(1.0, model.context_window / min_context_denom)
+        health = _HEALTH_SCORES.get(model.health.status, 0.5)
         # Complexity-aware: complex requests favor models with proportionally
         # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        complexity_fit = min(1.0, model.context_window / complexity_denom)
         return (
             reliability * 0.30
             + latency * 0.15
