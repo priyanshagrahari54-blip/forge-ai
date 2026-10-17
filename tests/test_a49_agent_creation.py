@@ -46,6 +46,38 @@ def test_factory_real_flag_is_honest():
     assert "no executor" in plain.to_dict()["note"]
 
 
+def test_factory_binds_dynamic_role_only_through_trusted_resolver():
+    calls = []
+
+    def resolve(role):
+        calls.append(role)
+        return {"forensics": "forensics_executor"}.get(role)
+
+    factory = AgentFactory("dynamic", executor_resolver=resolve)
+    available = factory.create(
+        "forensic-agent", "forensics", ("security",), bind=True)
+    assert available.real is True
+    assert available.executor == "forensics_executor"
+
+    unavailable = factory.create(
+        "missing-agent", "unavailable-role", ("research",), bind=True)
+    assert unavailable.real is False
+    assert unavailable.executor == ""
+    assert calls == ["forensics", "unavailable-role"]
+
+
+def test_dynamic_role_binding_is_revalidated_on_role_change():
+    factory = AgentFactory(
+        "dynamic",
+        executor_resolver=lambda role: (
+            "forensics_executor" if role == "forensics" else None),
+    )
+    factory.create("specialist", "forensics", ("security",), bind=True)
+    changed = factory.update("specialist", role="unknown-specialist")
+    assert changed.real is False
+    assert changed.executor == ""
+
+
 def test_factory_update_invalidates_binding():
     factory = AgentFactory("s1")
     factory.create("helper", "coding", ("coding",), bind=True)
