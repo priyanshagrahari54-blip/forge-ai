@@ -126,3 +126,41 @@ def test_runtime_report(tmp_path: Path):
     assert "## Commands" in report
     assert "`python`" in report
     assert "`python -m pytest`" in report
+
+
+def test_common_language_ecosystems_are_detected_without_claiming_tools(tmp_path: Path):
+    markers = {
+        "main.rs": "fn main() {}",
+        "go.mod": "module example.test/demo\n",
+        "Main.java": "class Main {}",
+        "lib.kt": "fun main() {}",
+        "src/main.c": "int main(void) { return 0; }",
+        "src/engine.cpp": "int main() { return 0; }",
+        "App.cs": "class App {}",
+        "index.php": "<?php echo 'ok';",
+        "app.rb": "puts 'ok'",
+        "main.swift": "print(\"ok\")",
+        "main.dart": "void main() {}",
+        "main.lua": "print('ok')",
+        "script.ps1": "Write-Output ok",
+        "schema.sql": "select 1;",
+        "view.vue": "<template><div /></template>",
+        "page.svelte": "<p>ok</p>",
+        "deno.json": "{}",
+    }
+    for relative, content in markers.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    runtime = RuntimeDetector(tmp_path).detect()
+    for expected in (
+        "rust", "go", "java", "kotlin", "c", "cpp", "csharp",
+        "php", "ruby", "swift", "dart", "lua", "powershell",
+        "sql", "vue", "svelte", "deno",
+    ):
+        assert expected in runtime.project_type
+
+    # Detection is evidence only: don't invent commands/tool availability.
+    assert not runtime.commands_for("test")
+    assert not runtime.commands_for("build")
