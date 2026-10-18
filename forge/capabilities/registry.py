@@ -27,6 +27,7 @@ class CapabilityCandidate:
     offline: bool = False
     verification_status: str = "unverified"
     strategy: str = ReuseStrategy.REUSE.value
+    metrics: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
