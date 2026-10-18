@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - CapabilityRegistry Linear Scan Lookups
+
+**Learning:** `CapabilityRegistry.find()` scanned all $N$ registered candidates across all capabilities in `self._items` on every invocation (`find`, `choose`, `missing`). For capability checks during routing and resolution, querying $K$ capabilities against $N$ candidates resulted in $O(K \times N)$ linear search passes.
+
+**Action:** Maintain an internal capability index (`_by_capability: dict[str, dict[str, CapabilityCandidate]]`) in `CapabilityRegistry` to achieve $O(1)$ capability lookups without scanning unrelated candidates.

@@ -4814,28 +4814,28 @@ class ControlPlane:
         factory = self._agent_factories.get(session.id)
         if factory is None:
             registry = getattr(self.config, "agent_registry", None)
-
-            def resolve_registered_executor(role: str) -> str | None:
-                # Bind only to an executor object already present in the
-                # explicitly injected trusted runtime registry. Never import
-                # code or accept executor names supplied by the user.
-                if registry is None:
+            executor_resolver = None
+            if registry is not None:
+                def resolve_registered_executor(role: str) -> str | None:
+                    # Bind only to an executor object already present in the
+                    # explicitly injected trusted runtime registry. Never import
+                    # code or accept executor names supplied by the user.
+                    try:
+                        registrations = registry.get_by_role(role)
+                    except (AttributeError, KeyError, TypeError, ValueError):
+                        return None
+                    for registration in registrations:
+                        name = getattr(registration, "name", "")
+                        executor = getattr(registration, "executor", None)
+                        if (isinstance(name, str) and name.strip()
+                                and executor is not None
+                                and callable(getattr(executor, "execute", None))):
+                            return name.strip()
                     return None
-                try:
-                    registrations = registry.get_by_role(role)
-                except (AttributeError, KeyError, TypeError, ValueError):
-                    return None
-                for registration in registrations:
-                    name = getattr(registration, "name", "")
-                    executor = getattr(registration, "executor", None)
-                    if (isinstance(name, str) and name.strip()
-                            and executor is not None
-                            and callable(getattr(executor, "execute", None))):
-                        return name.strip()
-                return None
+                executor_resolver = resolve_registered_executor
 
             factory = AgentFactory(
-                session.id, executor_resolver=resolve_registered_executor)
+                session.id, executor_resolver=executor_resolver)
             self._agent_factories[session.id] = factory
         return factory
 
@@ -5910,7 +5910,7 @@ class ControlPlane:
     def voice_conversation_say(self, session: Session, conversation_id: str,
                                *, text: str = "", audio_b64: str = "",
                                approval_id: str = "",
-                               confirm: bool = True) -> dict[str, Any]:
+                               confirm: bool | None = None) -> dict[str, Any]:
         """One conversational turn: context → intent → confirm → gate →
         act, with spoken results."""
         from forge.voice import AudioError
@@ -5931,9 +5931,10 @@ class ControlPlane:
         else:
             raise InvalidRequest("Provide text or audio for the turn.")
         conversation = self._voice_conversation(session, conversation_id)
+        confirm_bool = True if confirm is None else bool(confirm)
         payload = conversation.say(
             speech, task_factory=self._voice_task_factory(session),
-            approval_token_id=approval_id, confirm=confirm)
+            approval_token_id=approval_id, confirm=confirm_bool)
         self._audit(session.actor, "voice", "conversation_say", True,
                     task_id=session.active_task or session.id,
                     reason=(payload.get("intent")
