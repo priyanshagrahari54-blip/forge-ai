@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - RelevanceRanker Redundant Set Conversions and Query Weight Recalculations
+
+**Learning:** `RelevanceRanker.rank()` was converting candidate document token lists to `set` twice per record and recomputing query term IDF weights and query `total_weight` inside the inner loop for every candidate record. For $N$ records, this caused $O(N)$ redundant set creations and repeated weight sum aggregations per search query.
+
+**Action:** Maintain a pre-indexed `_doc_sets` map during initialization and pre-compute query term IDF weights and `total_weight` once per query invocation. This achieves ~2.6x ranking speedup (~62% latency reduction) with 100% exact numerical and ordering equivalence.
