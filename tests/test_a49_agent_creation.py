@@ -88,6 +88,32 @@ def test_factory_update_invalidates_binding():
     assert described.description == "now documented"
 
 
+
+def test_dynamic_registered_role_resolves_to_real_executor(tmp_path):
+    from forge.agents.execution import CallableAgentExecutor
+    from forge.agents.registry import AgentRegistration, AgentRegistry
+
+    plane = make_plane(tmp_path, start=True)
+    make_repo(Path(plane.projects["demo"].root))
+    client = make_client(plane)
+    registry = AgentRegistry([
+        AgentRegistration(
+            name="forensics_executor", role="forensics",
+            executor=CallableAgentExecutor("forensics_executor",
+                                           lambda request: "forensic result"),
+            capabilities=("security",),
+        )
+    ])
+    plane.config.agent_registry = registry
+    with client:
+        payload, _token, _headers = login(client)
+        session = plane.sessions.get(payload["session_id"])
+        definition = plane._agent_factory(session).create(
+            "forensic-agent", "forensics", ("security",), bind=True)
+        assert definition.real is True
+        executor = plane._build_role_executor(session, definition.role)
+        assert executor is registry.get("forensics_executor").executor
+
 def test_plane_agent_crud_and_audit(tmp_path):
     plane = make_plane(tmp_path, start=True)
     make_repo(Path(plane.projects["demo"].root))
