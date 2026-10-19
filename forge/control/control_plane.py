@@ -3283,6 +3283,22 @@ class ControlPlane:
                      "sample": python_files[:20]})
 
             return CallableAgentExecutor("researcher", researcher_worker)
+
+        # Dynamic roles are executable only through an explicitly injected,
+        # trusted registry. AgentFactory uses this same registry to bind a
+        # role, so runtime dispatch must resolve the registered executor too.
+        registry = getattr(self.config, "agent_registry", None)
+        if registry is not None:
+            try:
+                registrations = registry.get_by_role(role)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                registrations = ()
+            for registration in registrations or ():
+                executor = getattr(registration, "executor", None)
+                if (getattr(registration, "role", None) == role
+                        and executor is not None
+                        and callable(getattr(executor, "execute", None))):
+                    return executor
         return None
 
     def _file_agent_run_approval(self, session: Session, name: str,
