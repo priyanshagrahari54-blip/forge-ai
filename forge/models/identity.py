@@ -73,6 +73,12 @@ class VerificationState(str, Enum):
     EXPIRED = "expired"
 
 
+# Bolt optimization: Pre-construct frozensets at module load to avoid
+# allocating and iterating set comprehensions on every identity check/transition.
+_VALID_AVAILABILITY_STATES = frozenset(s.value for s in AvailabilityState)
+_VALID_VERIFICATION_STATES = frozenset(s.value for s in VerificationState)
+
+
 #: States that mean "this model may be selected and invoked".
 USABLE_STATES: Tuple[str, ...] = (
     AvailabilityState.READY.value,
@@ -268,10 +274,10 @@ class ModelIdentity:
         self.supported_platforms = tuple(self.supported_platforms or ())
         if not self.backend_id and ":" in self.model_id:
             self.backend_id = self.model_id.split(":", 1)[0]
-        if self.availability_state not in {s.value for s in AvailabilityState}:
+        if self.availability_state not in _VALID_AVAILABILITY_STATES:
             raise IdentityError(
                 "unknown availability_state %r" % (self.availability_state,))
-        if self.verification_state not in {s.value for s in VerificationState}:
+        if self.verification_state not in _VALID_VERIFICATION_STATES:
             raise IdentityError(
                 "unknown verification_state %r" % (self.verification_state,))
         if self.availability_state == AvailabilityState.READY.value \
@@ -328,7 +334,7 @@ class ModelIdentity:
         to UNVERIFIED instead of raising — used by discovery paths that scan
         many identities and must not abort on one bad entry.
         """
-        if state not in {item.value for item in AvailabilityState}:
+        if state not in _VALID_AVAILABILITY_STATES:
             raise IdentityError("unknown availability_state %r" % (state,))
         current = self.availability_state
         if state == current:
@@ -370,7 +376,7 @@ class ModelIdentity:
         A verification failure always demotes: a READY model that fails a
         probe becomes FAILED, never stays READY.
         """
-        if state not in {item.value for item in VerificationState}:
+        if state not in _VALID_VERIFICATION_STATES:
             raise IdentityError("unknown verification_state %r" % (state,))
         self.verification_state = state
         if method:
