@@ -64,12 +64,16 @@ class AnthropicProvider(HostedProvider):
         return ModelResult(text, self.model, latency=time.perf_counter() - started)
 
 
+def _remove_prefix(text: str, prefix: str) -> str:
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
 class GeminiProvider(HostedProvider):
     """Google Gemini generateContent adapter."""
     def list_models(self) -> list[str]:
         request = urllib.request.Request(self.endpoint + "/models?key=" + urllib.parse.quote(self.api_key))
         with urllib.request.urlopen(request, timeout=20) as response: data = json.loads(response.read().decode("utf-8"))
-        return sorted(str(x.get("name", "").removeprefix("models/")) for x in data.get("models", []) if isinstance(x, dict) and x.get("name"))
+        return sorted(_remove_prefix(str(x.get("name", "")), "models/") for x in data.get("models", []) if isinstance(x, dict) and x.get("name"))
     def generate(self, prompt: str, *, context: str = "", task: str = "", instructions: str = "", max_output_tokens: int | None = None, temperature: float | None = None) -> ModelResult:
         started = time.perf_counter(); text_prompt = compose_provider_prompt(prompt, context=context, task=task, instructions=instructions)
         generation: dict[str, Any] = {}
