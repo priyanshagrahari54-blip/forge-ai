@@ -150,6 +150,15 @@ class RouteDecision:
         }
 
 
+# Bolt optimization: Hoist module-level lookup mapping to avoid dictionary allocations per score.
+_HEALTH_SCORES: dict[str, float] = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
+
+
 def tier_of(model: Model) -> int:
     """Declared relative power of a model (0 = undeclared).
 
@@ -362,12 +371,7 @@ class FabricRouter:
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
         context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
+        health = _HEALTH_SCORES.get(model.health.status, 0.5)
         # Complexity-aware: complex requests favor models with proportionally
         # larger context windows (and therefore more room to reason).
         complexity = max(0.0, request.complexity or 1.0)
