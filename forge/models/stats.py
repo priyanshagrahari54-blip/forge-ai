@@ -302,18 +302,18 @@ def rerank(decision: Any, store: StatsStore, *, capability: str = "",
     if not target:
         model = getattr(decision, "model", None)
         target = str(getattr(model, "capability", "") or "")
-    scored: List[Tuple[float, int, str, str]] = []
+    # Preserve precalculated score in tuple to avoid duplicate store lookups.
+    scored: List[Tuple[float, int, str, str, float]] = []
     for index, name in enumerate(names):
         score, reason = store.score(name, target)
         penalty = max(0.0, min(max_penalty, 1.0 - score))
-        scored.append((score - penalty, index, name, reason))
+        scored.append((score - penalty, index, name, reason, score))
     scored.sort(key=lambda item: (-item[0], item[1]))
     ordered = [item[2] for item in scored]
     if ordered != names:
         decision.candidates = tuple(ordered)
         decision.factors["reranked_by_reliability"] = 1.0
-    for _, _, name, reason in scored:
-        score, _ = store.score(name, target)
+    for _, _, name, reason, score in scored:
         decision.factors["reliability:%s" % name] = score
         decision.factors["reliability_evidence:%s" % name] = reason
     decision.factors["reliability_preferred"] = ordered[0]
