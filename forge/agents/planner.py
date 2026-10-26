@@ -29,20 +29,38 @@ class AgentPlan:
 
     @property
     def capabilities(self) -> tuple[str, ...]:
+        """Capabilities explicitly assigned a plan slot."""
         return tuple(agent.capability for agent in self.agents)
 
     @property
-    def unmet(self) -> tuple[str, ...]:
-        """Required capabilities no registered agent could satisfy.
-
-        The planner skips a capability when nothing is registered for it, so
-        without this the plan looks complete while a third of the requirement
-        is silently unassigned. Callers surface it instead of reporting a
-        fully-staffed plan.
+    def covered_capabilities(self) -> tuple[str, ...]:
+        """Required capabilities covered by selected agents, including
+        secondary capabilities advertised by a selected generalist.
         """
-        covered = set(self.capabilities)
-        return tuple(capability for capability in self.requirements.capabilities
-                     if capability not in covered)
+        advertised = {
+            capability
+            for agent in self.agents
+            for capability in agent.registration.capabilities
+        }
+        return tuple(
+            capability for capability in self.requirements.capabilities
+            if capability in advertised
+        )
+
+    @property
+    def unmet(self) -> tuple[str, ...]:
+        """Required capabilities no selected agent can satisfy.
+
+        A single registered generalist may cover several capabilities. Since
+        the planner deliberately avoids duplicate agent entries, coverage
+        must be computed from each selected agent's full capability set, not
+        only from the capability that caused it to be selected.
+        """
+        covered = set(self.covered_capabilities)
+        return tuple(
+            capability for capability in self.requirements.capabilities
+            if capability not in covered
+        )
 
     @property
     def required_parallelism(self) -> int:
