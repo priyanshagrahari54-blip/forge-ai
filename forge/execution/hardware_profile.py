@@ -1,4 +1,5 @@
 """Truthful hardware/VM capability profile; no guessed hardware support."""
+from __future__ import annotations
 from dataclasses import dataclass,field
 import os,platform,shutil
 @dataclass(frozen=True)
