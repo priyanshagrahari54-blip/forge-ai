@@ -1,4 +1,6 @@
 """Safe plugin adapter contract. Discovery is separate from loading."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any,Protocol
 @dataclass(frozen=True)
