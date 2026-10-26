@@ -4835,20 +4835,29 @@ class ControlPlane:
                 # Bind only to an executor object already present in the
                 # explicitly injected trusted runtime registry. Never import
                 # code or accept executor names supplied by the user.
-                if registry is None:
-                    return None
-                try:
-                    registrations = registry.get_by_role(role)
-                except (AttributeError, KeyError, TypeError, ValueError):
-                    return None
-                for registration in registrations:
-                    name = getattr(registration, "name", "")
-                    executor = getattr(registration, "executor", None)
-                    if (isinstance(name, str) and name.strip()
-                            and executor is not None
-                            and callable(getattr(executor, "execute", None))):
-                        return name.strip()
-                return None
+                if registry is not None:
+                    try:
+                        registrations = registry.get_by_role(role)
+                    except (AttributeError, KeyError, TypeError, ValueError):
+                        registrations = ()
+                    for registration in registrations or ():
+                        name = getattr(registration, "name", "")
+                        executor = getattr(registration, "executor", None)
+                        if (isinstance(name, str) and name.strip()
+                                and executor is not None
+                                and callable(getattr(executor, "execute", None))):
+                            return name.strip()
+
+                # These roles have concrete, in-process implementations in
+                # _build_role_executor even when no optional external registry
+                # is injected. Keep this allowlist aligned with that builder;
+                # do not label unsupported roles as executable.
+                builtin_executors = {
+                    "coding": "coder",
+                    "planning": "planner",
+                    "research": "researcher",
+                }
+                return builtin_executors.get(role)
 
             factory = AgentFactory(
                 session.id, executor_resolver=resolve_registered_executor)
