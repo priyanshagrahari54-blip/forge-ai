@@ -58,19 +58,14 @@ class AgentPipeline:
                 "Either stage_handler, stage_agents, or agent_registry "
                 "must be provided"
             )
-
         if stage_handler is not None and (
             stage_agents is not None or agent_registry is not None
         ):
             raise ValueError(
-                "Provide stage_handler or stage_agents/agent_registry, "
-                "not both"
+                "Provide stage_handler or stage_agents/agent_registry, not both"
             )
-
         if stage_agents is not None and agent_registry is not None:
-            raise ValueError(
-                "Provide stage_agents or agent_registry, not both"
-            )
+            raise ValueError("Provide stage_agents or agent_registry, not both")
 
         self.stage_handler = stage_handler
         self.stage_agents = dict(stage_agents or {})
@@ -80,18 +75,11 @@ class AgentPipeline:
     def _resolve_agent(self, stage: TaskStatus) -> StageAgent | None:
         if self.agent_registry is None:
             return self.stage_agents.get(stage)
-
         role = self.STAGE_ROLES[stage]
         registrations = self.agent_registry.get_by_role(role)
-
         if not registrations:
             return None
-
-        registration = registrations[0]
-        return ExecutorStageAgent(
-            registration.executor,
-            stage,
-        )
+        return ExecutorStageAgent(registrations[0].executor, stage)
 
     def _build_context(self, task: Task) -> AgentContext | None:
         if self.context_provider is None:
@@ -105,30 +93,18 @@ class AgentPipeline:
         context: AgentContext | None = None,
     ) -> PipelineStageResult:
         agent = self._resolve_agent(stage)
-
         if agent is not None:
             try:
-                result: StageAgentResult = agent.execute(
-                    task,
-                    context,
-                )
+                result: StageAgentResult = agent.execute(task, context)
             except Exception as exc:
                 return PipelineStageResult(
-                    stage=stage,
-                    success=False,
-                    error=str(exc),
+                    stage=stage, success=False, error=str(exc),
                     agent=getattr(agent, "name", ""),
-                    context_fingerprint=(
-                        context.fingerprint if context else ""
-                    ),
+                    context_fingerprint=context.fingerprint if context else "",
                 )
-
             return PipelineStageResult(
-                stage=stage,
-                success=result.success,
-                output=result.output,
-                error=result.error,
-                agent=result.agent,
+                stage=stage, success=result.success, output=result.output,
+                error=result.error, agent=result.agent,
                 context_fingerprint=result.context_fingerprint,
             )
 
@@ -136,85 +112,46 @@ class AgentPipeline:
             try:
                 output = self.stage_handler(task, stage)
             except Exception as exc:
-                return PipelineStageResult(
-                    stage=stage,
-                    success=False,
-                    error=str(exc),
-                )
-
-            return PipelineStageResult(
-                stage=stage,
-                success=True,
-                output=str(output),
-            )
+                return PipelineStageResult(stage=stage, success=False, error=str(exc))
+            return PipelineStageResult(stage=stage, success=True, output=str(output))
 
         return PipelineStageResult(
-            stage=stage,
-            success=False,
-            error=(
-                f"No agent registered for stage: {stage.value}"
-            ),
+            stage=stage, success=False,
+            error=f"No agent registered for stage: {stage.value}",
         )
 
-    def execute_plan(
-        self,
-        task: Task,
-        plan: AgentPlan,
-    ) -> list[PipelineStageResult]:
-        """Execute a precomputed multi-agent plan.
+    def execute_plan(self, task: Task, plan: AgentPlan) -> list[PipelineStageResult]:
+        """Execute a precomputed plan; empty plans fail rather than claim success."""
+        if plan.is_empty():
+            task.status = TaskStatus.FAILED
+            return [PipelineStageResult(
+                stage=TaskStatus.PLANNING,
+                success=False,
+                error=("Cannot execute an empty agent plan: no registered agent "
+                       "satisfies the task requirements."),
+            )]
 
-        The plan is executed in its deterministic order. Each planned
-        agent is adapted through the existing ExecutorStageAgent layer,
-        so executor responses, context fingerprints, errors, and agent
-        identity retain the existing pipeline semantics.
-
-        The normal execute() method remains unchanged for the standard
-        four-stage pipeline.
-        """
         results: list[PipelineStageResult] = []
-
         context = self._build_context(task)
-
         for planned in plan.agents:
-            stage = self.CAPABILITY_STAGES.get(
-                planned.capability,
-                TaskStatus.RUNNING,
-            )
-
+            stage = self.CAPABILITY_STAGES.get(planned.capability, TaskStatus.RUNNING)
             task.status = stage
-
-            agent = ExecutorStageAgent(
-                planned.registration.executor,
-                stage,
-            )
-
+            agent = ExecutorStageAgent(planned.registration.executor, stage)
             try:
-                result: StageAgentResult = agent.execute(
-                    task,
-                    context,
-                )
+                result: StageAgentResult = agent.execute(task, context)
             except Exception as exc:
                 pipeline_result = PipelineStageResult(
-                    stage=stage,
-                    success=False,
-                    error=str(exc),
+                    stage=stage, success=False, error=str(exc),
                     agent=getattr(agent, "name", ""),
-                    context_fingerprint=(
-                        context.fingerprint if context else ""
-                    ),
+                    context_fingerprint=context.fingerprint if context else "",
                 )
             else:
                 pipeline_result = PipelineStageResult(
-                    stage=stage,
-                    success=result.success,
-                    output=result.output,
-                    error=result.error,
-                    agent=result.agent,
+                    stage=stage, success=result.success, output=result.output,
+                    error=result.error, agent=result.agent,
                     context_fingerprint=result.context_fingerprint,
                 )
-
             results.append(pipeline_result)
-
             if not pipeline_result.success:
                 task.status = TaskStatus.FAILED
                 return results
@@ -224,22 +161,13 @@ class AgentPipeline:
 
     def execute(self, task: Task) -> list[PipelineStageResult]:
         results: list[PipelineStageResult] = []
-
         context = self._build_context(task)
-
         for stage in self.STAGES:
             task.status = stage
-
-            result = self._execute_stage(
-                task,
-                stage,
-                context,
-            )
+            result = self._execute_stage(task, stage, context)
             results.append(result)
-
             if not result.success:
                 task.status = TaskStatus.FAILED
                 return results
-
         task.status = TaskStatus.COMPLETED
         return results
