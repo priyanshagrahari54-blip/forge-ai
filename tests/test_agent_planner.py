@@ -70,6 +70,7 @@ def test_planner_builds_multi_agent_plan():
         "tester",
         "reviewer",
     )
+    assert plan.unmet == ()
 
 
 def test_planner_preserves_requirement_information():
@@ -117,6 +118,7 @@ def test_planner_skips_unavailable_capabilities():
 
     assert plan.names == ("coder",)
     assert plan.capabilities == ("coding",)
+    assert plan.unmet == ("security", "review")
 
 
 def test_planner_does_not_duplicate_same_agent():
@@ -138,6 +140,8 @@ def test_planner_does_not_duplicate_same_agent():
 
     assert plan.names == ("generalist",)
     assert len(plan.agents) == 1
+    assert set(plan.covered_capabilities) == {"coding", "debugging"}
+    assert plan.unmet == ()
 
 
 def test_empty_task_produces_empty_plan():
