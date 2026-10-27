@@ -2,13 +2,13 @@
 from enum import Enum
 
 
-class StrEnum(str, Enum):
-    """Python 3.8-compatible string enum with StrEnum-style formatting."""
+class _CompatStrEnum(str, Enum):
+    """Python 3.8-compatible string enum with _CompatStrEnum-style formatting."""
     def __str__(self):
         return self.value
 
 
-class PhaseStatus(StrEnum):
+class PhaseStatus(_CompatStrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     PASSED = "PASSED"
