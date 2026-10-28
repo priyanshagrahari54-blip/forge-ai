@@ -111,13 +111,15 @@ class CallGraph:
         Indexing only the resolved target would make the common bare-name
         lookup miss every resolved edge.
         """
-        keys = [site.callee]
-        keys.extend(site.candidates)
-        seen: List[str] = []
-        for key in keys:
-            if key and key not in seen:
-                seen.append(key)
-        return tuple(seen)
+        callee = site.callee
+        candidates = site.candidates
+        if not candidates:
+            return (callee,) if callee else ()
+        if not callee:
+            return candidates
+        if callee in candidates:
+            return candidates
+        return (callee,) + candidates
 
     def add(self, site: CallSite) -> None:
         self.call_sites.append(site)
@@ -286,15 +288,11 @@ class CallGraphIndexer:
                 graph.truncated = True
                 break
 
-        # Pass 1: collect every function-like symbol so call edges can be
-        # resolved against real repository definitions.
-        definitions = self._collect_definitions(files)
-        graph.known_symbols = {
-            name: tuple(sorted(qualified))
-            for name, qualified in sorted(definitions.items())
-        }
+        # Single-pass indexing: extract definitions and raw call sites in one pass over files.
+        definitions: Dict[str, Set[str]] = defaultdict(set)
+        raw_call_sites: List[Tuple[str, str, str, int, str]] = []
+        total_sites = 0
 
-        # Pass 2: extract call sites and resolve them.
         for path in files:
             rel = path.relative_to(self.root).as_posix()
             graph.files_scanned += 1
@@ -307,38 +305,93 @@ class CallGraphIndexer:
                 graph.parse_errors.append(
                     {"file": rel, "error": "file exceeds the size bound"})
                 continue
+
             if path.suffix.lower() in AST_SUFFIXES:
-                self._index_python(rel, source, graph)
-            else:
-                self._index_lexical(rel, source, graph)
-        return graph
-
-    # -- pass 1 ----------------------------------------------------------
-
-    def _collect_definitions(self, files: Sequence[Path]
-                             ) -> Dict[str, Set[str]]:
-        definitions: Dict[str, Set[str]] = defaultdict(set)
-        for path in files:
-            rel = path.relative_to(self.root).as_posix()
-            suffix = path.suffix.lower()
-            try:
-                source = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if suffix in AST_SUFFIXES:
                 try:
                     tree = ast.parse(source, filename=rel)
-                except (SyntaxError, ValueError):
+                except (SyntaxError, ValueError) as exc:
+                    graph.parse_errors.append({"file": rel, "error": str(exc)})
                     continue
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef,
-                                         ast.AsyncFunctionDef)):
-                        qualified = self._python_qualifier(rel, node.name)
-                        definitions[node.name].add(qualified)
+                graph.files_parsed += 1
+
+                module = rel[:-3].replace("/", ".")
+                if module.endswith(".__init__"):
+                    module = module[:-len(".__init__")]
+
+                file_budget = MAX_CALL_SITES_PER_FILE
+
+                def visit(node: ast.AST, scope: str = "") -> None:
+                    nonlocal total_sites, file_budget
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        definitions[node.name].add(self._python_qualifier(rel, node.name))
+                        child_scope = f"{scope}.{node.name}" if scope else node.name
+                        for child in ast.iter_child_nodes(node):
+                            visit(child, child_scope)
+                        return
+                    if isinstance(node, ast.ClassDef):
+                        child_scope = f"{scope}.{node.name}" if scope else node.name
+                        for child in ast.iter_child_nodes(node):
+                            visit(child, child_scope)
+                        return
+                    if isinstance(node, ast.Call):
+                        callee = _python_callee_name(node.func)
+                        if callee:
+                            if file_budget > 0 and total_sites < MAX_CALL_SITES:
+                                file_budget -= 1
+                                total_sites += 1
+                                caller = f"{module}:{scope or '<module>'}"
+                                raw_call_sites.append((rel, callee, caller, node.lineno, "ast"))
+                            else:
+                                graph.truncated = True
+                        for child in ast.iter_child_nodes(node):
+                            visit(child, scope)
+                        return
+                    for child in ast.iter_child_nodes(node):
+                        visit(child, scope)
+
+                for child in ast.iter_child_nodes(tree):
+                    visit(child, "")
             else:
-                for name in _lexical_definitions(source):
-                    definitions[name].add("%s:%s" % (rel, name))
-        return definitions
+                graph.files_parsed += 1
+                scope = "%s:<file>" % rel
+                count = 0
+                for lineno, line in enumerate(source.splitlines(), start=1):
+                    stripped = line.strip()
+                    if stripped.startswith(("//", "/*", "*", "#")):
+                        continue
+                    definition = _lexical_definition_on_line(line)
+                    if definition:
+                        definitions[definition].add("%s:%s" % (rel, definition))
+                        scope = "%s:%s" % (rel, definition)
+                    for match in CALL_RE.finditer(line):
+                        name = match.group(1)
+                        if name in NON_CALL_KEYWORDS or name == definition:
+                            continue
+                        if count >= MAX_CALL_SITES_PER_FILE or total_sites >= MAX_CALL_SITES:
+                            graph.truncated = True
+                            break
+                        count += 1
+                        total_sites += 1
+                        raw_call_sites.append((rel, name, scope, lineno, "lexical"))
+
+        graph.known_symbols = {
+            name: tuple(sorted(qualified))
+            for name, qualified in sorted(definitions.items())
+        }
+
+        # Pass 2: resolve extracted call sites against repository symbols.
+        for rel, callee, caller, line, tier in raw_call_sites:
+            if tier == "ast":
+                site = self._resolve(rel, callee, caller, line, tier, graph)
+            else:
+                site = CallSite(
+                    caller=caller, callee=callee, file=rel, line=line,
+                    tier="lexical", status="lexical",
+                    candidates=graph.known_symbols.get(callee, ())
+                )
+            graph.add(site)
+
+        return graph
 
     @staticmethod
     def _python_qualifier(rel: str, name: str) -> str:
@@ -347,61 +400,6 @@ class CallGraphIndexer:
         if module.endswith(".__init__"):
             module = module[: -len(".__init__")]
         return "%s:%s" % (module, name)
-
-    # -- pass 2 ----------------------------------------------------------
-
-    def _index_python(self, rel: str, source: str, graph: CallGraph) -> None:
-        try:
-            tree = ast.parse(source, filename=rel)
-        except (SyntaxError, ValueError) as exc:
-            graph.parse_errors.append({"file": rel, "error": str(exc)})
-            return
-        graph.files_parsed += 1
-        module = rel[:-3].replace("/", ".")
-        if module.endswith(".__init__"):
-            module = module[: -len(".__init__")]
-
-        # Walk with an explicit scope stack so the caller is always known.
-        stack: List[str] = []
-        budget = [MAX_CALL_SITES_PER_FILE]
-
-        def add_site(callee: str, line: int) -> None:
-            if budget[0] <= 0:
-                graph.truncated = True
-                return
-            if len(graph.call_sites) >= MAX_CALL_SITES:
-                graph.truncated = True
-                return
-            budget[0] -= 1
-            caller = "%s:%s" % (module, "".join(stack).rstrip(".")
-                                 or "<module>")
-            graph.add(self._resolve(rel, callee, caller, line, "ast", graph))
-
-        def visit(node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                stack.append(node.name + ".")
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
-                stack.pop()
-                return
-            if isinstance(node, ast.ClassDef):
-                stack.append(node.name + ".")
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
-                stack.pop()
-                return
-            if isinstance(node, ast.Call):
-                callee = _python_callee_name(node.func)
-                if callee:
-                    add_site(callee, node.lineno)
-                for child in ast.iter_child_nodes(node):
-                    visit(child)
-                return
-            for child in ast.iter_child_nodes(node):
-                visit(child)
-
-        for child in ast.iter_child_nodes(tree):
-            visit(child)
 
     def _resolve(self, rel: str, callee: str, caller: str, line: int,
                  tier: str, graph: CallGraph) -> CallSite:
@@ -416,31 +414,6 @@ class CallGraphIndexer:
         return CallSite(caller=caller, callee=callee, file=rel, line=line,
                         tier=tier, status="ambiguous",
                         candidates=tuple(sorted(candidates)))
-
-    def _index_lexical(self, rel: str, source: str, graph: CallGraph) -> None:
-        graph.files_parsed += 1
-        scope = "%s:<file>" % rel
-        count = 0
-        for lineno, line in enumerate(source.splitlines(), start=1):
-            stripped = line.strip()
-            if stripped.startswith(("//", "/*", "*", "#")):
-                continue
-            definition = _lexical_definition_on_line(line)
-            if definition:
-                scope = "%s:%s" % (rel, definition)
-            for match in CALL_RE.finditer(line):
-                name = match.group(1)
-                if name in NON_CALL_KEYWORDS or name == definition:
-                    continue
-                if count >= MAX_CALL_SITES_PER_FILE or len(
-                        graph.call_sites) >= MAX_CALL_SITES:
-                    graph.truncated = True
-                    return
-                count += 1
-                graph.add(CallSite(
-                    caller=scope, callee=name, file=rel, line=lineno,
-                    tier="lexical", status="lexical",
-                    candidates=graph.known_symbols.get(name, ())))
 
 
 def _python_callee_name(func: ast.AST) -> str:
