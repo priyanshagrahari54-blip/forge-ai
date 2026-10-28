@@ -250,19 +250,27 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
+        min_rel = policy.min_reliability
+        allow_paid = policy.allow_paid
+        max_cost = policy.max_cost_per_token
+        allow_remote = policy.allow_remote
+        max_lat = policy.max_latency_ms
+        min_ctx = request.min_context_window
+
+        # Fast filtering: local variables for policy attributes to avoid attribute lookups in loop
         candidates: list[Model] = []
         for model in capable:
-            if model.context_window < request.min_context_window:
+            if model.context_window < min_ctx:
                 continue
-            if "paid" not in relaxed and not policy.allow_paid and not model.free:
+            if "paid" not in relaxed and not allow_paid and not model.free:
                 continue
-            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+            if "paid" not in relaxed and max_cost is not None and model.cost_per_token > max_cost:
                 continue
-            if "remote" not in relaxed and not policy.allow_remote and not model.local:
+            if "remote" not in relaxed and not allow_remote and not model.local:
                 continue
-            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
+            if "latency" not in relaxed and max_lat is not None and model.latency_ms > max_lat:
                 continue
-            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
+            if "reliability" not in relaxed and model.reliability < min_rel:
                 continue
             if "health" not in relaxed and model.health.last_resort:
                 continue
@@ -279,46 +287,49 @@ class FabricRouter:
         fallback_models = [model for model in candidates if model.fallback]
         pool = regular or fallback_models
 
-        preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
-        fallback_order = {
-            name: index for index, name in enumerate(request.fallback_models)
-        }
+        eff_prefs = request.effective_model_preferences()
+        preferred_order = {name: index for index, name in enumerate(eff_prefs)} if eff_prefs else None
+
+        fb_models = request.fallback_models
+        fallback_order = {name: index for index, name in enumerate(fb_models)} if fb_models else None
+
+        # Precompute tier lookup once across all candidate models to avoid tier_of reflection inside sort
+        tiers = {m.name: tier_of(m) for m in candidates}
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
-            # Preference buckets dominate: an explicit/preferred model always
-            # ranks ahead of an unpreferred one and a request-declared
-            # fallback ranks behind both — but only after the eligibility
-            # filtering above, so a preferred model missing a required
-            # capability can never win. Declared power (``tier``) comes next
-            # inside a bucket: when an operator runs a stronger model on their
-            # own server, "equally capable" must not silently mean "the
-            # cheaper one". ``tier`` defaults to 0 for every model that does
-            # not declare one, so registries without tiers order exactly as
-            # before. Score, then free/local/name tie-breakers, close it out.
-            tiebreak = (
-                -tier_of(model),
+            m_name = model.name
+            bucket = 1
+            order_idx = 0
+            if preferred_order is not None and m_name in preferred_order:
+                bucket = 0
+                order_idx = preferred_order[m_name]
+            elif fallback_order is not None and m_name in fallback_order:
+                bucket = 2
+                order_idx = fallback_order[m_name]
+
+            return (
+                bucket,
+                order_idx,
+                -tiers.get(m_name, 0),
                 -_score,
                 0 if model.free else 1,
                 0 if model.local else 1,
-                model.name,
+                m_name,
             )
-            if model.name in preferred_order:
-                return (0, preferred_order[model.name], *tiebreak)
-            if model.name in fallback_order:
-                return (2, fallback_order[model.name], *tiebreak)
-            return (1, *tiebreak)
 
-        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
+        # Precompute request-level score scaling factors outside the model scoring loop
+        req_complexity_or_1 = max(0.0, request.complexity or 1.0)
+        req_min_ctx_or_1 = max(request.min_context_window or 1, 1)
+
+        scored = [(self._score(model, request, policy, pref_free, pref_local, req_complexity_or_1, req_min_ctx_or_1), model) for model in pool]
         scored.sort(key=rank)
         score, model = scored[0]
 
         chain = [entry for _, entry in scored]
         if regular and fallback_models:
             fallback_scored = [
-                (self._score(entry, request, policy, pref_free, pref_local), entry)
+                (self._score(entry, request, policy, pref_free, pref_local, req_complexity_or_1, req_min_ctx_or_1), entry)
                 for entry in fallback_models
             ]
             fallback_scored.sort(key=rank)
@@ -337,7 +348,7 @@ class FabricRouter:
             "complexity": request.complexity,
             "preference_rank": (
                 preferred_order.get(model.name)
-                if model.name in preferred_order
+                if preferred_order is not None and model.name in preferred_order
                 else None
             ),
         }
@@ -348,6 +359,13 @@ class FabricRouter:
             candidates=tuple(entry.name for entry in chain),
         )
 
+    _HEALTH_STATUS_SCORES: dict[str, float] = {
+        "healthy": 1.0,
+        "unknown": 0.8,
+        "degraded": 0.5,
+        "unhealthy": 0.0,
+    }
+
     def _score(
         self,
         model: Model,
@@ -355,23 +373,23 @@ class FabricRouter:
         policy: RoutingPolicy,
         pref_free: bool,
         pref_local: bool,
+        req_complexity_or_1: float | None = None,
+        req_min_ctx_or_1: int | None = None,
     ) -> float:
+        if req_complexity_or_1 is None:
+            req_complexity_or_1 = max(0.0, request.complexity or 1.0)
+        if req_min_ctx_or_1 is None:
+            req_min_ctx_or_1 = max(request.min_context_window or 1, 1)
+
         reliability = max(0.0, min(1.0, model.reliability))
         latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
         cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
-        # Complexity-aware: complex requests favor models with proportionally
-        # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        context_fit = min(1.0, model.context_window / req_min_ctx_or_1)
+        health = self._HEALTH_STATUS_SCORES.get(model.health.status, 0.5)
+        complexity_fit = min(1.0, model.context_window / (4096.0 * req_complexity_or_1))
+
         return (
             reliability * 0.30
             + latency * 0.15
