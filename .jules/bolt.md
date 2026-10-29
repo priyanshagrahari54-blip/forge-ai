@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - Model Router Redundant Score Evaluations and Sequential Filter Allocations
+
+**Learning:** `ModelRouter.decide()` and `FabricRouter._try()` were creating multiple intermediate list allocations during candidate filtering, instantiating weight dictionaries repeatedly inside score calculations, and evaluating scoring functions multiple times per model candidate during `max()` key comparisons and result extraction.
+
+**Action:** Combine candidate filtering into single-pass predicate checks, hoist dictionary/denominator math outside per-candidate scoring functions, and track maximum scored tuples in single-pass iterations to eliminate redundant score calculations.
