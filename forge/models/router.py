@@ -59,29 +59,42 @@ class ModelRouter:
     def decide(self, capability: str, *, min_context_size: int = 0,
                max_cost: float | None = None, max_latency: float | None = None,
                task_complexity: float | None = None, context_size: int = 0) -> RoutingDecision | None:
-        candidates = [model for model in self.models
-                      if model.available and (model.capability == capability or capability in model.capabilities)]
-        candidates = [model for model in candidates
-                      if model.context_size >= max(min_context_size, context_size)]
-        if max_cost is not None:
-            candidates = [model for model in candidates if model.cost_per_token <= max_cost]
-        if max_latency is not None:
-            candidates = [model for model in candidates if model.latency <= max_latency]
-        if task_complexity is not None:
-            candidates = [model for model in candidates if model.task_complexity >= task_complexity]
+        min_context = min_context_size if min_context_size > context_size else context_size
+        candidates = [
+            model for model in self.models
+            if model.available
+            and (model.capability == capability or capability in model.capabilities)
+            and model.context_size >= min_context
+            and (max_cost is None or model.cost_per_token <= max_cost)
+            and (max_latency is None or model.latency <= max_latency)
+            and (task_complexity is None or model.task_complexity >= task_complexity)
+        ]
         if not candidates:
             return None
 
-        def score(model: ModelInfo) -> float:
+        # Precompute denominators outside per-candidate scoring loop
+        norm_complexity = max(task_complexity or 1.0, 1.0)
+        norm_context = max(context_size or 1, 1)
+
+        best_score = -1.0
+        best_tuple = None
+        chosen = None
+
+        # Single-pass scoring tracks max score tuple to avoid duplicate score calls
+        for model in candidates:
             reliability = max(0.0, model.historical_success_rate - model.failure_rate)
             latency = 1.0 / (1.0 + max(0.0, model.latency))
             cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1000)
-            complexity = min(1.0, model.task_complexity / max(task_complexity or 1.0, 1.0))
-            context = min(1.0, model.context_size / max(context_size or 1, 1))
-            return reliability * .4 + latency * .15 + cost * .15 + complexity * .2 + context * .1
+            complexity = min(1.0, model.task_complexity / norm_complexity)
+            context = min(1.0, model.context_size / norm_context)
+            s = reliability * .4 + latency * .15 + cost * .15 + complexity * .2 + context * .1
+            tup = (s, model.free, model.name)
+            if best_tuple is None or tup > best_tuple:
+                best_tuple = tup
+                best_score = s
+                chosen = model
 
-        chosen = max(candidates, key=lambda model: (score(model), model.free, model.name))
-        return RoutingDecision(chosen, score(chosen), {
+        return RoutingDecision(chosen, best_score, {
             "reliability": chosen.historical_success_rate - chosen.failure_rate,
             "latency": chosen.latency,
             "cost": chosen.cost_per_token,
@@ -148,6 +161,14 @@ class RouteDecision:
             "candidates": list(self.candidates),
             "error": self.error,
         }
+
+
+_HEALTH_STATUS_WEIGHTS = {
+    "healthy": 1.0,
+    "unknown": 0.8,
+    "degraded": 0.5,
+    "unhealthy": 0.0,
+}
 
 
 def tier_of(model: Model) -> int:
@@ -250,54 +271,58 @@ class FabricRouter:
         pref_free = request.prefer_free if request.prefer_free is not None else policy.prefer_free
         pref_local = request.prefer_local if request.prefer_local is not None else policy.prefer_local
 
+        context_denom = float(max(request.min_context_window or 1, 1))
+        complexity_denom = 4096.0 * max(0.0, request.complexity or 1.0)
+
+        check_paid = "paid" not in relaxed
+        check_remote = "remote" not in relaxed
+        check_latency = "latency" not in relaxed
+        check_reliability = "reliability" not in relaxed
+        check_health = "health" not in relaxed
+
         candidates: list[Model] = []
         for model in capable:
             if model.context_window < request.min_context_window:
                 continue
-            if "paid" not in relaxed and not policy.allow_paid and not model.free:
+            if check_paid:
+                if not policy.allow_paid and not model.free:
+                    continue
+                if policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+                    continue
+            if check_remote and not policy.allow_remote and not model.local:
                 continue
-            if "paid" not in relaxed and policy.max_cost_per_token is not None and model.cost_per_token > policy.max_cost_per_token:
+            if check_latency and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
                 continue
-            if "remote" not in relaxed and not policy.allow_remote and not model.local:
+            if check_reliability and model.reliability < policy.min_reliability:
                 continue
-            if "latency" not in relaxed and policy.max_latency_ms is not None and model.latency_ms > policy.max_latency_ms:
-                continue
-            if "reliability" not in relaxed and model.reliability < policy.min_reliability:
-                continue
-            if "health" not in relaxed and model.health.last_resort:
+            if check_health and model.health.last_resort:
                 continue
             candidates.append(model)
 
         if not candidates:
             return RouteDecision(candidates=tuple(model.name for model in capable))
 
-        # The deterministic no-op fallback is only considered when no regular
-        # model can serve the request; otherwise it would crowd out real models
-        # on otherwise-identical scores. It still appears at the end of the
-        # candidate chain so callers can fail over to it deterministically.
-        regular = [model for model in candidates if not model.fallback]
-        fallback_models = [model for model in candidates if model.fallback]
+        # Single-pass partition into regular vs fallback candidates
+        regular: list[Model] = []
+        fallback_models: list[Model] = []
+        for model in candidates:
+            if model.fallback:
+                fallback_models.append(model)
+            else:
+                regular.append(model)
+
         pool = regular or fallback_models
 
+        eff_prefs = request.effective_model_preferences()
         preferred_order = {
-            name: index for index, name in enumerate(request.effective_model_preferences())
-        }
+            name: index for index, name in enumerate(eff_prefs)
+        } if eff_prefs else {}
         fallback_order = {
             name: index for index, name in enumerate(request.fallback_models)
-        }
+        } if request.fallback_models else {}
 
         def rank(pair: tuple[float, Model]) -> tuple:
             _score, model = pair
-            # Preference buckets dominate: an explicit/preferred model always
-            # ranks ahead of an unpreferred one and a request-declared
-            # fallback ranks behind both — but only after the eligibility
-            # filtering above, so a preferred model missing a required
-            # capability can never win. Declared power (``tier``) comes next
-            # inside a bucket: when an operator runs a stronger model on their
-            # own server, "equally capable" must not silently mean "the
-            # cheaper one". ``tier`` defaults to 0 for every model that does
-            # not declare one, so registries without tiers order exactly as
-            # before. Score, then free/local/name tie-breakers, close it out.
             tiebreak = (
                 -tier_of(model),
                 -_score,
@@ -311,14 +336,17 @@ class FabricRouter:
                 return (2, fallback_order[model.name], *tiebreak)
             return (1, *tiebreak)
 
-        scored = [(self._score(model, request, policy, pref_free, pref_local), model) for model in pool]
+        scored = [
+            (self._score(model, request, policy, pref_free, pref_local, context_denom, complexity_denom), model)
+            for model in pool
+        ]
         scored.sort(key=rank)
         score, model = scored[0]
 
         chain = [entry for _, entry in scored]
         if regular and fallback_models:
             fallback_scored = [
-                (self._score(entry, request, policy, pref_free, pref_local), entry)
+                (self._score(entry, request, policy, pref_free, pref_local, context_denom, complexity_denom), entry)
                 for entry in fallback_models
             ]
             fallback_scored.sort(key=rank)
@@ -355,23 +383,17 @@ class FabricRouter:
         policy: RoutingPolicy,
         pref_free: bool,
         pref_local: bool,
+        context_denom: float = 1.0,
+        complexity_denom: float = 4096.0,
     ) -> float:
         reliability = max(0.0, min(1.0, model.reliability))
         latency = 1.0 / (1.0 + max(0.0, model.latency_ms) / 1000.0)
         cost = 1.0 / (1.0 + max(0.0, model.cost_per_token) * 1_000_000.0)
         free = (1.0 if model.free else 0.0) if pref_free else 0.5
         local = (1.0 if model.local else 0.0) if pref_local else 0.5
-        context_fit = min(1.0, model.context_window / max(request.min_context_window or 1, 1))
-        health = {
-            "healthy": 1.0,
-            "unknown": 0.8,
-            "degraded": 0.5,
-            "unhealthy": 0.0,
-        }.get(model.health.status, 0.5)
-        # Complexity-aware: complex requests favor models with proportionally
-        # larger context windows (and therefore more room to reason).
-        complexity = max(0.0, request.complexity or 1.0)
-        complexity_fit = min(1.0, model.context_window / (4096.0 * complexity))
+        context_fit = min(1.0, model.context_window / context_denom)
+        health = _HEALTH_STATUS_WEIGHTS.get(model.health.status, 0.5)
+        complexity_fit = min(1.0, model.context_window / complexity_denom)
         return (
             reliability * 0.30
             + latency * 0.15
