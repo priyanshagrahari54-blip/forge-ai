@@ -3195,7 +3195,7 @@ async function bootstrap() {
       badge.textContent = "Backend unavailable";
       badge.className = "conn down";
       const view = document.getElementById("view");
-      view.innerHTML = '<section class="surface empty-state"><h3>Forge is offline</h3><p>Could not establish a secure workspace session. Retry by refreshing this page.</p></section>';
+      emptyState(view, "Forge is offline", "Could not establish a secure workspace session. Retry by refreshing this page.", "", "");
       return;
     }
   }

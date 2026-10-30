@@ -118,7 +118,7 @@ def test_planner_skips_unavailable_capabilities():
 
     assert plan.names == ("coder",)
     assert plan.capabilities == ("coding",)
-    assert plan.unmet == ("security", "review")
+    assert plan.unmet == ("review", "security")
 
 
 def test_planner_does_not_duplicate_same_agent():
