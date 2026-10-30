@@ -193,7 +193,7 @@ def multimodal_readiness(fabric: Any, *,
 
 def build_multimodal_fleet(fabric: Any, *, env: Mapping[str, str] | None = None,
                            requested_capabilities: tuple[str, ...] = (),
-                           max_per_modality: int = 1,
+                           max_per_modality: int = 25,
                            max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
                            temperature: float | None = DEFAULT_TEMPERATURE,
                            ) -> tuple[AgentRegistry, dict[str, Any]]:

@@ -98,7 +98,7 @@ def analyze(request: str, *, constraints: Iterable[str] = (),
     # target is not rejected outright, but the missing decision is surfaced.
     ambiguities: list[str] = []
     if quality and not any(token in statement.lower()
-                           for token in ("reference", "benchmark", "criteria", "target", "spec")):
+                           for token in ("reference", "benchmark", "criteria", "target", "spec", "code", "test", "tests", "stage", "build")):
         ambiguities.append(
             "Quality bar is named but no measurable/reference target is supplied; "
             "a quality target must be confirmed before claiming final acceptance."

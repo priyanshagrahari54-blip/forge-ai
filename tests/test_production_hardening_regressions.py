@@ -356,7 +356,7 @@ def test_office_is_reachable_from_the_main_navigation():
     assert 'data-route="office"' in html
     assert 'id="tpl-office"' in html
     assert 'id="office-frame"' in html and 'src="/office.html"' in html
-    assert re.search(r"\bcity:\s*\{\s*render:\s*renderOfficeView", js)
+    assert re.search(r"\b(?:office|city):\s*\{\s*render:\s*renderOfficeView", js)
 
 
 def test_office_view_only_hosts_real_backend_state():
