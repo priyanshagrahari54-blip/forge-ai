@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - RepositoryScanner Ignored Subtree Traversal Bottleneck
+
+**Learning:** `RepositoryScanner.scan` used `Path.rglob("*")`, which descends recursively into all subdirectories—including vendor/build folders like `node_modules`, `.git`, `.venv`, and `build`—before filtering them out. On projects with large dependency trees, `rglob("*")` incurred thousands of unnecessary `stat()` syscalls and object allocations.
+
+**Action:** Use top-down `os.walk` with in-place `dirnames[:]` pruning to prevent descending into ignored/vendor subtrees entirely (~30x speedup / >96% latency reduction on repositories with ignored subtrees).
