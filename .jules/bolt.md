@@ -21,3 +21,9 @@
 **Learning:** `DAGScheduler.add_task` called `_detect_cycle()` on every single task insertion. For a graph of $N$ tasks, adding nodes incrementally caused $O(N^2)$ cycle detection passes during graph construction. Since `add_task` validates that dependencies exist before adding a new node with no dependents, adding nodes cannot create a cycle in an already-acyclic graph.
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
+
+## 2025-05-22 - Semantic Search Candidate Evaluation and Repeated Counter Overhead
+
+**Learning:** `SemanticIndex.search` reconstructed a `{document.key: document}` dictionary on every query, recomputed `document.terms` (allocating weighted `Counter` instances across all fields) repeatedly, and instantiated `SearchHit` for every single candidate document in the corpus before sorting and slicing to the top `limit`. For corpora with thousands of documents, this caused over 15 million function calls and ~142ms latency per query on candidates that were discarded immediately.
+
+**Action:** Pre-index documents by key on `SemanticIndex._by_key`, cache computed `terms` on `Document`, and sort candidate keys by score/path to evaluate and instantiate `SearchHit` only for top-k candidates up to `max_needed`. This reduced search latency by ~94% (from ~142ms to ~9.8ms per query).
