@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import re
 
 from forge.intelligence.context import ContextItem, ContextPack, ContextQuery
@@ -62,29 +63,56 @@ class ContextQueryEngine:
         # Expand context around selected source files.
         initial_files = list(pack.files)
 
-        if request.include_dependencies:
+        # Performance optimization (Bolt ⚡): Multi-source BFS traversal for dependencies
+        # and dependents eliminates O(K * (V + E)) redundant graph re-traversals when multiple
+        # initial files share common dependency subgraphs.
+        if request.include_dependencies and initial_files:
+            visited_deps = set(initial_files)
+            queue_deps: deque[tuple[str, str]] = deque()
             for path in initial_files:
-                for dependency in self.intelligence._transitive_dependency_paths(path):
-                    pack.add(
-                        ContextItem(
-                            path=dependency,
-                            kind="dependency",
-                            reason=f"dependency of {path}",
-                            score=40.0,
-                        )
-                    )
+                for dependency in self.intelligence._direct_dependency_paths(path):
+                    if dependency not in visited_deps:
+                        visited_deps.add(dependency)
+                        queue_deps.append((dependency, path))
 
-        if request.include_dependents:
-            for path in initial_files:
-                for dependent in self.intelligence._transitive_dependent_paths(path):
-                    pack.add(
-                        ContextItem(
-                            path=dependent,
-                            kind="dependent",
-                            reason=f"dependent of {path}",
-                            score=35.0,
-                        )
+            while queue_deps:
+                curr, origin = queue_deps.popleft()
+                pack.add(
+                    ContextItem(
+                        path=curr,
+                        kind="dependency",
+                        reason=f"dependency of {origin}",
+                        score=40.0,
                     )
+                )
+                for dependency in self.intelligence._direct_dependency_paths(curr):
+                    if dependency not in visited_deps:
+                        visited_deps.add(dependency)
+                        queue_deps.append((dependency, curr))
+
+        if request.include_dependents and initial_files:
+            visited_depts = set(initial_files)
+            queue_depts: deque[tuple[str, str]] = deque()
+            for path in initial_files:
+                for dependent in self.intelligence._direct_dependent_paths(path):
+                    if dependent not in visited_depts:
+                        visited_depts.add(dependent)
+                        queue_depts.append((dependent, path))
+
+            while queue_depts:
+                curr, origin = queue_depts.popleft()
+                pack.add(
+                    ContextItem(
+                        path=curr,
+                        kind="dependent",
+                        reason=f"dependent of {origin}",
+                        score=35.0,
+                    )
+                )
+                for dependent in self.intelligence._direct_dependent_paths(curr):
+                    if dependent not in visited_depts:
+                        visited_depts.add(dependent)
+                        queue_depts.append((dependent, curr))
 
         # Add affected tests separately so agents can validate changes.
         if request.include_tests:
