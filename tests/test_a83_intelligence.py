@@ -239,6 +239,28 @@ def test_symbol_indexing_produces_symbol_documents(tmp_path):
     assert hits[0].key == "mod.py#beta"
 
 
+def test_document_terms_caching_and_index_key_lookup(tmp_path):
+    write(tmp_path, "sample.py", '''
+        def process_payment():
+            """Process credit card payment."""
+            return True
+    ''')
+    index = SemanticIndexer(tmp_path, index_symbols=True).build()
+    doc = index.documents[0]
+    # First access calculates and caches terms
+    assert doc._cached_terms is not None
+    terms_first = doc.terms
+    # Subsequent access reuses the cached Counter
+    assert doc.terms is terms_first
+    # Fast _get_by_key returns mapped document
+    assert index._get_by_key()[doc.key] is doc
+    # Repeated searches remain consistent and return matching hits
+    hits1 = index.search("process payment")
+    hits2 = index.search("process payment")
+    assert hits1 == hits2
+    assert hits1[0].path.replace("\\", "/") == "sample.py"
+
+
 def test_semantic_explain_reports_document_frequency(docs_project):
     index = SemanticIndexer(docs_project).build()
     report = index.explain("kernel", "kernel/boot.c")
