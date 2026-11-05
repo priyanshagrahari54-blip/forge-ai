@@ -127,14 +127,21 @@ class Document:
     kind: str = "file"
     name: str = ""
     snippet: str = ""
+    # Performance optimization (Bolt ⚡): Cache computed weighted terms to avoid O(terms) rebuild on every check
+    _cached_terms: Optional[Counter] = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def terms(self) -> Counter:
+        # Performance optimization (Bolt ⚡): Lazily evaluate and memoize weighted terms
+        if self._cached_terms is not None:
+            return self._cached_terms
+
         total: Counter = Counter()
         for field_name, counter in self.fields.items():
             weight = FIELD_WEIGHTS.get(field_name, 1.0)
             for term, count in counter.items():
                 total[term] += count * weight
+        self._cached_terms = total
         return total
 
 
@@ -152,10 +159,18 @@ class SemanticIndex:
     postings: Dict[str, List[str]]
     files_indexed: int = 0
     errors: List[Dict[str, str]] = field(default_factory=list)
+    # Performance optimization (Bolt ⚡): Pre-indexed document key map to avoid rebuild in search()
+    _by_key: Optional[Dict[str, Document]] = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def document_count(self) -> int:
         return len(self.documents)
+
+    def _get_by_key(self) -> Dict[str, Document]:
+        # Performance optimization (Bolt ⚡): Cache document key map for O(1) candidate lookup
+        if self._by_key is None or len(self._by_key) != len(self.documents):
+            self._by_key = {document.key: document for document in self.documents}
+        return self._by_key
 
     def search(self, query: str, *, limit: int = 10,
                path_prefix: str = "") -> List[SearchHit]:
@@ -192,7 +207,8 @@ class SemanticIndex:
                     continue
                 candidates[key] += weight * self.vectors[key][term]
 
-        by_key = {document.key: document for document in self.documents}
+        # Performance optimization (Bolt ⚡): Fast lookup via cached document index
+        by_key = self._get_by_key()
         hits: List[SearchHit] = []
         for key, score in candidates.items():
             if score <= 0.0:
