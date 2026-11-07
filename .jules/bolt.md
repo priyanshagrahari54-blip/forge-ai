@@ -22,7 +22,7 @@
 
 **Action:** Defer full graph cycle detection to `DAGScheduler.run()` prior to execution. This eliminates quadratic graph construction cost, speeding up 2,000 task additions by ~100x (>99% latency reduction from ~2.02s to ~0.019s).
 
-## 2026-11-07 - TaskEngine Linear Search Quadratic Bottleneck
+## 2026-10-27 - TaskEngine Linear Search Quadratic Bottleneck
 
 **Learning:** `TaskEngine._exists()` and `TaskEngine._find()` performed linear traversals across `self.tasks` for every existence check and task lookup. In task graph construction and execution dispatch, adding tasks with dependencies and calling `can_start()` scaled quadratically ($O(N^2)$), causing significant slowdown as the task graph grew (e.g. adding 5,000 tasks took ~2.28s, with 5,000 `can_start()` calls taking ~1.40s).
 
