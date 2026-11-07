@@ -33,6 +33,9 @@ class Task:
 class TaskEngine:
     def __init__(self) -> None:
         self.tasks: list[Task] = []
+        # Index tasks by ID for O(1) membership tests and lookups, avoiding
+        # O(N^2) linear scans when registering tasks and checking dependencies.
+        self._by_id: dict[str, Task] = {}
 
     def add(self, task_id: str, description: str, dependencies: list[str] | None = None) -> Task:
         if self._exists(task_id):
@@ -45,6 +48,7 @@ class TaskEngine:
                 raise KeyError(f"Task dependency not found: {dependency}")
         task = Task(id=task_id, description=description, dependencies=dependency_list)
         self.tasks.append(task)
+        self._by_id[task_id] = task
         return task
 
     def add_dependency(self, task_id: str, dependency_id: str) -> Task:
@@ -92,10 +96,12 @@ class TaskEngine:
         return task
 
     def _exists(self, task_id: str) -> bool:
-        return any(task.id == task_id for task in self.tasks)
+        # O(1) check using the hash map index
+        return task_id in self._by_id
 
     def _find(self, task_id: str) -> Task:
-        for task in self.tasks:
-            if task.id == task_id:
-                return task
-        raise KeyError(f"Task not found: {task_id}")
+        # O(1) direct retrieval from hash map index
+        task = self._by_id.get(task_id)
+        if task is None:
+            raise KeyError(f"Task not found: {task_id}")
+        return task
