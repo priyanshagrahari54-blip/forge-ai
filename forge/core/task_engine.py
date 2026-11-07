@@ -33,6 +33,14 @@ class Task:
 class TaskEngine:
     def __init__(self) -> None:
         self.tasks: list[Task] = []
+        # Index tasks by ID for O(1) membership tests and lookups, avoiding
+        # O(N^2) linear scans when registering tasks and checking dependencies.
+        self._by_id: dict[str, Task] = {}
+
+    def _sync_index(self) -> None:
+        """Rebuild index when external code assigns or modifies tasks directly."""
+        if len(self._by_id) != len(self.tasks):
+            self._by_id = {task.id: task for task in self.tasks}
 
     def add(self, task_id: str, description: str, dependencies: list[str] | None = None) -> Task:
         if self._exists(task_id):
@@ -45,6 +53,7 @@ class TaskEngine:
                 raise KeyError(f"Task dependency not found: {dependency}")
         task = Task(id=task_id, description=description, dependencies=dependency_list)
         self.tasks.append(task)
+        self._by_id[task_id] = task
         return task
 
     def add_dependency(self, task_id: str, dependency_id: str) -> Task:
@@ -92,10 +101,31 @@ class TaskEngine:
         return task
 
     def _exists(self, task_id: str) -> bool:
-        return any(task.id == task_id for task in self.tasks)
-
-    def _find(self, task_id: str) -> Task:
+        # Fast path: O(1) check using hash map index
+        if task_id in self._by_id:
+            return True
+        # If tasks was loaded or modified externally, sync and retry
+        self._sync_index()
+        if task_id in self._by_id:
+            return True
         for task in self.tasks:
             if task.id == task_id:
-                return task
+                self._by_id[task_id] = task
+                return True
+        return False
+
+    def _find(self, task_id: str) -> Task:
+        # Fast path: O(1) direct retrieval from hash map index
+        task = self._by_id.get(task_id)
+        if task is not None:
+            return task
+        # If tasks was loaded or modified externally, sync and retry
+        self._sync_index()
+        task = self._by_id.get(task_id)
+        if task is not None:
+            return task
+        for t in self.tasks:
+            if t.id == task_id:
+                self._by_id[task_id] = t
+                return t
         raise KeyError(f"Task not found: {task_id}")
