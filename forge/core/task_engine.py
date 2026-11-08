@@ -33,6 +33,21 @@ class Task:
 class TaskEngine:
     def __init__(self) -> None:
         self.tasks: list[Task] = []
+        # Performance optimization: Maintain a hash map index of tasks by ID
+        # to ensure O(1) lookups during dependency checking, status transitions,
+        # and validation, avoiding repeated linear scans over self.tasks.
+        self._by_id: dict[str, Task] = {}
+        self._last_tasks_id: int = id(self.tasks)
+        self._last_tasks_len: int = 0
+
+    def _sync(self) -> None:
+        """Synchronize the internal hash index if self.tasks was mutated or reassigned."""
+        current_id = id(self.tasks)
+        current_len = len(self.tasks)
+        if current_id != self._last_tasks_id or current_len != self._last_tasks_len:
+            self._by_id = {task.id: task for task in self.tasks}
+            self._last_tasks_id = current_id
+            self._last_tasks_len = current_len
 
     def add(self, task_id: str, description: str, dependencies: list[str] | None = None) -> Task:
         if self._exists(task_id):
@@ -45,6 +60,9 @@ class TaskEngine:
                 raise KeyError(f"Task dependency not found: {dependency}")
         task = Task(id=task_id, description=description, dependencies=dependency_list)
         self.tasks.append(task)
+        self._by_id[task_id] = task
+        self._last_tasks_len = len(self.tasks)
+        self._last_tasks_id = id(self.tasks)
         return task
 
     def add_dependency(self, task_id: str, dependency_id: str) -> Task:
@@ -92,10 +110,24 @@ class TaskEngine:
         return task
 
     def _exists(self, task_id: str) -> bool:
-        return any(task.id == task_id for task in self.tasks)
+        self._sync()
+        if task_id in self._by_id:
+            return True
+        # Fallback check in case an element within self.tasks was modified in-place
+        # without changing the list length or reference.
+        if any(task.id == task_id for task in self.tasks):
+            self._by_id = {task.id: task for task in self.tasks}
+            return True
+        return False
 
     def _find(self, task_id: str) -> Task:
-        for task in self.tasks:
-            if task.id == task_id:
-                return task
+        self._sync()
+        task = self._by_id.get(task_id)
+        if task is not None:
+            return task
+        # Fallback check in case self.tasks was mutated in-place
+        for t in self.tasks:
+            if t.id == task_id:
+                self._by_id = {task.id: task for task in self.tasks}
+                return t
         raise KeyError(f"Task not found: {task_id}")
